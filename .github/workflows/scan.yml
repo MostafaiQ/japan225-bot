@@ -1,0 +1,59 @@
+name: Japan 225 Scan
+
+on:
+  schedule:
+    # Every 2 hours during market hours (UTC times, Kuwait = UTC+3)
+    # 00:00 UTC = 03:00 Kuwait (Tokyo Open)
+    # 02:00 UTC = 05:00 Kuwait (Mid Tokyo)
+    # 04:00 UTC = 07:00 Kuwait (Late Tokyo)
+    # 06:00 UTC = 09:00 Kuwait (Tokyo Close)
+    # 08:00 UTC = 11:00 Kuwait (London Open)
+    # 10:00 UTC = 13:00 Kuwait (Mid London)
+    # 12:00 UTC = 15:00 Kuwait (Late London)
+    # 14:30 UTC = 17:30 Kuwait (NY Open)
+    # 16:30 UTC = 19:30 Kuwait (Mid NY)
+    # 18:30 UTC = 21:30 Kuwait (Late NY)
+    # 20:30 UTC = 23:30 Kuwait (NY Close)
+    - cron: '0 0,2,4,6,8,10,12 * * 1-5'
+    - cron: '30 14,16,18,20 * * 1-5'
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  IG_API_KEY: ${{ secrets.IG_API_KEY }}
+  IG_USERNAME: ${{ secrets.IG_USERNAME }}
+  IG_PASSWORD: ${{ secrets.IG_PASSWORD }}
+  IG_ACC_NUMBER: ${{ secrets.IG_ACC_NUMBER }}
+  IG_ENV: ${{ secrets.IG_ENV }}
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  TRADING_MODE: ${{ secrets.TRADING_MODE }}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scan
+        run: python main.py
+
+      - name: Commit scan results
+        run: |
+          git config user.name "Japan225Bot"
+          git config user.email "bot@japan225.trade"
+          git add storage/
+          git diff --staged --quiet || git commit -m "Scan $(date -u +%Y-%m-%d_%H:%M) UTC"
+          git push
