@@ -13,6 +13,7 @@ on_trade_confirm: callable  # Set by TradingMonitor after init
 on_force_scan: callable     # Set by TradingMonitor after init
 
 ## Commands
+/menu     → sends grouped inline button panel (Info + Controls sections)
 /status   → mode, position state, balance, today P&L
 /balance  → account details, compound plan progress
 /journal  → last 5 trades
@@ -24,6 +25,14 @@ on_force_scan: callable     # Set by TradingMonitor after init
 /resume   → sets storage.set_system_active(True)
 /close    → sends inline "Close now" / "Hold" buttons (confirmation dialog)
 /kill     → EMERGENCY: closes position immediately, no confirmation
+/help     → text list of commands + mention /menu
+/start    → welcome message, points to /menu
+
+## /menu button panel
+Info row:    📊 Status · 💰 Balance · 📒 Journal · 📅 Today · 📈 Stats · 💸 API Cost
+Control row: ⚡ Force Scan · ⏸ Pause · ▶️ Resume · ❌ Close Pos · 🚨 KILL
+All buttons have callback handlers with full logic (same as text commands).
+Section header buttons (── Info ──) use callback_data="noop" → do nothing.
 
 ## Alert methods
 send_alert(message: str)                    # Plain text message
@@ -32,10 +41,13 @@ send_position_update(pnl_pts, phase, price) # Milestone or phase change update
 send_adverse_alert(message, tier, deal_id)  # Adverse move with Close now / Hold buttons
 
 ## Inline button callbacks
-CONFIRM → calls on_trade_confirm(alert_data), clears pending_alert
-REJECT  → clears pending_alert, sends rejected msg
-Close now → calls ig.close_position(), records close
-Hold    → sends "holding" msg
+confirm_trade     → calls on_trade_confirm(alert_data), clears pending_alert, checks expiry
+reject_trade      → clears pending_alert, appends REJECTED to message
+close_position:<id> → calls ig.close_position(), records close (validates deal_id match)
+hold_position     → appends "Holding position" to message
+noop              → no-op (section header buttons)
+menu_status/balance/journal/today/stats/cost → sends reply_text same as /command
+menu_force/pause/resume/close/kill → executes same logic as /force /pause /resume /close /kill
 
 ## Standalone helpers (module-level, for legacy/testing)
 send_standalone_message(message: str)          [async]

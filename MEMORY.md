@@ -85,59 +85,64 @@ or (c) remove pre-screen daily requirement and let confidence.py be the gate.
 ---
 
 ## Telegram Commands (all implemented)
-`/status /balance /journal /today /stats /cost /force /stop /pause /resume /close /kill`
+`/status /balance /journal /today /stats /cost /force /stop /pause /resume /close /kill /menu`
 - `/pause` = alias for `/stop`
 - `/kill` = emergency close, no confirm dialog
 - `/close` = asks for inline confirmation (Close now / Hold buttons)
+- `/menu` = button panel (Info group: Status/Balance/Journal/Today/Stats/Cost; Controls group: Force/Pause/Resume/Close/Kill)
 - Trade alerts: CONFIRM / REJECT inline buttons
 - Position alerts: Close now / Hold inline buttons
 
 ---
 
-## NEXT SESSION — Dashboard Implementation
-Start here if opening a new chat to build the dashboard.
-Read digests: `settings`, `monitor`, `database` (always). Others on demand.
+## Dashboard (COMPLETE — as of 2026-02-28)
 
-Pre-requisites status (as of 2026-02-28):
-1. Git SSH key: DONE. ed25519 key added to GitHub. Remote switched to git@github.com.
-2. DASHBOARD_TOKEN: DONE. Added to .env.
-3. SQLite WAL mode: PENDING — add `PRAGMA journal_mode=WAL;` to `Storage._init_db()` in storage/database.py
-4. sudoers rule: PENDING — create /etc/sudoers.d/japan225-dashboard:
-   `ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl restart japan225-bot, /bin/systemctl restart japan225-dashboard, /bin/systemctl stop japan225-bot`
-5. Install dashboard deps: PENDING — `pip install fastapi "uvicorn[standard]" python-multipart httpx`
-6. Cloudflare Tunnel: PENDING — user needs free Cloudflare account, then run cloudflared on VM
+### Services on VM
+| Service | Command | Port |
+|---------|---------|------|
+| `japan225-bot` | monitor.py | — |
+| `japan225-dashboard` | uvicorn dashboard.main:app | 127.0.0.1:8080 |
+| `japan225-ngrok` | ngrok http --domain=... 8080 | ngrok tunnel |
 
-Dashboard architecture (UPDATED — approved Option C):
-- Frontend: GitHub Pages at https://mostafaiq.github.io/japan225-bot/ (served from docs/ folder)
-- Backend: FastAPI on VM localhost:8080, exposed via Cloudflare Tunnel (HTTPS, zero open ports)
-- Tunnel URL: https://japan225-[name].cloudflare.dev (or custom domain if user has one)
-- CORS: FastAPI allows requests from https://mostafaiq.github.io only
-- Auth: Bearer token (DASHBOARD_TOKEN) — safe over HTTPS
-- No SSH tunnel needed. No Oracle Cloud firewall changes needed.
+### URLs
+- Frontend: https://mostafaiq.github.io/japan225-bot/ (GitHub Pages, `docs/` folder)
+- Backend tunnel: https://unmopped-shrimplike-sook.ngrok-free.app (ngrok free static domain)
+- CORS origin: `https://mostafaiq.github.io` only
 
-Key decisions: FastAPI + GitHub Pages (docs/index.html), Cloudflare Tunnel, two-tier config, atomic overrides JSON.
-Telegram stays 100% intact — dashboard is additive only.
+### Auth
+Bearer token `DASHBOARD_TOKEN` in `.env`. All endpoints except `GET /api/health` require it.
 
-Build order:
-  Step 1: Pre-requisites above
-  Step 2: dashboard/main.py + routers/status.py + services/db_reader.py + UI Status/Position panels
-  Step 3: routers/config.py + services/config_manager.py + _reload_overrides() in monitor.py + Config panel UI
-  Step 4: routers/history.py + routers/logs.py + UI Trade/Scan/Log sections
-  Step 5: services/claude_client.py + routers/chat.py + Chat UI
-  Step 6: services/git_ops.py + routers/apply_fix.py + Apply Fix UI
-  Step 7: routers/controls.py + Bot Controls UI + full test + update digests
+### Dashboard File Map
+| File | Purpose |
+|------|---------|
+| `dashboard/main.py` | FastAPI app, CORS, auth middleware |
+| `dashboard/run.py` | uvicorn entrypoint |
+| `dashboard/routers/status.py` | GET /api/health, /api/status |
+| `dashboard/routers/config.py` | GET/POST /api/config (two-tier: hot vs restart) |
+| `dashboard/routers/history.py` | GET /api/history/trades, /api/history/scans |
+| `dashboard/routers/logs.py` | GET /api/logs?type=scan|system |
+| `dashboard/routers/chat.py` | POST /api/chat → claude_client.chat() |
+| `dashboard/routers/controls.py` | POST /api/controls/{force-scan,restart,stop}, /api/apply-fix |
+| `dashboard/services/db_reader.py` | Read-only SQLite reads for dashboard |
+| `dashboard/services/config_manager.py` | Read/write dashboard_overrides.json |
+| `dashboard/services/claude_client.py` | Agentic Claude loop (read/edit/write/run/search tools) |
+| `dashboard/services/git_ops.py` | apply_fix: patch + git commit + push |
+| `docs/index.html` | Single-page frontend (dark theme, 6 tabs) |
+
+### Inter-process communication (monitor.py ↔ dashboard)
+- `storage/data/bot_state.json` — written by monitor._write_state(), read by /api/status
+- `storage/data/dashboard_overrides.json` — written by config_manager, read by monitor._reload_overrides()
+- `storage/data/force_scan.trigger` — written by /api/controls/force-scan, consumed by monitor
+
+### Infra files
+- `/etc/systemd/system/japan225-dashboard.service`
+- `/etc/systemd/system/japan225-ngrok.service`
+- `/etc/sudoers.d/japan225-dashboard` (allows uvicorn user to restart services without password)
 
 ## Current State (as of 2026-02-28)
-Upgrade to 5-min VM scanning complete. All modules created:
-- session.py ✓  momentum.py ✓  confidence.py ✓
-- indicators.py updated for bidirectional ✓
-- analyzer.py updated for bidirectional ✓
-- risk_manager.py updated for SHORT (direction-aware confidence floor) ✓
-- telegram_bot.py: /pause /kill /close inline buttons ✓
-- monitor.py: full scanning + monitoring loop ✓
-- README.md / DEPLOY.md: updated to reflect 5-min scanning ✓
-
-**Remaining issue**: Pre-screen bug (see Known Bug above). Fix this next session.
+- Core bot + dashboard both COMPLETE and running on VM
+- Pre-screen bug unresolved (see Known Bug above) — fix this next session
+- Telegram /menu button panel added (needs real-world test)
 
 ---
 
