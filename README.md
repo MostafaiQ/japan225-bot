@@ -1,6 +1,6 @@
 # Japan 225 Semi-Auto Trading Bot
 
-Automated Japan 225 Cash CFD scanning system on IG Markets. Scans every 2 hours using Claude AI (Sonnet 4.5 for routine scanning, Opus 4.6 for trade confirmation), sends Telegram alerts with CONFIRM/REJECT buttons for human approval before execution.
+Automated Japan 225 Cash CFD scanning system on IG Markets. Runs entirely on an Oracle Cloud VM, scanning every **5 minutes** during active sessions using Claude AI (Sonnet for routine pre-screening, Opus for full AI confirmation). Sends Telegram alerts with CONFIRM/REJECT buttons for human approval before execution.
 
 **This is NOT a fully autonomous bot.** Every trade requires your explicit confirmation via Telegram. You stay in control.
 
@@ -9,25 +9,35 @@ Automated Japan 225 Cash CFD scanning system on IG Markets. Scans every 2 hours 
 ## Architecture
 
 ```
-GitHub Actions (every 2 hours)           Oracle Cloud VM (always-on)
-┌──────────────────────────┐            ┌──────────────────────────┐
-│  1. Fetch IG price data  │            │  Telegram Bot (polling)  │
-│  2. Calculate indicators │            │  - /status /balance etc  │
-│  3. Web research (news)  │───alert──> │  - CONFIRM/REJECT trades │
-│  4. Sonnet 4.5 scan      │            │                          │
-│  5. Opus 4.6 confirm     │            │  Position Monitor (60s)  │
-│  6. Risk validation      │            │  - Phase 1: Fixed SL/TP  │
-│  7. Telegram alert       │            │  - Phase 2: Breakeven    │
-│  8. Save to SQLite       │            │  - Phase 3: Runner trail │
-│  9. Git commit           │            │  - Trade execution       │
-└──────────────────────────┘            └──────────────────────────┘
+Oracle Cloud VM (always-on, does everything)
+┌─────────────────────────────────────────────────────────────────┐
+│  monitor.py                                                     │
+│                                                                 │
+│  SCANNING MODE (no open position)                               │
+│  - Every 5 min during active sessions (Tokyo/London/NY)         │
+│  - Every 30 min off-hours (heartbeat only)                      │
+│  - Local pre-screen → confidence score → AI escalation          │
+│  - AI cooldown: 30 min between escalations (cost control)       │
+│  - Supports LONG and SHORT setups                               │
+│                                                                 │
+│  MONITORING MODE (position open)                                │
+│  - Every 60 seconds                                             │
+│  - 3-phase exit management (breakeven / runner)                 │
+│  - Adverse move alerts (mild / moderate / severe)               │
+│  - Stale data detection                                         │
+│                                                                 │
+│  TELEGRAM BOT (always listening)                                │
+│  - /status /balance /close etc.                                 │
+│  - CONFIRM / REJECT trade alerts                                │
+│  - Inline Close / Hold buttons on position alerts               │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Two processes, one system:**
+**One process, one VM:**
 
-- **Scanner (main.py):** Runs on GitHub Actions every 2 hours during market hours (Mon-Fri). Fetches prices, calculates indicators, runs AI analysis. If a setup is found with 70%+ confidence, sends a Telegram alert. Costs nothing to run.
+- **monitor.py:** Runs 24/7 on Oracle Cloud Free Tier. Scans for setups every 5 minutes during active market sessions, monitors open positions every 60 seconds, handles all Telegram commands, executes trades on user confirmation, and manages the 3-phase exit strategy.
 
-- **Monitor (monitor.py):** Runs 24/7 on Oracle Cloud Free Tier. Handles Telegram commands, executes trades on user confirmation, monitors open positions every 60 seconds, manages the 3-phase exit strategy. Also costs nothing.
+GitHub Actions is used **only for CI tests** (on pull requests). Scanning no longer runs on GitHub Actions.
 
 ---
 
@@ -35,14 +45,17 @@ GitHub Actions (every 2 hours)           Oracle Cloud VM (always-on)
 
 ```
 japan225-bot/
-├── main.py                    # Scan pipeline (GitHub Actions entry point)
-├── monitor.py                 # Position monitor + Telegram bot (Oracle VM)
+├── main.py                    # Legacy entry point (kept for reference)
+├── monitor.py                 # Main VM process: scan + monitor + Telegram
 ├── setup.sh                   # Interactive setup and verification script
 ├── config/
 │   └── settings.py            # All trading rules, constants, credentials
 ├── core/
 │   ├── ig_client.py           # IG Markets REST API wrapper
-│   └── indicators.py          # Bollinger, EMA, RSI, VWAP (pure math)
+│   ├── indicators.py          # Bollinger, EMA, RSI, VWAP (pure math)
+│   ├── session.py             # Session awareness (Tokyo/London/NY), no-trade days
+│   ├── momentum.py            # Momentum tracker + adverse move tier detection
+│   └── confidence.py          # Confidence scoring (LONG and SHORT)
 ├── ai/
 │   └── analyzer.py            # Claude AI analysis + web research
 ├── trading/
@@ -53,11 +66,10 @@ japan225-bot/
 ├── storage/
 │   └── database.py            # SQLite persistent state
 ├── tests/
-│   ├── test_indicators.py     # Indicator + math tests (23 tests)
-│   ├── test_risk_manager.py   # Risk + exit manager tests (21 tests)
-│   └── test_storage.py        # Database tests (15 tests)
+│   ├── test_indicators.py     # Indicator + math tests
+│   ├── test_risk_manager.py   # Risk + exit manager tests
+│   └── test_storage.py        # Database tests
 ├── .github/workflows/
-│   ├── scan.yml               # Cron scan schedule
 │   └── tests.yml              # CI test pipeline
 ├── .env.example               # Credential template
 ├── .gitignore
@@ -82,10 +94,7 @@ nano .env  # Fill in all values
 chmod +x setup.sh
 ./setup.sh
 
-# 4. Test a scan (paper mode)
-TRADING_MODE=paper python main.py
-
-# 5. Start the monitor
+# 4. Start the monitor (this is the only process needed)
 python monitor.py
 ```
 
@@ -103,9 +112,9 @@ python monitor.py
 
 ---
 
-## GitHub Secrets
+## Environment Variables
 
-Add these in your repo under **Settings > Secrets and variables > Actions:**
+Set these in your `.env` file on the Oracle VM:
 
 ```
 IG_API_KEY
@@ -125,33 +134,37 @@ TRADING_MODE    (paper or live)
 
 | Command | Description |
 |---------|-------------|
-| `/status` | Current position, balance, system state |
-| `/balance` | Account details, P&L, API costs |
+| `/status` | Current mode, position, balance, today's P&L |
+| `/balance` | Account details, compound plan progress |
 | `/journal` | Last 5 trades with results |
 | `/today` | Today's scan history |
 | `/stats` | Win rate, avg win/loss, performance |
 | `/cost` | Total API costs |
 | `/force` | Force an immediate scan |
-| `/stop` | Pause all scanning |
+| `/stop` or `/pause` | Pause new entries |
 | `/resume` | Resume scanning |
-| `/close` | Close any open position |
+| `/close` | Close any open position (asks for confirmation) |
+| `/kill` | EMERGENCY: close position immediately, no confirmation |
+
+Trade alerts also include inline **CONFIRM** / **REJECT** buttons. Position alerts include inline **Close now** / **Hold** buttons.
 
 ---
 
 ## How a Scan Works
 
-Every 2 hours during market hours:
+Every 5 minutes during active sessions:
 
-1. **Pre-checks:** System active? No open position?
-2. **IG API:** Fetch price data across 4 timeframes (Daily, 4H, 15M, 5M)
-3. **Indicators:** Calculate Bollinger Bands, EMA 50/200, RSI 14, VWAP
-4. **Web research:** News headlines, economic calendar, VIX, USD/JPY, Fear & Greed
-5. **Sonnet 4.5 scan:** Quick analysis for setup detection
-6. **Opus 4.6 confirmation:** Deep analysis only if Sonnet found something (saves cost)
-7. **Risk validation:** 11 independent checks must ALL pass
-8. **Telegram alert:** If everything passes, sends alert with CONFIRM/REJECT buttons
-9. **Wait for you:** Alert expires in 15 minutes if not confirmed
-10. **Execute:** On CONFIRM, the monitor places the trade via IG API
+1. **Session check:** Active session? (Tokyo / London / NY). Skip if off-hours or no-trade day.
+2. **Pre-check:** System active? No open position? Not in cooldown?
+3. **IG API:** Fetch 15M candles for local pre-screen.
+4. **Indicators:** Calculate Bollinger Bands, EMA 50/200, RSI, VWAP. Detect LONG or SHORT setup.
+5. **Confidence score:** Score the setup locally (0–100%). Skip AI if below threshold.
+6. **AI escalation (if passes):** Fetch 4H/Daily data + web research (news, VIX, USD/JPY, calendar).
+7. **Sonnet pre-screen:** Quick analysis to confirm the setup.
+8. **Opus confirmation:** Deep analysis only if Sonnet agrees (saves cost). 30-min AI cooldown.
+9. **Risk validation:** 11 independent checks must ALL pass.
+10. **Telegram alert:** CONFIRM/REJECT buttons. Alert expires in 15 minutes if not confirmed.
+11. **Execute:** On CONFIRM, trade placed via IG API.
 
 ---
 
@@ -159,7 +172,7 @@ Every 2 hours during market hours:
 
 | # | Check | Rule |
 |---|-------|------|
-| 1 | Confidence | Must be >= 70% (HARD FLOOR, cannot be overridden) |
+| 1 | Confidence | LONG >= 70%, SHORT >= 75% (hard floors, cannot be overridden) |
 | 2 | Margin | Must not exceed 50% of account balance |
 | 3 | Risk/Reward | Must be >= 1:1.5 after spread adjustment |
 | 4 | Max Positions | Only 1 open position at a time |
@@ -179,16 +192,16 @@ Base confidence starts at 30%. Each criterion adds 10 points. Capped at 100%.
 
 | Criterion | +10% if... |
 |-----------|-----------|
-| Daily Bullish | Price above EMA 200 on daily chart |
+| Daily Trend | Price above (LONG) or below (SHORT) EMA 200 on daily chart |
 | Entry at Tech Level | Entry at Bollinger midband or EMA 50 |
-| RSI 15M in Range | RSI between 35-55 on 15M |
+| RSI in Range | LONG: RSI 35–55 on 15M. SHORT: RSI 55–75 on 15M. |
 | TP Viable | Take profit achievable |
-| Higher Lows | Price making higher lows |
-| Macro Bullish | News/sentiment supports long |
+| Higher Lows / Lower Highs | Price structure confirms direction |
+| Macro Alignment | News/sentiment supports the trade direction |
 | No Event 1hr | No high-impact event within 1 hour |
 | No Friday/Month-End | Not Friday with data or last 2 days of month |
 
-**Minimum to trade: 70%.** 4 of 8 criteria plus the base must be met.
+**Minimum to trade: 70% (LONG), 75% (SHORT).** Shorts have a higher bar due to BOJ intervention risk.
 
 ---
 
@@ -202,25 +215,32 @@ Base confidence starts at 30%. Each criterion adds 10 points. Capped at 100%.
 
 The monitor checks every 60 seconds and auto-executes phase transitions.
 
+**Adverse move alerts** (while position open):
+- **+30pts against:** Alert only.
+- **+50pts against:** Alert + suggest close.
+- **+80pts against:** Auto-move SL to breakeven, then alert.
+
 ---
 
-## Scan Schedule (Kuwait Time, UTC+3)
+## Active Sessions (Kuwait Time, UTC+3)
+
+Scanning runs every **5 minutes** during these sessions. Off-hours = 30-minute heartbeat only.
 
 | Kuwait Time | Session | Priority |
 |-------------|---------|----------|
-| 03:00 | Tokyo Open | HIGH |
-| 05:00 | Mid Tokyo | HIGH |
-| 07:00 | Late Tokyo | MEDIUM |
-| 09:00 | Tokyo Close | MEDIUM |
-| 11:00 | London Open | HIGH |
-| 13:00 | Mid London | MEDIUM |
-| 15:00 | Late London | MEDIUM |
-| 17:30 | NY Open | HIGH |
-| 19:30 | Mid NY | MEDIUM |
-| 21:30 | Late NY | LOW |
-| 23:30 | NY Close | LOW |
+| 03:00–05:00 | Tokyo Open | HIGH |
+| 05:00–07:00 | Mid Tokyo | HIGH |
+| 07:00–09:00 | Late Tokyo | MEDIUM |
+| 09:00–11:00 | Tokyo Close | MEDIUM |
+| 11:00–13:00 | London Open | HIGH |
+| 13:00–15:00 | Mid London | MEDIUM |
+| 15:00–17:00 | Late London | MEDIUM |
+| 17:30–19:30 | NY Open | HIGH |
+| 19:30–21:30 | Mid NY | MEDIUM |
+| 21:30–23:30 | Late NY | LOW |
+| 00:00–03:00 | Off Hours | SKIP |
 
-11 scans per day, Monday through Friday.
+Monday through Friday only.
 
 ---
 
@@ -229,19 +249,18 @@ The monitor checks every 60 seconds and auto-executes phase transitions.
 | Item | Cost |
 |------|------|
 | IG Markets API | Free |
-| GitHub Actions | Free (2,000 min/month) |
 | Oracle Cloud VM | Free (Always Free Tier) |
 | Telegram | Free |
-| **Anthropic API** | **~$56/month** |
+| **Anthropic API** | **~$30–60/month** |
 
-Most scans use Sonnet only (~$0.02/scan). Opus is only called when Sonnet finds a setup (~$0.15/call), maybe 1-3 times per day.
+Most scans use local pre-screening only (no AI cost). AI (Sonnet + Opus) is only called when the local confidence score passes the threshold, with a 30-minute cooldown between AI calls. Typical: 1–5 AI escalations per day.
 
 ---
 
 ## Testing
 
 ```bash
-# Run all 59 tests (no credentials needed)
+# Run all tests (no credentials needed)
 python -m pytest tests/ -v
 
 # Run specific test file
@@ -252,8 +271,8 @@ python -m pytest tests/test_storage.py -v
 # Full setup verification (needs credentials)
 ./setup.sh
 
-# Paper mode scan
-TRADING_MODE=paper python main.py
+# Paper mode (live data, no real trades)
+TRADING_MODE=paper python monitor.py
 ```
 
 ---
@@ -264,10 +283,9 @@ See [DEPLOY.md](DEPLOY.md) for the full Oracle Cloud deployment guide.
 
 Quick summary:
 1. Create an Oracle Cloud Always Free VM (ARM, 1 OCPU, 6GB RAM)
-2. Clone repo, install Python 3.11+, set up .env
+2. Clone repo, install Python 3.10+, set up `.env`
 3. Run `./setup.sh` to verify everything
-4. Start the monitor with systemd (auto-restart on crash)
-5. Push to GitHub to enable the scan workflow
+4. Start monitor.py with systemd (auto-restart on crash)
 
 ---
 
@@ -275,9 +293,9 @@ Quick summary:
 
 - **Paper mode first.** Always test with `TRADING_MODE=paper` before going live.
 - **Demo account first.** Use `IG_ENV=demo` to test against IG's demo environment.
-- **Start small.** The compound plan starts at 0.01-0.02 lots for a reason.
+- **Start small.** The compound plan starts at 0.01–0.02 lots for a reason.
 - **This is a tool, not financial advice.** You are responsible for all trading decisions.
-- **The 70% confidence floor is hard-coded.** It cannot be overridden. Intentional.
+- **The confidence floors are hard-coded.** 70% LONG, 75% SHORT. Cannot be overridden. Intentional.
 
 ---
 

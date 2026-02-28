@@ -1,6 +1,8 @@
 # Deployment Guide - Oracle Cloud Free Tier
 
-Step-by-step guide to deploy the Japan 225 Trading Bot monitor on Oracle Cloud's Always Free Tier.
+Step-by-step guide to deploy the Japan 225 Trading Bot on Oracle Cloud's Always Free Tier.
+
+The entire bot runs as a **single process** (`monitor.py`) on the VM. There is no GitHub Actions scan job — all scanning, monitoring, and Telegram handling happens on the VM.
 
 ---
 
@@ -8,7 +10,6 @@ Step-by-step guide to deploy the Japan 225 Trading Bot monitor on Oracle Cloud's
 
 - Oracle Cloud account (free signup at cloud.oracle.com)
 - GitHub repository with the bot code pushed
-- All GitHub Secrets configured (see README.md)
 - Credentials tested locally with `./setup.sh`
 
 ---
@@ -37,7 +38,7 @@ ssh ubuntu@YOUR_PUBLIC_IP
 # Update system
 sudo apt update && sudo apt upgrade -y
 
-# Install Python 3.11+ and pip
+# Install Python 3.10+ and pip
 sudo apt install -y python3 python3-pip python3-venv git
 
 # Clone your repo
@@ -85,7 +86,7 @@ source venv/bin/activate
 ./setup.sh
 ```
 
-All 8 checks should pass. If any fail, fix the credentials and retry.
+All checks should pass. If any fail, fix the credentials and retry.
 
 ---
 
@@ -101,7 +102,7 @@ Paste this content:
 
 ```ini
 [Unit]
-Description=Japan 225 Trading Bot Monitor
+Description=Japan 225 Trading Bot
 After=network.target
 
 [Service]
@@ -139,18 +140,8 @@ sudo systemctl status japan225-bot
 sudo journalctl -u japan225-bot -f
 
 # Test via Telegram
-# Send /status to your bot - it should respond
+# Send /status to your bot — it should respond
 ```
-
----
-
-## Step 7: Enable GitHub Actions Scanning
-
-1. Push your code to GitHub (if not already)
-2. Go to your repo > **Actions** tab
-3. The "Japan 225 Scan" workflow should appear
-4. It will auto-run on the cron schedule (every 2 hours Mon-Fri)
-5. You can also trigger it manually via **Run workflow**
 
 ---
 
@@ -180,14 +171,10 @@ df -h
 
 ## Database Architecture
 
-The SQLite database lives **exclusively on the Oracle Cloud VM** at `storage/data/trading.db`.
+The SQLite database lives **exclusively on the Oracle Cloud VM** at `storage/data/trading.db`. It is written only by `monitor.py`.
 
-**GitHub Actions does NOT write to the database.** The scan workflow runs AI analysis and sends trade alerts via Telegram, but all persistent state (trades, positions, account history, scan history) is written only by `monitor.py` on the VM.
-
-This means:
-- No `git pull` cron job needed — there is no DB to sync from GitHub
-- No DB lock conflicts — only one process writes
-- DB is never accidentally overwritten by a `git pull`
+- No sync needed — one process, one DB, one VM.
+- DB is never touched by any external job.
 
 To back up the database from the VM:
 
@@ -213,37 +200,37 @@ If Oracle Cloud's default security list blocks outbound traffic:
 Before switching from paper to live:
 
 - [ ] Ran successfully in paper mode for at least 1 week
-- [ ] All Telegram commands respond correctly
-- [ ] Scans run on schedule (check GitHub Actions history)
+- [ ] All Telegram commands respond correctly (`/status`, `/balance`, `/close`, `/kill`)
+- [ ] Scanning runs on schedule (check logs — should see 5-min scan attempts during sessions)
 - [ ] Position monitoring works (tested with paper trades)
-- [ ] Exit strategy phases trigger correctly
-- [ ] Alert expiry works (unconfirmed alerts auto-expire)
-- [ ] System pause/resume works via /stop and /resume
+- [ ] Exit strategy phases trigger correctly (breakeven at +150pts, runner at 75% TP)
+- [ ] Alert expiry works (unconfirmed alerts auto-expire after 15 min)
+- [ ] System pause/resume works via `/stop` and `/resume`
+- [ ] Inline Close/Hold buttons work on position alerts
 
 When ready:
 1. Edit `.env` on the Oracle VM: change `TRADING_MODE=live` and `IG_ENV=live`
-2. Update GitHub Secrets: `TRADING_MODE=live` and `IG_ENV=live`
-3. Restart: `sudo systemctl restart japan225-bot`
-4. Start with minimum lot sizes (0.01-0.02)
+2. Restart: `sudo systemctl restart japan225-bot`
+3. Start with minimum lot sizes (0.01–0.02)
 
 ---
 
 ## Troubleshooting
 
 **Monitor crashes and restarts:**
-Systemd auto-restarts after 30 seconds. Check logs with `journalctl -u japan225-bot --since "10 min ago"`.
+Systemd auto-restarts after 30 seconds. Check logs: `journalctl -u japan225-bot --since "10 min ago"`.
 
 **IG API connection fails:**
 Tokens expire after ~6 hours. The bot auto-reauthenticates. If persistent, check credentials.
 
 **Telegram bot not responding:**
-Ensure only ONE instance of monitor.py is running. Two instances will fight over Telegram updates.
+Ensure only ONE instance of `monitor.py` is running. Two instances will fight over Telegram updates: `ps aux | grep monitor.py`.
 
-**GitHub Actions scan fails:**
-Check the Actions tab for error logs. Most common: expired secrets or IG API downtime.
+**Scans not firing every 5 minutes:**
+Check that the VM clock is correct (`date`) and that the current time is within an active session (Tokyo/London/NY in Kuwait time UTC+3). Off-hours = 30-min heartbeat only.
 
 **Database locked errors:**
-The database lives only on the VM and is written only by `monitor.py`. If you see lock errors, ensure only one instance of `monitor.py` is running: `ps aux | grep monitor.py`.
+Only one instance of `monitor.py` should be running. Check: `ps aux | grep monitor.py`. Kill duplicates.
 
 ---
 

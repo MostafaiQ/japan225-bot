@@ -21,6 +21,7 @@ Thumbs.db
 # Logs (keep structure, ignore contents)
 logs/*.log
 
-# Do NOT ignore storage/ - we want the database committed
-# !storage/data/trading.db
+# DB lives on VM only — never commit
+storage/data/trading.db
+storage/data/*.db
 .env*
