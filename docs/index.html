@@ -941,8 +941,7 @@ function fmtDt(iso) {
 (function init() {
   document.getElementById('lTabScan').style.color = 'var(--primary)';
   if (!S.url) {
-    showNotConfigured();
-    openSettings();
+    showNotConfigured();   // shows "Click ⚙ to configure" — no modal, no blocking overlay
   } else {
     loadOverview();
   }
