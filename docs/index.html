@@ -236,6 +236,31 @@
     ::-webkit-scrollbar-track { background:transparent; }
     ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
 
+    /* ── dvh: iOS Safari address-bar viewport fix ── */
+    @supports (height: 100dvh) { #app { height: 100dvh; } }
+
+    /* ── Mobile (≤640px) ── */
+    @media (max-width: 640px) {
+      #header { padding: 8px 14px; }
+      .header-left { gap: 8px; }
+      .logo { font-size: 13px; }
+      .last-update { display: none; }
+      .status-pill { padding: 2px 8px; font-size: 11px; }
+      #tabs { padding: 0 4px; }
+      .tab { padding: 9px 10px; font-size: 12px; }
+      #content { padding: 10px 12px; }
+      .card { padding: 12px; }
+      .chat-box { height: 44vh; }
+      .log-box  { height: 44vh; }
+      /* Prevent iOS auto-zoom on focus */
+      .form-input, .chat-input { font-size: 16px; }
+      /* Larger tap targets */
+      .btn { min-height: 42px; padding: 10px 14px; }
+      .btn-sm { min-height: 34px; padding: 6px 10px; }
+      .icon-btn { width: 36px; height: 36px; }
+      .modal { padding: 18px 14px; }
+    }
+
     /* ── Markdown in chat bubbles ── */
     .bubble.md { line-height: 1.6; }
     .bubble.md p { margin: 0 0 8px; }
@@ -565,6 +590,26 @@ const S = {
 };
 
 // ══════════════════════════════════════════════
+//  CROSS-TAB SYNC (BroadcastChannel)
+// ══════════════════════════════════════════════
+const bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('j225') : null;
+if (bc) {
+  bc.onmessage = e => {
+    const { type, data } = e.data;
+    if (type === 'chat') {
+      // Another tab updated chat — re-render our chat box
+      S.chat = data;
+      const box = document.getElementById('chatBox');
+      if (box) { box.innerHTML = ''; data.forEach(m => addMsg(m.role, m.content)); }
+    } else if (type === 'config-changed') {
+      // Another tab saved config — reload ours from server
+      if (S.url && S.tab === 'config') loadConfig();
+    }
+  };
+}
+function bcPost(type, data) { if (bc) bc.postMessage({ type, data }); }
+
+// ══════════════════════════════════════════════
 //  API
 // ══════════════════════════════════════════════
 async function req(method, path, body) {
@@ -752,6 +797,7 @@ async function saveHot() {
       DEBUG:                 document.getElementById('cDebug').checked,
     });
     alert2('cfgHotAlert', 'ok', '✓ Hot config applied.');
+    bcPost('config-changed', null);
   } catch(e) { alert2('cfgHotAlert', 'err', '✗ ' + e.message); }
 }
 async function saveRestart() {
@@ -765,6 +811,7 @@ async function saveRestart() {
       MAX_MARGIN_PERCENT:     +document.getElementById('cMargin').value / 100,
     });
     alert2('cfgRestartAlert', 'ok', '✓ Saved. Bot restarting…');
+    bcPost('config-changed', null);
   } catch(e) { alert2('cfgRestartAlert', 'err', '✗ ' + e.message); }
 }
 
@@ -870,6 +917,7 @@ function addMsg(role, text, time) {
 
 function _saveHistory() {
   localStorage.setItem('chatHistory', JSON.stringify(S.chat));
+  bcPost('chat', S.chat);
 }
 
 function clearChat() {
