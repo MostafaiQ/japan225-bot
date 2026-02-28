@@ -477,7 +477,10 @@
       <div class="card">
         <div class="flex-between" style="margin-bottom:8px;">
           <div class="card-title" style="margin-bottom:0">Ask Claude About the Bot</div>
-          <button class="btn btn-ghost btn-sm" onclick="clearChat()">Clear history</button>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span id="chatCostBadge" style="font-size:11px;color:var(--text-muted);">cost today: —</span>
+            <button class="btn btn-ghost btn-sm" onclick="clearChat()">Clear history</button>
+          </div>
         </div>
         <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Fully agentic — Claude can read files, fix bugs, run commands, and push to GitHub.</p>
         <div id="chatBox" class="chat-box">
@@ -648,6 +651,7 @@ function switchTab(btn, name) {
   S.tab = name;
   const loaders = { overview: loadOverview, history: loadHistory, logs: loadLogs, config: loadConfig };
   if (loaders[name]) loaders[name]();
+  if (name === 'chat') _refreshChatCost();
 }
 function refreshCurrent() {
   const loaders = { overview: loadOverview, history: loadHistory, logs: loadLogs, config: loadConfig };
@@ -900,6 +904,7 @@ async function sendChat() {
     S.chat.push({ role:'assistant', content: reply });
     _saveHistory();
     addMsg('assistant', reply);
+    _refreshChatCost();
   } catch(e) { addMsg('assistant', '⚠ Error: ' + e.message); }
   finally { btn.disabled = false; btn.innerHTML = 'Send'; }
 }
@@ -982,6 +987,19 @@ function clearChat() {
     <div class="bubble md">${marked.parse("Hi! I'm Claude, connected to your Japan 225 bot. I can read files, fix bugs, check logs, and push changes to GitHub. What do you need?")}</div>
     <div class="chat-time">System</div>
   </div>`;
+}
+
+// ── Chat cost badge ────────────────────────────
+async function _refreshChatCost() {
+  if (!S.url) return;
+  try {
+    const d = await req('GET', '/api/chat/costs');
+    const badge = document.getElementById('chatCostBadge');
+    if (!badge) return;
+    const today = d.today_usd != null ? '$' + d.today_usd.toFixed(4) : '—';
+    const total = d.total_usd != null ? '$' + d.total_usd.toFixed(4) : '—';
+    badge.textContent = `chat today: ${today} · total: ${total}`;
+  } catch(_) {}
 }
 
 // ══════════════════════════════════════════════
@@ -1094,8 +1112,10 @@ function fmtDt(iso) {
     loadOverview();
   }
   _initChat();                                                         // server-first, localStorage fallback
+  _refreshChatCost();                                                  // show cost badge immediately
   setInterval(() => { if (S.tab === 'overview' && S.url) loadOverview(); }, 15000);  // overview auto-refresh
   setInterval(_pollHistory, 5000);                                     // cross-device chat sync
+  setInterval(_refreshChatCost, 30000);                               // chat cost badge refresh
 })();
 </script>
 </body>
