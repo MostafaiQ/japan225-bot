@@ -42,6 +42,7 @@ class Storage:
     def _init_db(self):
         """Create tables if they don't exist."""
         with self._conn() as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS scans (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

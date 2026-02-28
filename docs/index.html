@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Japan 225 Bot</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #060b18;
+      --surface: #0c1220;
+      --card: #101929;
+      --card-hover: #151f30;
+      --border: #1e2d45;
+      --border-bright: #2d4166;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --long: #10b981;
+      --short: #ef4444;
+      --warning: #f59e0b;
+      --text: #e2e8f0;
+      --text-dim: #94a3b8;
+      --text-muted: #4e6282;
+      --radius: 8px;
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      --font-mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    }
+
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.5; overflow: hidden; }
+
+    /* ── Layout ── */
+    #app { display: flex; flex-direction: column; height: 100vh; }
+
+    /* ── Header ── */
+    #header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 20px; background: var(--surface);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .header-left { display: flex; align-items: center; gap: 14px; }
+    .logo { font-size: 15px; font-weight: 700; letter-spacing: -0.3px; }
+    .logo span { color: var(--primary); }
+    .status-pill {
+      display: flex; align-items: center; gap: 6px;
+      padding: 3px 10px; border-radius: 20px;
+      background: var(--card); border: 1px solid var(--border);
+      font-size: 12px; color: var(--text-dim);
+    }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; }
+    .status-dot.ok { background: var(--long); box-shadow: 0 0 5px var(--long); animation: blink 2.5s ease-in-out infinite; }
+    .status-dot.err { background: var(--short); }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .header-right { display: flex; align-items: center; gap: 8px; }
+    .last-update { font-size: 11px; color: var(--text-muted); }
+
+    /* ── Tabs ── */
+    #tabs {
+      display: flex; gap: 0; padding: 0 16px;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      flex-shrink: 0; overflow-x: auto;
+    }
+    #tabs::-webkit-scrollbar { display: none; }
+    .tab {
+      padding: 10px 18px; background: none; border: none;
+      border-bottom: 2px solid transparent; color: var(--text-muted);
+      cursor: pointer; font-size: 13px; font-weight: 500;
+      white-space: nowrap; transition: color .15s, border-color .15s;
+    }
+    .tab:hover { color: var(--text-dim); }
+    .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+
+    /* ── Content ── */
+    #content { flex: 1; overflow-y: auto; padding: 18px 20px; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ── Grid ── */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+    @media(max-width:900px) { .grid-2,.grid-3 { grid-template-columns: 1fr; } }
+
+    /* ── Cards ── */
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+    .card-title {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 1px; color: var(--text-muted); margin-bottom: 14px;
+    }
+
+    /* ── Stat rows ── */
+    .stat-row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--border); }
+    .stat-row:last-child { border-bottom: none; }
+    .stat-label { font-size: 12px; color: var(--text-dim); }
+    .stat-value { font-size: 13px; font-weight: 600; }
+
+    /* ── Badges ── */
+    .badge { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 700; letter-spacing: .3px; }
+    .b-long   { background: rgba(16,185,129,.12); color: var(--long); }
+    .b-short  { background: rgba(239,68,68,.12);  color: var(--short); }
+    .b-neutral{ background: rgba(148,163,184,.1); color: var(--text-dim); }
+    .b-warn   { background: rgba(245,158,11,.12); color: var(--warning); }
+    .b-blue   { background: rgba(59,130,246,.12); color: var(--primary); }
+
+    /* ── PnL ── */
+    .pnl-big { font-size: 30px; font-weight: 800; line-height: 1; }
+    .c-long { color: var(--long); }
+    .c-short { color: var(--short); }
+    .c-dim { color: var(--text-dim); }
+    .c-warn { color: var(--warning); }
+
+    /* ── No-position ── */
+    .no-pos { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:36px 20px; color:var(--text-muted); gap:8px; }
+    .no-pos svg { opacity:.3; }
+
+    /* ── Phase bar ── */
+    .phase-bar { margin-top: 14px; }
+    .phase-lbl { font-size:11px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.5px; margin-bottom:6px; }
+    .phase-steps { display:flex; gap:4px; }
+    .phase-step { flex:1; height:3px; border-radius:2px; background:var(--border); }
+    .phase-step.done { background:var(--long); }
+    .phase-step.active { background:var(--primary); }
+
+    /* ── Table ── */
+    .tbl-wrap { overflow-x: auto; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th { text-align:left; padding:7px 12px; color:var(--text-muted); font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; border-bottom:1px solid var(--border); white-space:nowrap; }
+    td { padding:9px 12px; border-bottom:1px solid var(--border); color:var(--text-dim); }
+    tr:last-child td { border-bottom:none; }
+    tr:hover td { background:var(--card-hover); }
+
+    /* ── Buttons ── */
+    .btn {
+      display:inline-flex; align-items:center; gap:6px;
+      padding:7px 14px; border:none; border-radius:var(--radius);
+      font-size:13px; font-weight:500; cursor:pointer; transition:all .15s; white-space:nowrap;
+    }
+    .btn:disabled { opacity:.5; cursor:not-allowed; }
+    .btn-primary { background:var(--primary); color:#fff; }
+    .btn-primary:hover:not(:disabled) { background:var(--primary-hover); }
+    .btn-ghost { background:var(--border); color:var(--text-dim); }
+    .btn-ghost:hover:not(:disabled) { background:var(--border-bright); color:var(--text); }
+    .btn-danger { background:rgba(239,68,68,.12); color:var(--short); border:1px solid rgba(239,68,68,.25); }
+    .btn-danger:hover:not(:disabled) { background:rgba(239,68,68,.22); }
+    .btn-warn { background:rgba(245,158,11,.12); color:var(--warning); border:1px solid rgba(245,158,11,.25); }
+    .btn-warn:hover:not(:disabled) { background:rgba(245,158,11,.22); }
+    .btn-success { background:rgba(16,185,129,.12); color:var(--long); border:1px solid rgba(16,185,129,.25); }
+    .btn-success:hover:not(:disabled) { background:rgba(16,185,129,.22); }
+    .btn-sm { padding:5px 10px; font-size:12px; }
+    .icon-btn {
+      width:30px; height:30px; padding:0; border-radius:6px;
+      display:inline-flex; align-items:center; justify-content:center;
+      background:none; border:1px solid var(--border); color:var(--text-dim); cursor:pointer; transition:all .15s;
+    }
+    .icon-btn:hover { background:var(--border); color:var(--text); }
+
+    /* ── Forms ── */
+    .form-group { margin-bottom:13px; }
+    .form-label { display:block; font-size:11px; font-weight:600; color:var(--text-dim); margin-bottom:5px; text-transform:uppercase; letter-spacing:.4px; }
+    .form-input {
+      width:100%; padding:8px 10px;
+      background:var(--bg); border:1px solid var(--border); border-radius:6px;
+      color:var(--text); font-size:13px; outline:none; transition:border-color .15s;
+    }
+    .form-input:focus { border-color:var(--primary); }
+    .form-hint { font-size:11px; color:var(--text-muted); margin-top:3px; }
+
+    /* ── Range ── */
+    .range-row { display:flex; align-items:center; gap:10px; }
+    input[type=range] { flex:1; -webkit-appearance:none; height:3px; background:var(--border); border-radius:2px; outline:none; }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:13px; height:13px; border-radius:50%; background:var(--primary); cursor:pointer; }
+    .range-val { min-width:36px; text-align:right; font-size:13px; font-weight:700; color:var(--text); }
+
+    /* ── Toggle ── */
+    .toggle-row { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border); }
+    .toggle-row:last-child { border-bottom:none; }
+    .toggle-info .t-name { font-size:13px; font-weight:500; }
+    .toggle-info .t-desc { font-size:11px; color:var(--text-muted); margin-top:1px; }
+    .toggle { position:relative; width:34px; height:19px; flex-shrink:0; cursor:pointer; }
+    .toggle input { opacity:0; width:0; height:0; }
+    .tgl-slider { position:absolute; inset:0; background:var(--border); border-radius:20px; transition:.2s; }
+    .tgl-slider::before { content:''; position:absolute; width:13px; height:13px; left:3px; bottom:3px; background:#fff; border-radius:50%; transition:.2s; }
+    .toggle input:checked + .tgl-slider { background:var(--primary); }
+    .toggle input:checked + .tgl-slider::before { transform:translateX(15px); }
+
+    /* ── Log box ── */
+    .log-box {
+      background:var(--bg); border:1px solid var(--border); border-radius:6px;
+      padding:12px; height:340px; overflow-y:auto;
+      font-family:var(--font-mono); font-size:12px; line-height:1.7; color:var(--text-dim);
+    }
+    .l-info  { color:var(--text-muted); }
+    .l-warn  { color:var(--warning); }
+    .l-err   { color:var(--short); }
+    .l-trade { color:var(--long); font-weight:600; }
+
+    /* ── Chat ── */
+    .chat-box { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:14px; height:360px; overflow-y:auto; display:flex; flex-direction:column; gap:12px; }
+    .chat-msg { display:flex; flex-direction:column; max-width:82%; }
+    .chat-msg.user { align-self:flex-end; align-items:flex-end; }
+    .chat-msg.assistant { align-self:flex-start; }
+    .bubble { padding:9px 13px; border-radius:12px; font-size:13px; line-height:1.5; }
+    .chat-msg.user .bubble { background:var(--primary); color:#fff; border-radius:12px 12px 2px 12px; }
+    .chat-msg.assistant .bubble { background:var(--card); border:1px solid var(--border); color:var(--text); border-radius:12px 12px 12px 2px; }
+    .chat-time { font-size:10px; color:var(--text-muted); margin-top:3px; padding:0 4px; }
+    .chat-input-row { display:flex; gap:8px; margin-top:10px; }
+    .chat-input { flex:1; padding:9px 12px; background:var(--bg); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:13px; outline:none; resize:none; min-height:40px; max-height:120px; font-family:var(--font); }
+    .chat-input:focus { border-color:var(--primary); }
+
+    /* ── Alerts ── */
+    .alert { padding:9px 13px; border-radius:6px; font-size:13px; display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+    .alert.hidden { display:none; }
+    .a-err  { background:rgba(239,68,68,.1); border:1px solid rgba(239,68,68,.2); color:#fca5a5; }
+    .a-ok   { background:rgba(16,185,129,.1); border:1px solid rgba(16,185,129,.2); color:#6ee7b7; }
+    .a-warn { background:rgba(245,158,11,.1); border:1px solid rgba(245,158,11,.2); color:#fcd34d; }
+
+    /* ── Modals ── */
+    .overlay { position:fixed; inset:0; background:rgba(0,0,0,.75); display:flex; align-items:center; justify-content:center; z-index:200; backdrop-filter:blur(4px); }
+    .overlay.hidden { display:none; }
+    .modal { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:24px; width:420px; max-width:92vw; }
+    .modal-title { font-size:16px; font-weight:700; margin-bottom:5px; }
+    .modal-desc { font-size:13px; color:var(--text-muted); margin-bottom:18px; }
+
+    /* ── Misc ── */
+    .spinner { display:inline-block; width:13px; height:13px; border:2px solid var(--border); border-top-color:var(--primary); border-radius:50%; animation:spin .6s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .empty { text-align:center; padding:36px 16px; color:var(--text-muted); font-size:13px; }
+    .flex-row { display:flex; align-items:center; gap:8px; }
+    .flex-between { display:flex; justify-content:space-between; align-items:center; }
+    .mt-14 { margin-top:14px; }
+    .mt-10 { margin-top:10px; }
+    .section-sep { border-top:1px solid var(--border); margin:18px 0 14px; }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width:5px; height:5px; }
+    ::-webkit-scrollbar-track { background:transparent; }
+    ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ═══ HEADER ═══ -->
+  <header id="header">
+    <div class="header-left">
+      <span class="logo">Japan <span>225</span> Bot</span>
+      <div class="status-pill">
+        <span class="status-dot" id="sDot"></span>
+        <span id="sLabel">Not connected</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <span class="last-update" id="lastUpdate"></span>
+      <button class="icon-btn" onclick="refreshCurrent()" title="Refresh">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0018.49 15"/></svg>
+      </button>
+      <button class="icon-btn" onclick="openSettings()" title="API Settings">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ═══ TABS ═══ -->
+  <nav id="tabs">
+    <button class="tab active" data-tab="overview" onclick="switchTab(this,'overview')">Overview</button>
+    <button class="tab" data-tab="config"   onclick="switchTab(this,'config')">Config</button>
+    <button class="tab" data-tab="history"  onclick="switchTab(this,'history')">History</button>
+    <button class="tab" data-tab="logs"     onclick="switchTab(this,'logs')">Logs</button>
+    <button class="tab" data-tab="chat"     onclick="switchTab(this,'chat')">Chat</button>
+    <button class="tab" data-tab="controls" onclick="switchTab(this,'controls')">Controls</button>
+  </nav>
+
+  <!-- ═══ CONTENT ═══ -->
+  <main id="content">
+
+    <!-- ── Overview ── -->
+    <div id="tab-overview" class="tab-panel active">
+      <div class="grid-2" style="margin-bottom:14px;">
+        <div class="card">
+          <div class="card-title">Bot Status</div>
+          <div id="statusRows"><div class="empty"><span class="spinner"></span></div></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Active Position</div>
+          <div id="posPanel"><div class="empty"><span class="spinner"></span></div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="flex-between" style="margin-bottom:12px;">
+          <div class="card-title" style="margin-bottom:0">Recent Scans</div>
+          <button class="btn btn-ghost btn-sm" onclick="loadOverview()">Refresh</button>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Time</th><th>Session</th><th>Price</th><th>Direction</th><th>Confidence</th><th>Action</th></tr></thead>
+            <tbody id="scansBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Config ── -->
+    <div id="tab-config" class="tab-panel">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">Hot-Reload Settings</div>
+          <p style="font-size:11px;color:var(--text-muted);margin-bottom:14px;">Applied immediately — no restart needed</p>
+
+          <div class="form-group">
+            <div class="form-label">Min Confidence LONG (%)</div>
+            <div class="range-row">
+              <input type="range" id="cMinConf" min="50" max="95" step="5" oninput="syncRange(this,'vMinConf')">
+              <span class="range-val" id="vMinConf">70</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <div class="form-label">Min Confidence SHORT (%)</div>
+            <div class="range-row">
+              <input type="range" id="cMinConfS" min="50" max="95" step="5" oninput="syncRange(this,'vMinConfS')">
+              <span class="range-val" id="vMinConfS">75</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <div class="form-label">AI Cooldown (min)</div>
+            <div class="range-row">
+              <input type="range" id="cAICool" min="5" max="120" step="5" oninput="syncRange(this,'vAICool')">
+              <span class="range-val" id="vAICool">30</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <div class="form-label">Scan Interval (sec)</div>
+            <div class="range-row">
+              <input type="range" id="cScanInt" min="60" max="600" step="30" oninput="syncRange(this,'vScanInt')">
+              <span class="range-val" id="vScanInt">300</span>
+            </div>
+          </div>
+
+          <div class="toggle-row">
+            <div class="toggle-info">
+              <div class="t-name">Pause Scanning</div>
+              <div class="t-desc">Halt all market scans temporarily</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="cPaused"><span class="tgl-slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div class="toggle-info">
+              <div class="t-name">Debug Mode</div>
+              <div class="t-desc">Verbose logging output</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="cDebug"><span class="tgl-slider"></span></label>
+          </div>
+
+          <div class="mt-14">
+            <button class="btn btn-primary" onclick="saveHot()">Apply Hot Config</button>
+          </div>
+          <div id="cfgHotAlert" class="alert hidden mt-10"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Restart-Required Settings</div>
+          <p style="font-size:11px;color:var(--text-muted);margin-bottom:14px;">Blocked while position is open · Triggers bot restart on save</p>
+
+          <div class="form-group">
+            <div class="form-label">Breakeven Trigger (pts)</div>
+            <input type="number" class="form-input" id="cBreakeven" value="150">
+          </div>
+          <div class="form-group">
+            <div class="form-label">Trailing Stop Distance (pts)</div>
+            <input type="number" class="form-input" id="cTrailing" value="150">
+          </div>
+          <div class="form-group">
+            <div class="form-label">Default SL Distance (pts)</div>
+            <input type="number" class="form-input" id="cSL" value="200">
+          </div>
+          <div class="form-group">
+            <div class="form-label">Default TP Distance (pts)</div>
+            <input type="number" class="form-input" id="cTP" value="400">
+          </div>
+          <div class="form-group">
+            <div class="form-label">Max Margin (%)</div>
+            <input type="number" class="form-input" id="cMargin" value="50" min="1" max="100">
+            <div class="form-hint">Percentage of account balance</div>
+          </div>
+
+          <div class="mt-14">
+            <button class="btn btn-warn" onclick="saveRestart()">Save &amp; Restart Bot</button>
+          </div>
+          <div id="cfgRestartAlert" class="alert hidden mt-10"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── History ── -->
+    <div id="tab-history" class="tab-panel">
+      <div class="card">
+        <div class="flex-between" style="margin-bottom:12px;">
+          <div class="card-title" style="margin-bottom:0">Trade Journal</div>
+          <div class="flex-row">
+            <span id="histStats" style="font-size:12px;color:var(--text-muted);"></span>
+            <button class="btn btn-ghost btn-sm" onclick="loadHistory()">Refresh</button>
+          </div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Date</th><th>Dir</th><th>Entry</th><th>Exit</th><th>PnL (pts)</th><th>Duration</th><th>Phase</th><th>Reason</th></tr></thead>
+            <tbody id="histBody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Logs ── -->
+    <div id="tab-logs" class="tab-panel">
+      <div class="card">
+        <div class="flex-between" style="margin-bottom:12px;">
+          <div class="card-title" style="margin-bottom:0">Log Viewer</div>
+          <div class="flex-row">
+            <button class="btn btn-ghost btn-sm" id="lTabScan" onclick="switchLogType('scan')">Scan Log</button>
+            <button class="btn btn-ghost btn-sm" id="lTabSys" onclick="switchLogType('system')">System Log</button>
+            <button class="btn btn-ghost btn-sm" onclick="loadLogs()">Refresh</button>
+          </div>
+        </div>
+        <div id="logBox" class="log-box">Loading…</div>
+      </div>
+    </div>
+
+    <!-- ── Chat ── -->
+    <div id="tab-chat" class="tab-panel">
+      <div class="card">
+        <div class="card-title">Ask Claude About the Bot</div>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Claude has MEMORY.md + module digests as context. History capped at 10 turns.</p>
+        <div id="chatBox" class="chat-box">
+          <div class="chat-msg assistant">
+            <div class="bubble">Hi! I'm Claude, connected to your Japan 225 bot codebase. Ask me anything — strategy logic, config decisions, recent scan analysis, or debugging help.</div>
+            <div class="chat-time">System</div>
+          </div>
+        </div>
+        <div class="chat-input-row">
+          <textarea id="chatInput" class="chat-input" rows="1" placeholder="Ask about the bot…" onkeydown="chatKey(event)"></textarea>
+          <button class="btn btn-primary" id="chatBtn" onclick="sendChat()">Send</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Controls ── -->
+    <div id="tab-controls" class="tab-panel">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">Bot Controls</div>
+          <div id="ctrlAlert" class="alert hidden"></div>
+
+          <div style="display:flex;flex-direction:column;gap:0;">
+            <div style="padding:14px 0;border-bottom:1px solid var(--border);">
+              <div style="font-weight:600;font-size:13px;margin-bottom:3px;">Force Scan</div>
+              <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Trigger an immediate market scan now</div>
+              <button class="btn btn-success" onclick="doControl('force-scan')">▶ Force Scan Now</button>
+            </div>
+            <div style="padding:14px 0;border-bottom:1px solid var(--border);">
+              <div style="font-weight:600;font-size:13px;margin-bottom:3px;">Restart Bot</div>
+              <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Restarts monitor service. Warns if position is open.</div>
+              <button class="btn btn-warn" onclick="doControl('restart')">↺ Restart Bot</button>
+            </div>
+            <div style="padding:14px 0;">
+              <div style="font-weight:600;font-size:13px;margin-bottom:3px;">Stop Bot</div>
+              <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Stops the monitor service entirely</div>
+              <button class="btn btn-danger" onclick="doControl('stop')">■ Stop Bot</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Apply Code Fix</div>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Paste a unified diff — applied, committed, and pushed automatically.</p>
+          <div class="form-group">
+            <div class="form-label">Target File (relative path)</div>
+            <input type="text" class="form-input" id="fixTarget" placeholder="core/indicators.py">
+          </div>
+          <div class="form-group">
+            <div class="form-label">Unified Diff</div>
+            <textarea class="form-input" id="fixDiff" rows="9"
+              style="font-family:var(--font-mono);font-size:12px;"
+              placeholder="--- a/core/indicators.py&#10;+++ b/core/indicators.py&#10;@@ ..."></textarea>
+          </div>
+          <div id="fixAlert" class="alert hidden"></div>
+          <button class="btn btn-primary mt-10" onclick="applyFix()">Apply &amp; Push Fix</button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ═══ SETTINGS MODAL ═══ -->
+<div id="settingsOverlay" class="overlay hidden">
+  <div class="modal">
+    <div class="modal-title">⚙ API Connection</div>
+    <div class="modal-desc">Your backend URL and token are saved only in your browser (localStorage).</div>
+    <div class="form-group">
+      <div class="form-label">Backend API URL</div>
+      <input type="url" class="form-input" id="sUrl" placeholder="https://xxxx.ngrok-free.app">
+      <div class="form-hint">ngrok / Cloudflare tunnel URL — no trailing slash</div>
+    </div>
+    <div class="form-group">
+      <div class="form-label">Dashboard Token</div>
+      <input type="password" class="form-input" id="sToken" placeholder="••••••••••••••••">
+      <div class="form-hint">DASHBOARD_TOKEN from your .env file</div>
+    </div>
+    <div id="sAlert" class="alert hidden"></div>
+    <div class="flex-row mt-14">
+      <button class="btn btn-primary" onclick="saveSettings()">Save &amp; Connect</button>
+      <button class="btn btn-ghost" onclick="closeSettings()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ CONFIRM MODAL ═══ -->
+<div id="confirmOverlay" class="overlay hidden">
+  <div class="modal">
+    <div class="modal-title" id="confTitle"></div>
+    <div class="modal-desc" id="confDesc"></div>
+    <div class="flex-row mt-14">
+      <button class="btn btn-danger" id="confOk">Confirm</button>
+      <button class="btn btn-ghost" onclick="closeConfirm(false)">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════
+const S = {
+  url:    localStorage.getItem('apiUrl')   || '',
+  token:  localStorage.getItem('apiToken') || '',
+  tab:    'overview',
+  logType: 'scan',
+  chat:   [],          // history [{role,content}]
+  timer:  null,
+};
+
+// ══════════════════════════════════════════════
+//  API
+// ══════════════════════════════════════════════
+async function req(method, path, body) {
+  if (!S.url) throw Object.assign(new Error('NOT_CONFIGURED'), {code:'NOT_CONFIGURED'});
+  const r = await fetch(S.url + path, {
+    method,
+    headers: { 'Authorization': 'Bearer ' + S.token, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.detail || 'HTTP ' + r.status);
+  return d;
+}
+
+// ══════════════════════════════════════════════
+//  CONNECTION UI
+// ══════════════════════════════════════════════
+function setConn(state, label) {
+  const dot = document.getElementById('sDot');
+  const lbl = document.getElementById('sLabel');
+  dot.className = 'status-dot' + (state === 'ok' ? ' ok' : state === 'err' ? ' err' : '');
+  lbl.textContent = label;
+}
+function touchUpdate() {
+  document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+// ══════════════════════════════════════════════
+//  TABS
+// ══════════════════════════════════════════════
+function switchTab(btn, name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  S.tab = name;
+  const loaders = { overview: loadOverview, history: loadHistory, logs: loadLogs, config: loadConfig };
+  if (loaders[name]) loaders[name]();
+}
+function refreshCurrent() {
+  const loaders = { overview: loadOverview, history: loadHistory, logs: loadLogs, config: loadConfig };
+  if (loaders[S.tab]) loaders[S.tab]();
+}
+
+// ══════════════════════════════════════════════
+//  OVERVIEW
+// ══════════════════════════════════════════════
+async function loadOverview() {
+  if (!S.url) { showNotConfigured(); return; }
+  try {
+    const d = await req('GET', '/api/status');
+    setConn('ok', 'Connected');
+    touchUpdate();
+    renderStatus(d);
+    renderPos(d.position);
+    renderScans(d.recent_scans || []);
+  } catch(e) {
+    if (e.code === 'NOT_CONFIGURED') { showNotConfigured(); return; }
+    setConn('err', 'Error');
+    document.getElementById('statusRows').innerHTML = `<div class="alert a-err">⚠ ${esc(e.message)}</div>`;
+  }
+}
+
+function renderStatus(d) {
+  const rows = [
+    ['Session',       d.session      || '—'],
+    ['Phase',         d.phase        || '—'],
+    ['Scanning',      d.scanning_paused
+      ? '<span class="badge b-warn">PAUSED</span>'
+      : '<span class="badge b-long">ACTIVE</span>'],
+    ['Last Scan',     d.last_scan    ? ago(d.last_scan) : '—'],
+    ['Next Scan In',  d.next_scan_in != null ? d.next_scan_in + 's' : '—'],
+    ['AI Calls Today',d.ai_calls_today ?? '—'],
+    ['Cost Today',    d.cost_today   != null ? '$' + d.cost_today.toFixed(4) : '—'],
+    ['Uptime',        d.uptime       || '—'],
+  ];
+  document.getElementById('statusRows').innerHTML = rows.map(([l,v]) =>
+    `<div class="stat-row"><span class="stat-label">${l}</span><span class="stat-value">${v}</span></div>`
+  ).join('');
+}
+
+function renderPos(p) {
+  const el = document.getElementById('posPanel');
+  if (!p) {
+    el.innerHTML = `<div class="no-pos">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      <span>No active position</span></div>`;
+    return;
+  }
+  const pnl = p.unrealised_pnl ?? 0;
+  const pClass = pnl >= 0 ? 'c-long' : 'c-short';
+  const pSign  = pnl >= 0 ? '+' : '';
+  const dir    = p.direction === 'LONG'
+    ? '<span class="badge b-long">▲ LONG</span>'
+    : '<span class="badge b-short">▼ SHORT</span>';
+  const phases = ['INITIAL','BREAKEVEN','RUNNER'];
+  const pi = phases.indexOf(p.phase || 'INITIAL');
+  const steps = phases.map((_, i) =>
+    `<div class="phase-step ${i < pi ? 'done' : i === pi ? 'active' : ''}"></div>`
+  ).join('');
+  el.innerHTML = `
+    <div class="flex-between" style="margin-bottom:12px;">
+      ${dir}
+      <div class="pnl-big ${pClass}">${pSign}${pnl.toFixed(0)}</div>
+    </div>
+    <div class="stat-row"><span class="stat-label">Entry</span><span class="stat-value">${fmt1(p.entry_price)}</span></div>
+    <div class="stat-row"><span class="stat-label">Current</span><span class="stat-value">${fmt1(p.current_price)}</span></div>
+    <div class="stat-row"><span class="stat-label">Stop Loss</span><span class="stat-value c-short">${fmt1(p.stop_loss)}</span></div>
+    <div class="stat-row"><span class="stat-label">Take Profit</span><span class="stat-value c-long">${fmt1(p.take_profit)}</span></div>
+    <div class="stat-row"><span class="stat-label">Size</span><span class="stat-value">${p.size ?? '—'}</span></div>
+    <div class="stat-row"><span class="stat-label">Duration</span><span class="stat-value">${p.duration || '—'}</span></div>
+    <div class="phase-bar">
+      <div class="phase-lbl">Phase: ${p.phase || 'INITIAL'}</div>
+      <div class="phase-steps">${steps}</div>
+    </div>`;
+}
+
+function renderScans(scans) {
+  const tb = document.getElementById('scansBody');
+  if (!scans.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">No scans yet</td></tr>'; return; }
+  tb.innerHTML = scans.map(s => {
+    const setup = s.setup_found
+      ? `<span class="badge b-long">${s.direction || 'Found'}</span>`
+      : '<span class="badge b-neutral">—</span>';
+    const conf = s.confidence
+      ? `<span class="${s.confidence >= 70 ? 'c-long' : 'c-dim'}">${s.confidence}%</span>`
+      : '—';
+    return `<tr>
+      <td>${fmtTime(s.timestamp)}</td>
+      <td>${s.session || '—'}</td>
+      <td>${fmt1(s.price)}</td>
+      <td>${setup}</td>
+      <td>${conf}</td>
+      <td style="font-size:12px;">${s.action_taken || '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function showNotConfigured() {
+  setConn('', 'Not configured');
+  document.getElementById('statusRows').innerHTML = `
+    <div style="padding:24px;text-align:center;">
+      <div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">Click ⚙ to enter your backend URL</div>
+      <button class="btn btn-primary btn-sm" onclick="openSettings()">Configure Connection</button>
+    </div>`;
+  document.getElementById('posPanel').innerHTML = '';
+  document.getElementById('scansBody').innerHTML = '<tr><td colspan="6" class="empty">Not connected</td></tr>';
+}
+
+// ══════════════════════════════════════════════
+//  CONFIG
+// ══════════════════════════════════════════════
+async function loadConfig() {
+  if (!S.url) return;
+  try {
+    const d = await req('GET', '/api/config');
+    setR('cMinConf',  'vMinConf',  d.MIN_CONFIDENCE          ?? 70);
+    setR('cMinConfS', 'vMinConfS', d.MIN_CONFIDENCE_SHORT     ?? 75);
+    setR('cAICool',   'vAICool',   d.AI_COOLDOWN_MINUTES      ?? 30);
+    setR('cScanInt',  'vScanInt',  d.SCAN_INTERVAL_SECONDS    ?? 300);
+    document.getElementById('cPaused').checked  = !!d.scanning_paused;
+    document.getElementById('cDebug').checked   = !!d.DEBUG;
+    document.getElementById('cBreakeven').value = d.BREAKEVEN_TRIGGER       ?? 150;
+    document.getElementById('cTrailing').value  = d.TRAILING_STOP_DISTANCE  ?? 150;
+    document.getElementById('cSL').value        = d.DEFAULT_SL_DISTANCE     ?? 200;
+    document.getElementById('cTP').value        = d.DEFAULT_TP_DISTANCE     ?? 400;
+    document.getElementById('cMargin').value    = d.MAX_MARGIN_PERCENT != null
+      ? Math.round(d.MAX_MARGIN_PERCENT * 100) : 50;
+  } catch(_) {}
+}
+function setR(iId, vId, val) {
+  document.getElementById(iId).value = val;
+  document.getElementById(vId).textContent = val;
+}
+function syncRange(el, vId) { document.getElementById(vId).textContent = el.value; }
+
+async function saveHot() {
+  try {
+    await req('POST', '/api/config', {
+      tier: 'hot',
+      MIN_CONFIDENCE:       +document.getElementById('cMinConf').value,
+      MIN_CONFIDENCE_SHORT: +document.getElementById('cMinConfS').value,
+      AI_COOLDOWN_MINUTES:  +document.getElementById('cAICool').value,
+      SCAN_INTERVAL_SECONDS:+document.getElementById('cScanInt').value,
+      scanning_paused:       document.getElementById('cPaused').checked,
+      DEBUG:                 document.getElementById('cDebug').checked,
+    });
+    alert2('cfgHotAlert', 'ok', '✓ Hot config applied.');
+  } catch(e) { alert2('cfgHotAlert', 'err', '✗ ' + e.message); }
+}
+async function saveRestart() {
+  try {
+    await req('POST', '/api/config', {
+      tier: 'restart',
+      BREAKEVEN_TRIGGER:      +document.getElementById('cBreakeven').value,
+      TRAILING_STOP_DISTANCE: +document.getElementById('cTrailing').value,
+      DEFAULT_SL_DISTANCE:    +document.getElementById('cSL').value,
+      DEFAULT_TP_DISTANCE:    +document.getElementById('cTP').value,
+      MAX_MARGIN_PERCENT:     +document.getElementById('cMargin').value / 100,
+    });
+    alert2('cfgRestartAlert', 'ok', '✓ Saved. Bot restarting…');
+  } catch(e) { alert2('cfgRestartAlert', 'err', '✗ ' + e.message); }
+}
+
+// ══════════════════════════════════════════════
+//  HISTORY
+// ══════════════════════════════════════════════
+async function loadHistory() {
+  if (!S.url) return;
+  try {
+    const d = await req('GET', '/api/history');
+    const trades = d.trades || [];
+    const wins   = trades.filter(t => (t.pnl ?? 0) > 0).length;
+    const totPnl = trades.reduce((s,t) => s + (t.pnl ?? 0), 0);
+    document.getElementById('histStats').textContent = trades.length
+      ? `${trades.length} trades · ${wins}W/${trades.length-wins}L · ${totPnl >= 0 ? '+' : ''}${totPnl.toFixed(0)} pts` : '';
+    const tb = document.getElementById('histBody');
+    if (!trades.length) { tb.innerHTML = '<tr><td colspan="8" class="empty">No trades yet</td></tr>'; return; }
+    tb.innerHTML = trades.map(t => {
+      const pnl = t.pnl ?? 0;
+      const pc  = pnl >= 0 ? 'c-long' : 'c-short';
+      return `<tr>
+        <td>${fmtDt(t.opened_at)}</td>
+        <td>${t.direction==='LONG'
+          ? '<span class="badge b-long">L</span>'
+          : '<span class="badge b-short">S</span>'}</td>
+        <td>${fmt1(t.entry_price)}</td>
+        <td>${fmt1(t.exit_price)}</td>
+        <td class="${pc}" style="font-weight:700;">${(pnl>=0?'+':'')+pnl.toFixed(0)}</td>
+        <td>${t.duration || '—'}</td>
+        <td>${t.exit_phase || '—'}</td>
+        <td style="font-size:11px;">${t.close_reason || '—'}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    document.getElementById('histBody').innerHTML = `<tr><td colspan="8" class="empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+// ══════════════════════════════════════════════
+//  LOGS
+// ══════════════════════════════════════════════
+function switchLogType(which) {
+  S.logType = which;
+  document.getElementById('lTabScan').style.color   = which==='scan'   ? 'var(--primary)' : '';
+  document.getElementById('lTabSys').style.color    = which==='system' ? 'var(--primary)' : '';
+  loadLogs();
+}
+async function loadLogs() {
+  if (!S.url) return;
+  const box = document.getElementById('logBox');
+  try {
+    const d = await req('GET', '/api/logs?type=' + S.logType + '&lines=70');
+    const lines = d.lines || [];
+    if (!lines.length) { box.innerHTML = '<span class="l-info">No entries</span>'; return; }
+    box.innerHTML = lines.map(l => {
+      let c = 'l-info';
+      if (/ERROR|CRITICAL/i.test(l)) c = 'l-err';
+      else if (/WARN/i.test(l))      c = 'l-warn';
+      else if (/TRADE|OPEN|CLOSE|CONFIRM|SIGNAL/i.test(l)) c = 'l-trade';
+      return `<div class="${c}">${esc(l)}</div>`;
+    }).join('');
+    box.scrollTop = box.scrollHeight;
+  } catch(e) { box.innerHTML = `<span class="l-err">Error: ${esc(e.message)}</span>`; }
+}
+
+// ══════════════════════════════════════════════
+//  CHAT
+// ══════════════════════════════════════════════
+function chatKey(e) { if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }
+
+async function sendChat() {
+  const inp = document.getElementById('chatInput');
+  const msg = inp.value.trim();
+  if (!msg || !S.url) { if (!S.url) openSettings(); return; }
+  inp.value = '';
+  addMsg('user', msg);
+  if (S.chat.length >= 20) S.chat.splice(0, 2);
+  S.chat.push({ role:'user', content: msg });
+  const btn = document.getElementById('chatBtn');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  try {
+    const d = await req('POST', '/api/chat', { message: msg, history: S.chat });
+    const reply = d.response || '(no response)';
+    S.chat.push({ role:'assistant', content: reply });
+    addMsg('assistant', reply);
+  } catch(e) { addMsg('assistant', '⚠ Error: ' + e.message); }
+  finally { btn.disabled = false; btn.innerHTML = 'Send'; }
+}
+function addMsg(role, text) {
+  const box = document.getElementById('chatBox');
+  const d = document.createElement('div');
+  d.className = 'chat-msg ' + role;
+  const t = new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  d.innerHTML = `<div class="bubble">${esc(text).replace(/\n/g,'<br>')}</div><div class="chat-time">${t}</div>`;
+  box.appendChild(d);
+  box.scrollTop = box.scrollHeight;
+}
+
+// ══════════════════════════════════════════════
+//  CONTROLS
+// ══════════════════════════════════════════════
+async function doControl(action) {
+  const info = {
+    'force-scan': ['Force scan now?', 'Triggers an immediate market scan outside the normal interval.'],
+    'restart':    ['Restart the bot?', 'Monitor service will restart. You'll get a warning if a position is open.'],
+    'stop':       ['Stop the bot?', 'Monitor service will stop. No scanning or monitoring until manually restarted.'],
+  };
+  if (!await confirm2(...info[action])) return;
+  try {
+    const d = await req('POST', '/api/controls/' + action);
+    alert2('ctrlAlert', d.warning ? 'warn' : 'ok', (d.warning ? '⚠ ' : '✓ ') + (d.warning || d.message || 'Done'));
+  } catch(e) { alert2('ctrlAlert', 'err', '✗ ' + e.message); }
+}
+async function applyFix() {
+  const target = document.getElementById('fixTarget').value.trim();
+  const diff   = document.getElementById('fixDiff').value.trim();
+  if (!target || !diff) { alert2('fixAlert','err','Target file and diff are required.'); return; }
+  try {
+    const d = await req('POST', '/api/apply-fix', { target, diff });
+    alert2('fixAlert', 'ok', '✓ ' + (d.message || 'Fix applied and pushed.'));
+    document.getElementById('fixDiff').value = '';
+  } catch(e) { alert2('fixAlert', 'err', '✗ ' + e.message); }
+}
+
+// ══════════════════════════════════════════════
+//  SETTINGS MODAL
+// ══════════════════════════════════════════════
+function openSettings() {
+  document.getElementById('sUrl').value   = S.url;
+  document.getElementById('sToken').value = S.token;
+  document.getElementById('settingsOverlay').classList.remove('hidden');
+}
+function closeSettings() { document.getElementById('settingsOverlay').classList.add('hidden'); }
+
+async function saveSettings() {
+  const url   = document.getElementById('sUrl').value.trim().replace(/\/+$/, '');
+  const token = document.getElementById('sToken').value.trim();
+  if (!url) { alert2('sAlert','err','URL is required'); return; }
+  try {
+    const r = await fetch(url + '/api/health', { headers:{'Authorization':'Bearer '+token} });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+  } catch(e) { alert2('sAlert','err','Cannot connect: ' + e.message); return; }
+  S.url = url; S.token = token;
+  localStorage.setItem('apiUrl', url);
+  localStorage.setItem('apiToken', token);
+  closeSettings();
+  setConn('ok','Connected');
+  loadOverview();
+}
+
+// ══════════════════════════════════════════════
+//  CONFIRM MODAL
+// ══════════════════════════════════════════════
+let _res = null;
+function confirm2(title, desc) {
+  return new Promise(r => {
+    _res = r;
+    document.getElementById('confTitle').textContent = title;
+    document.getElementById('confDesc').textContent  = desc;
+    document.getElementById('confOk').onclick = () => { closeConfirm(true); };
+    document.getElementById('confirmOverlay').classList.remove('hidden');
+  });
+}
+function closeConfirm(v) {
+  document.getElementById('confirmOverlay').classList.add('hidden');
+  if (_res) { _res(v); _res = null; }
+}
+
+// ══════════════════════════════════════════════
+//  HELPERS
+// ══════════════════════════════════════════════
+function alert2(id, type, msg) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = 'alert a-' + type;
+  el.textContent = msg;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.add('hidden'), 5000);
+}
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function fmt1(v) { return v != null ? Number(v).toFixed(1) : '—'; }
+function ago(iso) {
+  const s = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  return Math.floor(s/3600) + 'h ago';
+}
+function fmtTime(iso) { return iso ? new Date(iso).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '—'; }
+function fmtDt(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString([],{month:'short',day:'numeric'}) + ' ' +
+         d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+}
+
+// ══════════════════════════════════════════════
+//  INIT
+// ══════════════════════════════════════════════
+(function init() {
+  document.getElementById('lTabScan').style.color = 'var(--primary)';
+  if (!S.url) {
+    showNotConfigured();
+    openSettings();
+  } else {
+    loadOverview();
+  }
+  // auto-refresh overview every 15s
+  setInterval(() => { if (S.tab === 'overview' && S.url) loadOverview(); }, 15000);
+})();
+</script>
+</body>
+</html>
