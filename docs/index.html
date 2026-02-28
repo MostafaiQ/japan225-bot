@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Japan 225 Bot</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -234,6 +235,29 @@
     ::-webkit-scrollbar { width:5px; height:5px; }
     ::-webkit-scrollbar-track { background:transparent; }
     ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+
+    /* ── Markdown in chat bubbles ── */
+    .bubble.md { line-height: 1.6; }
+    .bubble.md p { margin: 0 0 8px; }
+    .bubble.md p:last-child { margin-bottom: 0; }
+    .bubble.md h1,.bubble.md h2,.bubble.md h3 { font-weight:700; margin:12px 0 5px; line-height:1.2; }
+    .bubble.md h1 { font-size:16px; border-bottom:1px solid var(--border); padding-bottom:4px; }
+    .bubble.md h2 { font-size:14px; }
+    .bubble.md h3 { font-size:13px; color:var(--text-dim); }
+    .bubble.md code { font-family:var(--font-mono); font-size:11px; background:rgba(0,0,0,.35); padding:1px 5px; border-radius:3px; }
+    .bubble.md pre { background:rgba(0,0,0,.4); border:1px solid var(--border); border-radius:6px; padding:10px 12px; margin:8px 0; overflow-x:auto; }
+    .bubble.md pre code { background:none; padding:0; font-size:12px; }
+    .bubble.md ul,.bubble.md ol { padding-left:18px; margin:5px 0; }
+    .bubble.md li { margin:3px 0; }
+    .bubble.md strong { font-weight:700; color:var(--text); }
+    .bubble.md em { color:var(--text-dim); }
+    .bubble.md blockquote { border-left:3px solid var(--border-bright); margin:6px 0; padding:4px 10px; color:var(--text-dim); font-style:italic; }
+    .bubble.md hr { border:none; border-top:1px solid var(--border); margin:10px 0; }
+    .bubble.md table { border-collapse:collapse; width:100%; margin:8px 0; font-size:12px; }
+    .bubble.md th { background:rgba(255,255,255,.05); }
+    .bubble.md th,.bubble.md td { border:1px solid var(--border); padding:5px 10px; text-align:left; }
+    .bubble.md a { color:var(--primary); text-decoration:none; }
+    .bubble.md a:hover { text-decoration:underline; }
   </style>
 </head>
 <body>
@@ -426,8 +450,11 @@
     <!-- ── Chat ── -->
     <div id="tab-chat" class="tab-panel">
       <div class="card">
-        <div class="card-title">Ask Claude About the Bot</div>
-        <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Claude has MEMORY.md + module digests as context. History capped at 10 turns.</p>
+        <div class="flex-between" style="margin-bottom:8px;">
+          <div class="card-title" style="margin-bottom:0">Ask Claude About the Bot</div>
+          <button class="btn btn-ghost btn-sm" onclick="clearChat()">Clear history</button>
+        </div>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Fully agentic — Claude can read files, fix bugs, run commands, and push to GitHub.</p>
         <div id="chatBox" class="chat-box">
           <div class="chat-msg assistant">
             <div class="bubble">Hi! I'm Claude, connected to your Japan 225 bot codebase. Ask me anything — strategy logic, config decisions, recent scan analysis, or debugging help.</div>
@@ -816,24 +843,43 @@ async function sendChat() {
   addMsg('user', msg);
   if (S.chat.length >= 20) S.chat.splice(0, 2);
   S.chat.push({ role:'user', content: msg });
+  _saveHistory();
   const btn = document.getElementById('chatBtn');
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
   try {
     const d = await req('POST', '/api/chat', { message: msg, history: S.chat });
     const reply = d.response || '(no response)';
     S.chat.push({ role:'assistant', content: reply });
+    _saveHistory();
     addMsg('assistant', reply);
   } catch(e) { addMsg('assistant', '⚠ Error: ' + e.message); }
   finally { btn.disabled = false; btn.innerHTML = 'Send'; }
 }
-function addMsg(role, text) {
+function addMsg(role, text, time) {
   const box = document.getElementById('chatBox');
   const d = document.createElement('div');
   d.className = 'chat-msg ' + role;
-  const t = new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-  d.innerHTML = `<div class="bubble">${esc(text).replace(/\n/g,'<br>')}</div><div class="chat-time">${t}</div>`;
+  const t = time || new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  const content = role === 'assistant'
+    ? marked.parse(text)
+    : esc(text).replace(/\n/g,'<br>');
+  d.innerHTML = `<div class="bubble${role === 'assistant' ? ' md' : ''}">${content}</div><div class="chat-time">${t}</div>`;
   box.appendChild(d);
   box.scrollTop = box.scrollHeight;
+}
+
+function _saveHistory() {
+  localStorage.setItem('chatHistory', JSON.stringify(S.chat));
+}
+
+function clearChat() {
+  S.chat = [];
+  localStorage.removeItem('chatHistory');
+  const box = document.getElementById('chatBox');
+  box.innerHTML = `<div class="chat-msg assistant">
+    <div class="bubble md">${marked.parse("Hi! I'm Claude, connected to your Japan 225 bot. I can read files, fix bugs, check logs, and push changes to GitHub. What do you need?")}</div>
+    <div class="chat-time">System</div>
+  </div>`;
 }
 
 // ══════════════════════════════════════════════
@@ -944,6 +990,19 @@ function fmtDt(iso) {
     showNotConfigured();   // shows "Click ⚙ to configure" — no modal, no blocking overlay
   } else {
     loadOverview();
+  }
+  // Restore chat history from localStorage
+  const saved = localStorage.getItem('chatHistory');
+  if (saved) {
+    try {
+      const hist = JSON.parse(saved);
+      if (Array.isArray(hist) && hist.length > 0) {
+        S.chat = hist;
+        const box = document.getElementById('chatBox');
+        box.innerHTML = '';  // clear static welcome message
+        hist.forEach(m => addMsg(m.role, m.content));
+      }
+    } catch(e) { /* ignore malformed storage */ }
   }
   // auto-refresh overview every 15s
   setInterval(() => { if (S.tab === 'overview' && S.url) loadOverview(); }, 15000);

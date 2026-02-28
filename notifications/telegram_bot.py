@@ -61,7 +61,8 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("stats", self._cmd_stats))
         self.app.add_handler(CommandHandler("start", self._cmd_start))
         self.app.add_handler(CommandHandler("help", self._cmd_help))
-        
+        self.app.add_handler(CommandHandler("menu", self._cmd_menu))
+
         # Callback handler for inline buttons
         self.app.add_handler(CallbackQueryHandler(self._handle_callback))
         
@@ -200,22 +201,59 @@ class TelegramBot:
     
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
-            "Japan 225 Trading Bot active.\nUse /help for commands."
+            "Japan 225 Trading Bot active.\nUse /menu for the button panel."
         )
-    
+
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
-            "/status - Mode, position & balance\n"
-            "/balance - Account details\n"
-            "/journal - Recent trades\n"
-            "/today - Today's scans\n"
-            "/stats - Performance stats\n"
-            "/cost - API costs\n"
-            "/force - Force scan now\n"
-            "/stop or /pause - Pause new entries\n"
-            "/resume - Resume scanning\n"
-            "/close - Close position (confirm first)\n"
-            "/kill - EMERGENCY: close position immediately, no confirm"
+            "Tap /menu for the interactive button panel.\n\n"
+            "Text commands:\n"
+            "/status — position & account\n"
+            "/balance — balance details\n"
+            "/journal — last 5 trades\n"
+            "/today — today's scans\n"
+            "/stats — win rate & P&L\n"
+            "/cost — API cost total\n"
+            "/force — force scan now\n"
+            "/pause or /stop — pause new entries\n"
+            "/resume — resume scanning\n"
+            "/close — close position (confirm)\n"
+            "/kill — EMERGENCY close, no confirm"
+        )
+
+    async def _cmd_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send an interactive button panel grouped by category."""
+        keyboard = InlineKeyboardMarkup([
+            # Row label (non-functional separator via disabled-looking button)
+            [InlineKeyboardButton("── Info ──────────────────", callback_data="noop")],
+            [
+                InlineKeyboardButton("📊 Status",  callback_data="menu_status"),
+                InlineKeyboardButton("💰 Balance", callback_data="menu_balance"),
+            ],
+            [
+                InlineKeyboardButton("📒 Journal", callback_data="menu_journal"),
+                InlineKeyboardButton("📅 Today",   callback_data="menu_today"),
+            ],
+            [
+                InlineKeyboardButton("📈 Stats",   callback_data="menu_stats"),
+                InlineKeyboardButton("💸 API Cost",callback_data="menu_cost"),
+            ],
+            [InlineKeyboardButton("── Controls ──────────────", callback_data="noop")],
+            [
+                InlineKeyboardButton("⚡ Force Scan", callback_data="menu_force"),
+                InlineKeyboardButton("⏸ Pause",      callback_data="menu_pause"),
+            ],
+            [
+                InlineKeyboardButton("▶️ Resume",    callback_data="menu_resume"),
+                InlineKeyboardButton("❌ Close Pos", callback_data="menu_close"),
+            ],
+            [
+                InlineKeyboardButton("🚨 KILL (emergency close)", callback_data="menu_kill"),
+            ],
+        ])
+        await update.message.reply_text(
+            "Japan 225 Bot — Control Panel",
+            reply_markup=keyboard,
         )
     
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -266,7 +304,7 @@ class TelegramBot:
         
         lines = ["*Last 5 Trades*\n"]
         for t in trades:
-            emoji = "" if (t.get("pnl") or 0) > 0 else ""
+            emoji = "✅" if (t.get("pnl") or 0) > 0 else "❌"
             lines.append(
                 f"{emoji} #{t.get('trade_number')} | "
                 f"{t.get('direction')} {t.get('lots')} lots | "
@@ -427,6 +465,143 @@ class TelegramBot:
 
         elif query.data == "hold_position":
             await query.edit_message_text(query.message.text + "\n\nHolding position.")
+
+        elif query.data == "noop":
+            pass  # section header buttons — do nothing
+
+        # ── Menu button callbacks ────────────────────────────────────────
+        elif query.data == "menu_status":
+            pos = self.storage.get_position_state()
+            acc = self.storage.get_account_state()
+            if pos.get("has_open"):
+                text = (
+                    f"*Open Position*\n"
+                    f"Direction: {pos.get('direction')}\n"
+                    f"Entry: {pos.get('entry_price', 0):.0f}\n"
+                    f"SL: {pos.get('stop_level', 0):.0f}\n"
+                    f"TP: {pos.get('limit_level', 'trailing')}\n"
+                    f"Phase: {pos.get('phase')}\n"
+                    f"Lots: {pos.get('lots')}\n\n"
+                )
+            else:
+                text = "No open positions.\n\n"
+            text += (
+                f"*Account*\n"
+                f"Balance: ${acc.get('balance', 0):.2f}\n"
+                f"System: {'ACTIVE' if acc.get('system_active') else 'PAUSED'}\n"
+                f"Consec. losses: {acc.get('consecutive_losses', 0)}"
+            )
+            await query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+        elif query.data == "menu_balance":
+            acc = self.storage.get_account_state()
+            text = (
+                f"*Account Balance*\n"
+                f"Current: ${acc.get('balance', 0):.2f}\n"
+                f"Starting: ${acc.get('starting_balance', 16.67):.2f}\n"
+                f"Total P&L: ${acc.get('total_pnl', 0):.2f}\n"
+                f"Total API cost: ${acc.get('total_api_cost', 0):.2f}\n"
+                f"Net profit: ${(acc.get('total_pnl', 0) - acc.get('total_api_cost', 0)):.2f}\n"
+                f"Daily loss: ${abs(acc.get('daily_loss_today', 0)):.2f}\n"
+                f"Weekly loss: ${abs(acc.get('weekly_loss', 0)):.2f}"
+            )
+            await query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+        elif query.data == "menu_journal":
+            trades = self.storage.get_recent_trades(5)
+            if not trades:
+                await query.message.reply_text("No trades recorded yet.")
+            else:
+                lines = ["*Last 5 Trades*\n"]
+                for t in trades:
+                    emoji = "✅" if (t.get("pnl") or 0) > 0 else "❌"
+                    lines.append(
+                        f"{emoji} #{t.get('trade_number')} | "
+                        f"{t.get('direction')} {t.get('lots')} lots | "
+                        f"P&L: ${t.get('pnl', 0):.2f} | "
+                        f"{t.get('result', 'open')}"
+                    )
+                await query.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+        elif query.data == "menu_today":
+            scans = self.storage.get_scans_today()
+            if not scans:
+                await query.message.reply_text("No scans today.")
+            else:
+                lines = [f"*Today's Scans ({len(scans)} total)*\n"]
+                for s in scans[-5:]:
+                    setup = "SETUP" if s.get("setup_found") else "-"
+                    lines.append(
+                        f"{s.get('session', '?')} | "
+                        f"Price {s.get('price', 0):.0f} | "
+                        f"{setup}"
+                    )
+                await query.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+        elif query.data == "menu_stats":
+            stats = self.storage.get_trade_stats()
+            text = (
+                f"*Performance Stats*\n"
+                f"Total trades: {stats.get('total', 0)}\n"
+                f"Wins: {stats.get('wins', 0)} | Losses: {stats.get('losses', 0)}\n"
+                f"Win rate: {stats.get('win_rate', 0):.1f}%\n"
+                f"Total P&L: ${stats.get('total_pnl', 0):.2f}\n"
+                f"Avg win: ${stats.get('avg_win', 0):.2f}\n"
+                f"Avg loss: ${stats.get('avg_loss', 0):.2f}\n"
+                f"Best trade: ${stats.get('best_trade', 0):.2f}\n"
+                f"Worst trade: ${stats.get('worst_trade', 0):.2f}\n"
+                f"Avg confidence: {stats.get('avg_confidence', 0):.0f}%"
+            )
+            await query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+        elif query.data == "menu_cost":
+            total = self.storage.get_api_cost_total()
+            await query.message.reply_text(f"Total API cost: ${total:.2f}")
+
+        elif query.data == "menu_force":
+            await query.message.reply_text("Forcing immediate scan...")
+            if self.on_force_scan:
+                asyncio.create_task(self.on_force_scan())
+
+        elif query.data == "menu_pause":
+            self.storage.set_system_active(False)
+            await query.message.reply_text("System PAUSED. Use Resume button or /resume to reactivate.")
+
+        elif query.data == "menu_resume":
+            self.storage.set_system_active(True)
+            await query.message.reply_text("System RESUMED. Scanning active.")
+
+        elif query.data == "menu_close":
+            pos = self.storage.get_position_state()
+            if not pos.get("has_open"):
+                await query.message.reply_text("No open position to close.")
+            else:
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("Yes, close now", callback_data=f"close_position:{pos.get('deal_id')}"),
+                        InlineKeyboardButton("Cancel", callback_data="hold_position"),
+                    ]
+                ])
+                await query.message.reply_text(
+                    f"Close {pos.get('direction')} position @ entry {pos.get('entry_price', 0):.0f}?\n"
+                    f"Current stop: {pos.get('stop_level', 0):.0f}",
+                    reply_markup=keyboard,
+                )
+
+        elif query.data == "menu_kill":
+            pos = self.storage.get_position_state()
+            if not pos.get("has_open"):
+                await query.message.reply_text("No open position.")
+            elif not self.ig:
+                await query.message.reply_text("IG client not connected.")
+            else:
+                await query.message.reply_text("KILL command received. Closing position immediately...")
+                result = self.ig.close_position(pos["deal_id"], pos["direction"], pos["lots"])
+                if result:
+                    self.storage.set_position_closed()
+                    await query.message.reply_text("Position KILLED (emergency close).")
+                else:
+                    await query.message.reply_text("Kill FAILED. Check IG immediately.")
 
 
 async def send_standalone_message(message: str):
