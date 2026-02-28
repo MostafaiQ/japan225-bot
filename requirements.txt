@@ -1,5 +1,5 @@
 # Core
-trading-ig>=0.0.24
+trading-ig>=0.0.23
 anthropic>=0.40.0
 python-telegram-bot>=21.0
 python-dotenv>=1.0.0

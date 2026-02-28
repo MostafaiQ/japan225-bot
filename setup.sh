@@ -27,6 +27,7 @@ pip install -r requirements.txt --quiet
 echo -e "${GREEN}OK${NC}"
 
 # --- Step 3: .env file ---
+set -a; source .env; set +a
 echo -e "${YELLOW}[3/8] Checking .env file...${NC}"
 if [ ! -f .env ]; then
     echo -e "${RED}.env file not found!${NC}"
@@ -71,8 +72,9 @@ if ig.connect():
         print(f'  Balance: \${account[\"balance\"]:.2f}')
         print(f'  Available: \${account[\"available\"]:.2f}')
     # Test price fetch
-    candles = ig.get_prices('HOUR_4', 5)
+    candles = ig.get_prices('1D', 5)
     print(f'  Fetched {len(candles)} candles (4H)')
+    ig.ig.logout()
 else:
     print('  FAILED - check IG credentials in .env')
     exit(1)

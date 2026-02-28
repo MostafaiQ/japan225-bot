@@ -39,8 +39,9 @@ class IGClient:
         """Authenticate with IG Markets API."""
         try:
             self.ig = IGService(
-                IG_USERNAME, IG_PASSWORD, IG_API_KEY, IG_ACC_NUMBER,
-                acc_type=IG_ENV,
+    IG_USERNAME, IG_PASSWORD, IG_API_KEY,
+    acc_type=IG_ENV,
+    acc_number=IG_ACC_NUMBER,
                 use_rate_limiter=True,
             )
             self.ig.create_session()
@@ -73,6 +74,8 @@ class IGClient:
             return None
         try:
             info = self.ig.fetch_market_by_epic(EPIC)
+            if info is None:
+                return None
             snapshot = info.get("snapshot", {})
             dealing = info.get("dealingRules", {})
             instrument = info.get("instrument", {})
@@ -82,10 +85,10 @@ class IGClient:
                 "offer": snapshot.get("offer"),
                 "high": snapshot.get("high"),
                 "low": snapshot.get("low"),
-                "spread": (snapshot.get("offer", 0) - snapshot.get("bid", 0)),
+                "spread": (snapshot.get("offer") or 0) - (snapshot.get("bid") or 0),
                 "market_status": snapshot.get("marketStatus"),
                 "update_time": snapshot.get("updateTime"),
-                "min_stop_distance": dealing.get("minNormalStopOrLimitDistance", {}).get("value"),
+                "min_stop_distance": (dealing.get("minNormalStopOrLimitDistance") or {}).get("value"),
                 "trailing_stops_available": dealing.get("trailingStopsPreference") != "NOT_AVAILABLE",
                 "currency": instrument.get("currencies", [{}])[0].get("code", CURRENCY),
             }
@@ -93,7 +96,7 @@ class IGClient:
             logger.error(f"Failed to get market info: {e}")
             return None
     
-    def get_prices(self, resolution: str = "HOUR_4", num_points: int = 200) -> list[dict]:
+    def get_prices(self, resolution: str = "HOUR4", num_points: int = 200) -> list[dict]:
         """
         Fetch historical price data.
         
@@ -142,7 +145,7 @@ class IGClient:
         """Fetch price data for all 4 analysis timeframes."""
         return {
             "daily": self.get_prices("DAY", 200),
-            "h4": self.get_prices("HOUR_4", 200),
+            "h4": self.get_prices("HOUR4", 200),
             "m15": self.get_prices("MINUTE_15", 200),
             "m5": self.get_prices("MINUTE_5", 100),
         }

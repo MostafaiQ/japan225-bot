@@ -38,7 +38,7 @@ DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 # ============================================
 # IG MARKETS - INSTRUMENT
 # ============================================
-EPIC = "IX.D.NIKKEI.IFD.IP"  # Japan 225 Cash (mini, $1/pt)
+EPIC = "IX.D.NIKKEI.IFM.IP"  # Japan 225 Cash (mini, $1/pt)
 CURRENCY = "USD"
 CONTRACT_SIZE = 1  # $1 per point
 EXPIRY = "-"  # Cash = no expiry
