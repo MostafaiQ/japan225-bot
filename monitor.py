@@ -89,21 +89,34 @@ class TradingMonitor:
         logger.info(f"Mode: {TRADING_MODE}")
         logger.info("=" * 60)
 
-        # Connect to IG with retry
-        for attempt in range(3):
-            if self.ig.connect():
-                break
-            logger.warning(f"IG connect attempt {attempt + 1}/3 failed, retrying in 10s...")
-            await asyncio.sleep(10)
-        else:
-            logger.critical("IG connection failed after 3 attempts. Exiting.")
-            return
-
-        # Initialize Telegram
+        # Initialize Telegram FIRST — must be available even when IG is down
         await self.telegram.initialize()
         self.telegram.on_trade_confirm = self._on_trade_confirm
         self.telegram.on_force_scan = self._on_force_scan
         await self.telegram.start_polling()
+
+        # Connect to IG — 3 fast retries, then retry every 5 min until IG recovers
+        connected = False
+        for attempt in range(3):
+            if self.ig.connect():
+                connected = True
+                break
+            logger.warning(f"IG connect attempt {attempt + 1}/3 failed, retrying in 10s...")
+            await asyncio.sleep(10)
+
+        if not connected:
+            logger.critical("IG connection failed after 3 attempts. Waiting for IG to recover.")
+            await self.telegram.send_alert(
+                "⚠️ IG API unavailable (503/500 — likely weekend maintenance).\n"
+                "Telegram is online. Bot will retry IG every 5 minutes.\n"
+                "Use /status for updates."
+            )
+            while not connected:
+                await asyncio.sleep(300)
+                logger.info("Retrying IG connection...")
+                if self.ig.connect():
+                    connected = True
+                    await self.telegram.send_alert("✅ IG reconnected. Bot resuming normal operation.")
 
         # Startup sync — reconcile DB state with IG reality
         await self.startup_sync()
