@@ -49,6 +49,23 @@ async def save_chat_history(body: HistorySaveRequest):
     return {"ok": True, "updated_at": ts}
 
 
+@router.get("/api/chat/costs")
+async def get_chat_costs():
+    """Returns dashboard chat API costs (today + all-time total)."""
+    costs_path = Path(__file__).parent.parent.parent / "storage" / "data" / "chat_costs.json"
+    try:
+        entries = json.loads(costs_path.read_text()) if costs_path.exists() else []
+        today   = datetime.now(timezone.utc).date().isoformat()
+        today_e = [e for e in entries if e.get("ts", "").startswith(today)]
+        return {
+            "today_usd": round(sum(e.get("cost_usd", 0) for e in today_e), 4),
+            "total_usd": round(sum(e.get("cost_usd", 0) for e in entries), 4),
+            "entries":   today_e[-20:],
+        }
+    except Exception as e:
+        return {"today_usd": 0.0, "total_usd": 0.0, "entries": [], "error": str(e)}
+
+
 # ── Claude chat ───────────────────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):

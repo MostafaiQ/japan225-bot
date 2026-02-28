@@ -22,7 +22,7 @@ app.add_middleware(
     allow_origins=[ALLOWED_ORIGIN, "http://localhost:3000"],  # localhost for local dev
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "ngrok-skip-browser-warning"],
 )
 
 @app.middleware("http")

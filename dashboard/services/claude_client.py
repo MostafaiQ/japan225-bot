@@ -13,8 +13,10 @@ Tools: read_file, edit_file, write_file, run_command, search_code
 
 History: text-only in/out. Tool calls are internal to each request.
 """
+import json
 import os
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import anthropic
@@ -27,7 +29,40 @@ MODEL          = "claude-sonnet-4-6"   # same price as 4.5, better quality
 MAX_TURNS      = 10
 MAX_ITERATIONS = 20
 
-CORE_DIGESTS = ["settings", "monitor", "database"]
+CORE_DIGESTS   = ["settings", "monitor", "database"]
+_COSTS_PATH    = PROJECT_ROOT / "storage" / "data" / "chat_costs.json"
+
+# Pricing: claude-sonnet-4-6  (USD / 1M tokens)
+_PRICE = {"input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30}
+
+
+def _calc_cost(usage) -> float:
+    return (
+        getattr(usage, "input_tokens",                0) * _PRICE["input"]       / 1_000_000 +
+        getattr(usage, "output_tokens",               0) * _PRICE["output"]      / 1_000_000 +
+        getattr(usage, "cache_creation_input_tokens", 0) * _PRICE["cache_write"] / 1_000_000 +
+        getattr(usage, "cache_read_input_tokens",     0) * _PRICE["cache_read"]  / 1_000_000
+    )
+
+
+def _log_cost(usage, iteration: int):
+    """Append one cost entry to chat_costs.json (max 500 kept)."""
+    try:
+        _COSTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        entries = json.loads(_COSTS_PATH.read_text()) if _COSTS_PATH.exists() else []
+        entries.append({
+            "ts":          datetime.now(timezone.utc).isoformat(),
+            "model":       MODEL,
+            "input":       getattr(usage, "input_tokens",                0),
+            "output":      getattr(usage, "output_tokens",               0),
+            "cache_write": getattr(usage, "cache_creation_input_tokens", 0),
+            "cache_read":  getattr(usage, "cache_read_input_tokens",     0),
+            "cost_usd":    round(_calc_cost(usage), 6),
+            "iteration":   iteration,
+        })
+        _COSTS_PATH.write_text(json.dumps(entries[-500:]))
+    except Exception:
+        pass  # never let logging break the chat
 
 KEYWORD_MAP = {
     "indicator":  "indicators",
@@ -311,6 +346,8 @@ def chat(message: str, history: list[dict]) -> str:
             tools=TOOLS,
             messages=msgs,
         )
+
+        _log_cost(response.usage, _)
 
         if response.stop_reason == "end_turn":
             text = " ".join(

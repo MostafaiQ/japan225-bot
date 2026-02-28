@@ -41,39 +41,85 @@ GitHub Actions is used **only for CI tests** (on pull requests). Scanning no lon
 
 ---
 
+## Architecture
+
+```
+Oracle VM (always-on, does everything)
+┌─────────────────────────────────────────────────────────────────┐
+│  monitor.py  (systemd: japan225-bot)                            │
+│  ├─ SCANNING (no open position)                                 │
+│  │   every 5 min active sessions · 30 min off-hours             │
+│  │   pre-screen → confidence → Sonnet → Opus → alert            │
+│  ├─ MONITORING (position open)                                  │
+│  │   every 60 s · 3-phase exit · adverse move alerts            │
+│  └─ TELEGRAM (always-on polling)                                │
+│      /menu · /status · CONFIRM/REJECT · Close/Hold              │
+├─────────────────────────────────────────────────────────────────┤
+│  Dashboard (systemd: japan225-dashboard · japan225-ngrok)       │
+│  ├─ FastAPI on 127.0.0.1:8080                                   │
+│  ├─ ngrok static tunnel → https://…ngrok-free.app              │
+│  └─ Frontend: GitHub Pages (docs/index.html)                    │
+│      6 tabs · agentic Claude chat · cross-device sync           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**One process, one VM.** GitHub Actions is used only for CI tests.
+
+---
+
 ## Project Structure
 
 ```
 japan225-bot/
-├── main.py                    # Legacy entry point (kept for reference)
 ├── monitor.py                 # Main VM process: scan + monitor + Telegram
-├── setup.sh                   # Interactive setup and verification script
 ├── config/
-│   └── settings.py            # All trading rules, constants, credentials
+│   └── settings.py            # All constants (never scatter config)
 ├── core/
 │   ├── ig_client.py           # IG Markets REST API wrapper
-│   ├── indicators.py          # Bollinger, EMA, RSI, VWAP (pure math)
+│   ├── indicators.py          # Bollinger, EMA, RSI, VWAP + detect_setup() LONG/SHORT
 │   ├── session.py             # Session awareness (Tokyo/London/NY), no-trade days
-│   ├── momentum.py            # Momentum tracker + adverse move tier detection
-│   └── confidence.py          # Confidence scoring (LONG and SHORT)
+│   ├── momentum.py            # MomentumTracker + adverse move tier detection
+│   └── confidence.py          # 8-point confidence scoring (LONG and SHORT)
 ├── ai/
-│   └── analyzer.py            # Claude AI analysis + web research
+│   └── analyzer.py            # Claude Sonnet + Opus scan analysis + web research
 ├── trading/
 │   ├── risk_manager.py        # 11-point pre-trade validation
-│   └── exit_manager.py        # 3-phase exit strategy
+│   └── exit_manager.py        # 3-phase exit strategy (Initial/Breakeven/Runner)
 ├── notifications/
-│   └── telegram_bot.py        # Alerts, commands, trade confirmation
+│   └── telegram_bot.py        # Alerts, persistent menu, trade confirmation, inline buttons
 ├── storage/
-│   └── database.py            # SQLite persistent state
-├── tests/
-│   ├── test_indicators.py     # Indicator + math tests
-│   ├── test_risk_manager.py   # Risk + exit manager tests
-│   └── test_storage.py        # Database tests
+│   ├── database.py            # SQLite WAL-mode persistent state
+│   └── data/                  # VM only — never committed
+│       ├── trading.db         # Main database
+│       ├── bot_state.json     # Written each cycle by monitor.py → read by dashboard
+│       ├── dashboard_overrides.json  # Hot/restart config from dashboard
+│       ├── force_scan.trigger # Created by dashboard → consumed by monitor
+│       ├── chat_history.json  # Dashboard chat history (cross-device sync)
+│       └── chat_costs.json    # Per-call Anthropic cost log for dashboard chat
+├── dashboard/
+│   ├── main.py                # FastAPI app + CORS + Bearer auth
+│   ├── run.py                 # uvicorn entrypoint
+│   ├── routers/
+│   │   ├── status.py          # GET /api/health · GET /api/status
+│   │   ├── config.py          # GET/POST /api/config (hot + restart tiers)
+│   │   ├── history.py         # GET /api/history
+│   │   ├── logs.py            # GET /api/logs?type=scan|system
+│   │   ├── chat.py            # POST /api/chat · GET/POST /api/chat/history · GET /api/chat/costs
+│   │   └── controls.py        # POST /api/controls/{force-scan,restart,stop} · POST /api/apply-fix
+│   └── services/
+│       ├── claude_client.py   # Agentic Claude loop (tools: read/edit/write/run/search)
+│       ├── config_manager.py  # dashboard_overrides.json atomic read/write
+│       ├── db_reader.py       # Read-only SQLite access for dashboard
+│       └── git_ops.py         # apply-fix: patch --dry-run → stash → apply → commit → push
+├── docs/
+│   └── index.html             # Single-page frontend (GitHub Pages)
+├── tests/                     # 233 tests — all passing
 ├── .github/workflows/
-│   └── tests.yml              # CI test pipeline
-├── .env.example               # Credential template
-├── .gitignore
+│   └── tests.yml              # CI — runs tests only, no scanning
+├── .env.example
 ├── requirements.txt
+├── setup.sh
+├── DEPLOY.md
 └── README.md
 ```
 
