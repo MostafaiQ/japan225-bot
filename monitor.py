@@ -22,10 +22,12 @@ Two modes:
 Startup: always runs startup_sync() to reconcile DB state with IG reality.
 """
 import asyncio
+import json
 import logging
 import signal
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from config.settings import (
     LOG_FORMAT, LOG_LEVEL, TRADING_MODE, CONTRACT_SIZE,
@@ -67,6 +69,14 @@ class TradingMonitor:
         self.scanning_paused = False  # /pause command toggles this
         self.momentum_tracker: MomentumTracker = None
         self._position_empty_count = 0  # Consecutive empty responses from IG
+        self._started_at = datetime.now(timezone.utc)
+        self._last_scan_time: datetime | None = None
+        self._next_scan_in: int | None = None
+        self._current_price: float | None = None
+        # Paths for dashboard integration
+        self._state_path   = Path(__file__).parent / "storage" / "data" / "bot_state.json"
+        self._overrides_path = Path(__file__).parent / "storage" / "data" / "dashboard_overrides.json"
+        self._trigger_path = Path(__file__).parent / "storage" / "data" / "force_scan.trigger"
 
     # ============================================================
     # STARTUP
@@ -205,12 +215,73 @@ class TradingMonitor:
             )
 
     # ============================================================
+    # DASHBOARD INTEGRATION
+    # ============================================================
+
+    def _reload_overrides(self):
+        """Hot-reload dashboard_overrides.json at the top of each main cycle."""
+        try:
+            if not self._overrides_path.exists():
+                return
+            data = json.loads(self._overrides_path.read_text())
+            # Hot-reload keys only
+            import config.settings as S
+            if "MIN_CONFIDENCE" in data:
+                S.MIN_CONFIDENCE = int(data["MIN_CONFIDENCE"])
+            if "MIN_CONFIDENCE_SHORT" in data:
+                S.MIN_CONFIDENCE_SHORT = int(data["MIN_CONFIDENCE_SHORT"])
+            if "AI_COOLDOWN_MINUTES" in data:
+                S.AI_COOLDOWN_MINUTES = int(data["AI_COOLDOWN_MINUTES"])
+            if "SCAN_INTERVAL_SECONDS" in data:
+                S.SCAN_INTERVAL_SECONDS = int(data["SCAN_INTERVAL_SECONDS"])
+            if "scanning_paused" in data:
+                self.scanning_paused = bool(data["scanning_paused"])
+        except Exception as e:
+            logger.debug(f"_reload_overrides skipped: {e}")
+
+    def _write_state(self, session_name: str | None = None, phase: str | None = None):
+        """Write bot_state.json for the dashboard to read."""
+        try:
+            uptime_secs = int((datetime.now(timezone.utc) - self._started_at).total_seconds())
+            h, rem = divmod(uptime_secs, 3600)
+            m = rem // 60
+            state = {
+                "session":        session_name or "—",
+                "phase":          phase or ("MONITORING" if self.storage.get_position_state().get("has_open") else "SCANNING"),
+                "scanning_paused": self.scanning_paused,
+                "last_scan":      self._last_scan_time.isoformat() if self._last_scan_time else None,
+                "next_scan_in":   self._next_scan_in,
+                "current_price":  self._current_price,
+                "uptime":         f"{h}h {m}m",
+                "started_at":     self._started_at.isoformat(),
+            }
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(state))
+            tmp.replace(self._state_path)
+        except Exception as e:
+            logger.debug(f"_write_state failed: {e}")
+
+    def _check_force_scan_trigger(self) -> bool:
+        """Return True (and delete trigger) if dashboard requested a force scan."""
+        try:
+            if self._trigger_path.exists():
+                self._trigger_path.unlink()
+                logger.info("Dashboard force-scan trigger detected.")
+                return True
+        except Exception:
+            pass
+        return False
+
+    # ============================================================
     # MAIN CYCLE
     # ============================================================
 
     async def _main_cycle(self):
         """Dispatches to scanning or monitoring based on position state."""
         try:
+            self._reload_overrides()
+
             if not self.ig.ensure_connected():
                 logger.warning("IG reconnection failed. Sleeping 60s.")
                 await asyncio.sleep(60)
@@ -245,6 +316,11 @@ class TradingMonitor:
         """
         session = get_current_session()
         logger.info(f"Scan cycle | Session: {session['name']} | Active: {session['active']}")
+        self._last_scan_time = datetime.now(timezone.utc)
+        self._write_state(session_name=session["name"])
+
+        # --- Force scan from dashboard ---
+        force_scan = self._check_force_scan_trigger()
 
         # --- Weekend / No-trade day check ---
         no_trade, reason = is_no_trade_day()
@@ -252,14 +328,14 @@ class TradingMonitor:
             logger.info(f"No-trade: {reason}")
             return OFFHOURS_INTERVAL_SECONDS
 
-        # --- Off-hours: heartbeat only ---
-        if not session["active"]:
+        # --- Off-hours: heartbeat only (unless force scan requested) ---
+        if not session["active"] and not force_scan:
             logger.debug("Off-hours — heartbeat only")
             return OFFHOURS_INTERVAL_SECONDS
 
-        # --- System paused ---
+        # --- System paused (force scan overrides pause too) ---
         account = self.storage.get_account_state()
-        if not account.get("system_active", True) or self.scanning_paused:
+        if (not account.get("system_active", True) or self.scanning_paused) and not force_scan:
             logger.info("Scanning paused.")
             return SCAN_INTERVAL_SECONDS
 
