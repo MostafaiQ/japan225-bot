@@ -4,15 +4,6 @@ Digests live in `.claude/digests/`. Read only the digest(s) relevant to your tas
 
 ---
 
-## NEXT SESSION — DO THIS FIRST
-**Fix the pre-screen bug** (see Known Bug section below).
-Bot is fully deployed and scanning, but AI is NEVER called because the pre-screen always returns found=False.
-This is the single most important outstanding issue.
-
-After the bug fix, also test:
-- Telegram `/menu` button panel (was added but not yet real-world tested)
-
----
 
 ## Architecture (single VM process)
 ```
@@ -87,21 +78,8 @@ Dashboard chat uses: MODEL = "claude-sonnet-4-6" (in claude_client.py, NOT setti
 
 ---
 
-## Known Bug (critical — unresolved as of 2026-02-28)
-**Pre-screen always fails → AI never called. Bot scans but never sends a trade alert.**
-
-In `monitor.py:_scanning_cycle()` ~line 295:
-```python
-setup = detect_setup(tf_daily={"above_ema200_fallback": None}, tf_4h={}, tf_15m=tf_15m)
-```
-`detect_setup()` requires `above_ema200_fallback` to be `True` (LONG) or `False` (SHORT).
-With `None`: both `if daily_bullish:` and `if not daily_bullish and daily_bullish is not None:`
-evaluate to False → `setup["found"]` always False → early return → AI never escalates.
-
-Fix options:
-- (a) **Recommended**: fetch daily candles first, pass True/False based on price vs EMA200
-- (b) Pass `True`/`False` from a quick separate daily fetch before pre-screen
-- (c) Remove daily requirement from pre-screen entirely; let confidence.py be the gate
+## Known Bug
+*(none — pre-screen bug fixed 2026-02-28)*
 
 ---
 

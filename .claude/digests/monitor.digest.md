@@ -24,10 +24,10 @@ _scanning_cycle() -> int (sleep seconds):
   2. is_no_trade_day() → skip
   3. check scanning_paused
   4. ig.get_market_info() → 1 API call
-  5. ig.get_prices("MINUTE_15", 50) → 1 API call
-  6. detect_setup(stub_daily, {}, tf_15m)  ← BUG: stub daily always returns found=False
+  5. asyncio.gather(ig.get_prices("MINUTE_15", 50), ig.get_prices("DAY", 100)) → 2 parallel calls
+  6. detect_setup(tf_daily, {}, tf_15m) — tf_daily is real (above_ema200_fallback is bool)
   7. storage.is_ai_on_cooldown(30min)
-  8. fetch 4H + Daily candles → 2 API calls
+  8. fetch 4H candles → 1 API call (daily already fetched in step 5, reused here)
   9. researcher.research() → web data
   10. compute_confidence() → if score < 50: skip
   11. set_ai_cooldown(), scan_with_sonnet()

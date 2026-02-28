@@ -366,23 +366,27 @@ class TradingMonitor:
 
         current_price = market.get("bid", 0)
 
-        # --- Fetch 15M candles only for pre-screen (1 API call) ---
-        candles_15m = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: self.ig.get_prices("MINUTE_15", 50)
+        # --- Fetch 15M + Daily candles in parallel for pre-screen (2 API calls) ---
+        candles_15m, candles_daily = await asyncio.gather(
+            asyncio.get_event_loop().run_in_executor(
+                None, lambda: self.ig.get_prices("MINUTE_15", 50)
+            ),
+            asyncio.get_event_loop().run_in_executor(
+                None, lambda: self.ig.get_prices("DAY", 100)
+            ),
         )
         if not candles_15m:
             logger.warning("Failed to fetch 15M candles")
             return SCAN_INTERVAL_SECONDS
 
         tf_15m = analyze_timeframe(candles_15m)
+        tf_daily = analyze_timeframe(candles_daily) if candles_daily else {}
 
         # --- Local pre-screen (zero AI cost) ---
-        # Run local setup detection — determines LONG or SHORT or nothing
-        # We need a minimal daily context for trend direction
-        # Use a stub daily dict with just enough to determine direction
-        # We'll fetch full daily data only when escalating to AI
+        # detect_setup() requires above_ema200_fallback to be bool (True=bullish, False=bearish).
+        # Passing None causes both LONG and SHORT branches to skip → found=False always.
         setup = detect_setup(
-            tf_daily={"above_ema200_fallback": None},  # Will be refined below
+            tf_daily=tf_daily,
             tf_4h={},
             tf_15m=tf_15m,
         )
@@ -399,16 +403,13 @@ class TradingMonitor:
             logger.info(f"AI on cooldown ({AI_COOLDOWN_MINUTES} min). Skipping escalation.")
             return SCAN_INTERVAL_SECONDS
 
-        # --- Fetch 4H and Daily for full analysis (2 more API calls) ---
+        # --- Fetch 4H for full analysis (1 API call; daily already fetched above) ---
         candles_4h = await asyncio.get_event_loop().run_in_executor(
             None, lambda: self.ig.get_prices("HOUR_4", 100)
         )
-        candles_daily = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: self.ig.get_prices("DAY", 100)
-        )
 
         tf_4h = analyze_timeframe(candles_4h) if candles_4h else {}
-        tf_daily = analyze_timeframe(candles_daily) if candles_daily else {}
+        # tf_daily already set from pre-screen fetch above
 
         # --- Local confidence score ---
         web_research = {"timestamp": datetime.now().isoformat()}
