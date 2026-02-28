@@ -144,10 +144,11 @@ class TestDetectSetup:
         }
         tf_15m = {
             "price": 38500,
-            "bollinger_mid": 38490,   # Price 10 pts from mid (within 30-pt threshold)
+            "prev_close": 38450,      # Previous candle lower → bounce_starting=True
+            "bollinger_mid": 38490,   # Price 10 pts from mid (within 150-pt threshold)
             "bollinger_upper": 38700,
             "bollinger_lower": 38300,
-            "rsi": 48,                # In 35-55 LONG zone
+            "rsi": 42,                # In 35-48 LONG zone (RSI_ENTRY_HIGH_BOUNCE=48)
             "above_ema50": True,
             "above_ema200": True,
             "ema50": 38450,

@@ -1,12 +1,15 @@
 # core/confidence.py — DIGEST
 # Purpose: Local 8-criteria confidence scorer. Gates AI escalation (score must be >=50%).
 # Bidirectional: LONG and SHORT criteria differ.
+# Updated 2026-02-28: thresholds recalibrated for Nikkei ~55k; RSI tightened; C4 redesigned.
 
 ## Constants
 BASE_SCORE=30  CRITERIA_WEIGHT=10  MAX_SCORE=100
 MIN_CONFIDENCE_LONG=70  MIN_CONFIDENCE_SHORT=75
-BB_MID_THRESHOLD_PTS=30  EMA50_THRESHOLD_PTS=30
-LONG_RSI_LOW/HIGH=35/60  SHORT_RSI_LOW/HIGH=55/75
+BB_MID_THRESHOLD_PTS=150   # was 30 — calibrated for Nikkei ~55k (p45 percentile)
+EMA50_THRESHOLD_PTS=150    # was 30 — calibrated for Nikkei ~55k
+LONG_RSI_LOW/HIGH=35/48    # was 35/60 — tightened: RSI>48 at BB mid = not genuinely oversold
+SHORT_RSI_LOW/HIGH=55/75
 
 ## compute_confidence(direction, tf_daily, tf_4h, tf_15m, upcoming_events=None, web_research=None) -> dict
 # Returns: {score, passed_criteria, total_criteria, criteria, reasons, direction,
@@ -15,9 +18,11 @@ LONG_RSI_LOW/HIGH=35/60  SHORT_RSI_LOW/HIGH=55/75
 
 # 8 criteria:
 # 1. daily_trend:     LONG=above EMA200 daily.  SHORT=below EMA200 daily.  (EMA50 fallback)
-# 2. entry_level:     LONG=near BB_mid or EMA50 (±30pts). SHORT=near BB_upper or EMA50_from_below.
-# 3. rsi_15m:         LONG=RSI 35-60.  SHORT=RSI 55-75.
-# 4. tp_viable:       LONG=100+pts to BB_upper.  SHORT=100+pts to BB_lower.
+# 2. entry_level:     LONG=near BB_mid (±150pts) OR EMA50 (±150pts). SHORT=near BB_upper or EMA50_from_below.
+# 3. rsi_15m:         LONG=RSI 35-48 (RSI_ENTRY_HIGH_BOUNCE).  SHORT=RSI 55-75.
+# 4. tp_viable:       LONG=price<=bb_mid (confirms price reached pullback level, not entering mid-fall).
+#                     SHORT=price>=bb_mid (confirms rally to midline before rejection).
+#                     NOTE: C4 was redesigned 2026-02-28. Old: 100+pts to BB_upper (trivially true 78%).
 # 5. structure:       LONG=price above EMA50_15m.  SHORT=price below EMA50_15m.
 # 6. macro:           LONG=4H RSI 35-75.  SHORT=4H RSI 30-60.
 # 7. no_event_1hr:    No HIGH-impact event within 60min (checks upcoming_events list).

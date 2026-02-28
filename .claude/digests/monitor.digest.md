@@ -24,6 +24,7 @@ _scanning_cycle() -> int (sleep seconds):
   1. get_current_session() → skip if not active
   2. is_no_trade_day() → skip
   3. check scanning_paused
+  3b. PAPER_TRADING_SESSION_GATE check: if True and not force_scan → skip non-Tokyo hours (UTC 0-6)
   4. ig.get_market_info() → 1 API call
   5. asyncio.gather(ig.get_prices("MINUTE_15", 50), ig.get_prices("DAY", 100)) → 2 parallel calls
   6. detect_setup(tf_daily, {}, tf_15m) — tf_daily is real (above_ema200_fallback is bool)

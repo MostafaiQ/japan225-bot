@@ -9,6 +9,7 @@ Output: dicts with calculated values
 import logging
 import math
 from typing import Optional
+from config.settings import RSI_ENTRY_HIGH_BOUNCE, ENABLE_EMA50_BOUNCE_SETUP
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,9 @@ def analyze_timeframe(candles: list[dict]) -> dict:
     else:
         result["above_ema200_fallback"] = result["above_ema200"]
     
+    # Previous close (for bounce confirmation: current > prev = turning up)
+    result["prev_close"] = closes[-2] if len(closes) >= 2 else None
+
     # Bollinger position: -1 (at lower), 0 (at mid), 1 (at upper)
     if result["bollinger_upper"] and result["bollinger_lower"]:
         bb_range = result["bollinger_upper"] - result["bollinger_lower"]
@@ -313,11 +317,13 @@ def detect_setup(
 
         # --- LONG Setup 1: Bollinger Mid Bounce ---
         if bb_mid and rsi_15m:
-            near_mid_pts = abs(price - bb_mid) <= 30  # Fixed: point distance, not percentile
-            rsi_ok_long = 35 <= rsi_15m <= 60  # expanded: 55→60, valid pullbacks at RSI 56-60
+            near_mid_pts = abs(price - bb_mid) <= 150  # calibrated: 30pts was p11 at ~55k Nikkei
+            rsi_ok_long = 35 <= rsi_15m <= RSI_ENTRY_HIGH_BOUNCE  # 48: genuine oversold pullback
             above_ema50 = tf_15m.get("above_ema50")
+            prev_close = tf_15m.get("prev_close")
+            bounce_starting = prev_close is not None and price > prev_close  # candle turning up
 
-            if near_mid_pts and rsi_ok_long and above_ema50:
+            if near_mid_pts and rsi_ok_long and above_ema50 and bounce_starting:
                 entry = price
                 sl = entry - 200
                 if ema50_15m:
@@ -338,10 +344,10 @@ def detect_setup(
                 })
                 return result
 
-        # --- LONG Setup 2: EMA50 Bounce ---
-        if ema50_15m and rsi_15m:
+        # --- LONG Setup 2: EMA50 Bounce (disabled until validated — see ENABLE_EMA50_BOUNCE_SETUP) ---
+        if ENABLE_EMA50_BOUNCE_SETUP and ema50_15m and rsi_15m:
             dist_ema50 = abs(price - ema50_15m)
-            if dist_ema50 <= 30 and rsi_15m < 55 and price >= ema50_15m - 10:  # < 50 → < 55
+            if dist_ema50 <= 150 and rsi_15m < 55 and price >= ema50_15m - 10:
                 entry = price
                 sl = entry - 200
                 tp = entry + 400
@@ -370,7 +376,7 @@ def detect_setup(
 
         # --- SHORT Setup 1: Bollinger Upper Rejection ---
         if bb_upper and bb_mid and rsi_15m:
-            near_upper_pts = abs(price - bb_upper) <= 30
+            near_upper_pts = abs(price - bb_upper) <= 150
             rsi_ok_short = 55 <= rsi_15m <= 75
             below_ema50 = not tf_15m.get("above_ema50")
 
@@ -397,7 +403,7 @@ def detect_setup(
         if ema50_15m and rsi_15m:
             dist_ema50 = abs(price - ema50_15m)
             # Price must be at or just below EMA50 (came up to test it)
-            at_ema50_from_below = price <= ema50_15m + 2 and dist_ema50 <= 30  # +5 → +2 (Finding 5)
+            at_ema50_from_below = price <= ema50_15m + 5 and dist_ema50 <= 150
             if at_ema50_from_below and 50 <= rsi_15m <= 70:
                 entry = price
                 sl = entry + 200

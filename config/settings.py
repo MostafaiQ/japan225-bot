@@ -35,6 +35,12 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 TRADING_MODE = os.getenv("TRADING_MODE", "paper")  # "paper" or "live"
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
+# Paper trading safety gate: restrict to validated sessions only.
+# Backtest data only covers Tokyo session (^N225, 00:00-06:00 UTC).
+# London/NY sessions are unvalidated — do not risk capital there until tested.
+PAPER_TRADING_SESSION_GATE = True  # Set False only when London/NY is validated
+ENABLE_EMA50_BOUNCE_SETUP = False  # Disabled: median EMA50 dist=325pts, entries unvalidated
+
 # ============================================
 # IG MARKETS - INSTRUMENT
 # ============================================
@@ -103,8 +109,9 @@ VWAP_RESET = "daily"
 # RSI thresholds
 RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
-RSI_ENTRY_LOW = 35  # Ideal entry RSI range (15M)
+RSI_ENTRY_LOW = 35            # Ideal entry RSI range (15M)
 RSI_ENTRY_HIGH = 55
+RSI_ENTRY_HIGH_BOUNCE = 48    # Tighter RSI gate for BB mid bounce (requires genuine oversold)
 
 # ============================================
 # CONFIDENCE SCORING (8-point system)
@@ -183,9 +190,9 @@ SHORT_RSI_HIGH = 75
 # ============================================
 # ADVERSE MOVE TIERS (position monitoring)
 # ============================================
-ADVERSE_MILD_PTS = 30               # Alert only
-ADVERSE_MODERATE_PTS = 50          # Alert + suggest close
-ADVERSE_SEVERE_PTS = 80            # Auto move SL to breakeven, then alert
+ADVERSE_MILD_PTS = 60               # Alert only (was 30 — fired inside 1-candle noise)
+ADVERSE_MODERATE_PTS = 120         # Alert + suggest close (was 50)
+ADVERSE_SEVERE_PTS = 175           # Auto move SL to breakeven (was 80 — 87.5% of 200pt SL)
 
 # ============================================
 # FRIDAY BLACKOUT

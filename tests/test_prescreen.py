@@ -20,6 +20,7 @@ def make_tf(
     above_ema50=True,
     above_ema200=True,
     above_ema200_fallback=None,
+    prev_close=None,
 ):
     """Minimal fake analyze_timeframe() dict."""
     tf = {
@@ -33,6 +34,7 @@ def make_tf(
         "above_ema50": above_ema50,
         "above_ema200": above_ema200,
         "above_ema200_fallback": above_ema200_fallback if above_ema200_fallback is not None else above_ema200,
+        "prev_close": prev_close if prev_close is not None else price - 30,  # default: bouncing up
     }
     return tf
 
@@ -91,10 +93,10 @@ class TestLongBollingerMidBounce:
             assert result["found"] is False
 
     def test_price_far_from_bb_mid_blocks(self):
-        """Price 100 pts from mid — exceeds 30-pt threshold."""
+        """Price 200 pts from mid — exceeds 150-pt threshold."""
         tf_daily, tf_4h, tf_15m = self._make_long_bb()
-        tf_15m["bollinger_mid"] = tf_15m["price"] - 100  # 100 pts away
-        tf_15m["ema50"] = tf_15m["price"] - 100           # Far from EMA50 too
+        tf_15m["bollinger_mid"] = tf_15m["price"] - 200  # 200 pts away (> 150 threshold)
+        tf_15m["ema50"] = tf_15m["price"] - 200           # Far from EMA50 too
         result = detect_setup(tf_daily, tf_4h, tf_15m)
         # Should NOT detect bb_mid_bounce
         if result["found"]:
@@ -137,16 +139,16 @@ class TestLongEma50Bounce:
         )
         return tf_daily, tf_4h, tf_15m
 
-    def test_detects_ema50_bounce(self):
+    def test_ema50_bounce_disabled(self):
+        """EMA50 bounce setup is disabled (ENABLE_EMA50_BOUNCE_SETUP=False) until validated."""
         tf_daily, tf_4h, tf_15m = self._make_ema50_bounce()
         result = detect_setup(tf_daily, tf_4h, tf_15m)
-        assert result["found"] is True
-        assert result["direction"] == "LONG"
-        assert result["type"] == "ema50_bounce"
+        # Setup should not fire since ENABLE_EMA50_BOUNCE_SETUP=False
+        assert result.get("type") != "ema50_bounce"
 
     def test_price_far_from_ema50_blocks(self):
         tf_daily, tf_4h, tf_15m = self._make_ema50_bounce()
-        tf_15m["ema50"] = tf_15m["price"] - 100  # 100 pts away
+        tf_15m["ema50"] = tf_15m["price"] - 200  # 200 pts away (> 150 threshold)
         result = detect_setup(tf_daily, tf_4h, tf_15m)
         if result["found"]:
             assert result["type"] != "ema50_bounce"
@@ -198,8 +200,8 @@ class TestShortBollingerUpperRejection:
 
     def test_price_far_from_bb_upper_blocks(self):
         tf_daily, tf_4h, tf_15m = self._make_short_bb()
-        tf_15m["bollinger_upper"] = tf_15m["price"] + 100  # 100 pts away
-        tf_15m["ema50"] = tf_15m["price"] + 100             # also far
+        tf_15m["bollinger_upper"] = tf_15m["price"] + 200  # 200 pts away (> 150 threshold)
+        tf_15m["ema50"] = tf_15m["price"] + 200             # also far
         result = detect_setup(tf_daily, tf_4h, tf_15m)
         if result["found"]:
             assert result["type"] != "bollinger_upper_rejection"

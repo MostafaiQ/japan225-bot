@@ -41,11 +41,11 @@ def make_tf(
 def ideal_long_setup():
     """Return (tf_daily, tf_4h, tf_15m) for a perfect LONG setup."""
     tf_15m = make_tf(
-        price=38000, rsi=45,
-        bb_mid=37990,    # price 10 pts from mid (within 30)
-        bb_upper=38400,  # 400 pts to upper (TP viable)
+        price=38000, rsi=42,   # RSI 42: in 35-48 zone
+        bb_mid=38010,    # price 10 pts BELOW mid (C4: price <= bb_mid passes)
+        bb_upper=38400,  # 400 pts to upper
         bb_lower=37700,
-        ema50=37985,     # price 15 pts above EMA50
+        ema50=37985,     # price above EMA50 (C5 passes)
         above_ema50=True, above_ema200=True,
     )
     tf_4h = make_tf(rsi=55, above_ema200=True, above_ema50=True)
@@ -141,8 +141,8 @@ class TestLongCriteria:
 
     def test_entry_far_from_bb_mid_fails(self):
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
-        tf_15m["bollinger_mid"] = tf_15m["price"] - 100  # 100 pts away
-        tf_15m["ema50"] = tf_15m["price"] - 100           # also far from EMA50
+        tf_15m["bollinger_mid"] = tf_15m["price"] - 200  # 200 pts away (> 150 threshold)
+        tf_15m["ema50"] = tf_15m["price"] - 200           # also far from EMA50
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         assert result["criteria"]["entry_level"] is False
 
@@ -164,15 +164,15 @@ class TestLongCriteria:
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         assert result["criteria"]["rsi_15m"] is False
 
-    def test_tp_viable_with_enough_space(self):
+    def test_tp_viable_when_price_below_bb_mid(self):
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
-        # BB upper is 400 pts away → viable
+        # ideal_long_setup: price=38000, bb_mid=38010 → price is below mid → viable
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         assert result["criteria"]["tp_viable"] is True
 
-    def test_tp_not_viable_when_bb_upper_close(self):
+    def test_tp_not_viable_when_price_above_bb_mid(self):
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
-        tf_15m["bollinger_upper"] = tf_15m["price"] + 50  # Only 50 pts
+        tf_15m["bollinger_mid"] = tf_15m["price"] - 50  # price 50pts ABOVE mid → not viable
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         assert result["criteria"]["tp_viable"] is False
 
@@ -221,15 +221,15 @@ class TestShortCriteria:
         result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
         assert result["criteria"]["structure"] is True
 
-    def test_tp_viable_for_short(self):
+    def test_tp_viable_for_short_when_price_above_bb_mid(self):
         tf_daily, tf_4h, tf_15m = ideal_short_setup()
-        # BB lower is 600 pts below price
+        # ideal_short_setup: price=38000, bb_mid=37700 → price above mid → viable for short
         result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
         assert result["criteria"]["tp_viable"] is True
 
-    def test_tp_not_viable_for_short_when_lower_close(self):
+    def test_tp_not_viable_for_short_when_price_below_bb_mid(self):
         tf_daily, tf_4h, tf_15m = ideal_short_setup()
-        tf_15m["bollinger_lower"] = tf_15m["price"] - 50  # Only 50 pts
+        tf_15m["bollinger_mid"] = tf_15m["price"] + 50  # price 50pts BELOW mid → not viable for short
         result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
         assert result["criteria"]["tp_viable"] is False
 

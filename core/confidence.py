@@ -21,6 +21,7 @@ The SHORT threshold is a calibration gate, not a hard floor on criteria count.
 import logging
 from datetime import datetime, timezone
 from typing import Optional
+from config.settings import RSI_ENTRY_HIGH_BOUNCE
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +34,14 @@ MIN_CONFIDENCE_LONG = 70
 MIN_CONFIDENCE_SHORT = 75
 
 # RSI ranges
-LONG_RSI_LOW, LONG_RSI_HIGH = 35, 60  # expanded upper bound: valid pullback entries at RSI 56-60
+LONG_RSI_LOW, LONG_RSI_HIGH = 35, 48  # tightened: RSI>48 at BB mid = not genuinely oversold
 SHORT_RSI_LOW, SHORT_RSI_HIGH = 55, 75
 
 # Bollinger nearness threshold (points from midband)
-BB_MID_THRESHOLD_PTS = 30
+BB_MID_THRESHOLD_PTS = 150  # calibrated for Nikkei ~50k-60k (was 30, only p11 of candles)
 
 # EMA50 nearness for EMA bounce setup (points)
-EMA50_THRESHOLD_PTS = 30
+EMA50_THRESHOLD_PTS = 150  # calibrated for Nikkei ~50k-60k (was 30, only p6 of candles)
 
 
 def compute_confidence(
@@ -172,25 +173,20 @@ def compute_confidence(
         reasons["rsi_15m"] = "RSI 15M unavailable"
     criteria["rsi_15m"] = c3
 
-    # ---- Criterion 4: TP Viable (100 pts to next level) ----
-    # For LONG: 100 pts to upper BB or resistance implies target is achievable
-    # For SHORT: 100 pts to lower BB or support implies target is achievable
+    # ---- Criterion 4: Entry Below/Above Midline (confirms actual bounce level reached) ----
+    # For LONG: price must be at or below BB mid — ensures we're buying a real pullback,
+    #   not entering while price is still falling toward the mid from above.
+    # For SHORT: price must be at or above BB mid — price has rallied to mid before rejection.
     if direction == "LONG":
-        if bb_upper is not None:
-            pts_to_upper = bb_upper - price
-            c4 = pts_to_upper >= 100
-            reasons["tp_viable"] = f"BB upper {pts_to_upper:.0f}pts away (need 100+)"
-        else:
-            c4 = False
-            reasons["tp_viable"] = "BB upper unavailable"
+        c4 = bb_mid is not None and price <= bb_mid
+        reasons["tp_viable"] = (
+            f"Price {'at/below' if c4 else 'above'} BB mid ({bb_mid:.0f})" if bb_mid else "BB mid unavailable"
+        )
     else:
-        if bb_lower is not None:
-            pts_to_lower = price - bb_lower
-            c4 = pts_to_lower >= 100
-            reasons["tp_viable"] = f"BB lower {pts_to_lower:.0f}pts away (need 100+)"
-        else:
-            c4 = False
-            reasons["tp_viable"] = "BB lower unavailable"
+        c4 = bb_mid is not None and price >= bb_mid
+        reasons["tp_viable"] = (
+            f"Price {'at/above' if c4 else 'below'} BB mid ({bb_mid:.0f})" if bb_mid else "BB mid unavailable"
+        )
     criteria["tp_viable"] = c4
 
     # ---- Criterion 5: Price Structure ----

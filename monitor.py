@@ -35,7 +35,7 @@ from config.settings import (
     AI_COOLDOWN_MINUTES, PRICE_DRIFT_ABORT_PTS, SAFETY_CONSECUTIVE_EMPTY,
     calculate_margin, calculate_profit, SPREAD_ESTIMATE,
     MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, BREAKEVEN_BUFFER,
-    ADVERSE_SEVERE_PTS,
+    ADVERSE_SEVERE_PTS, PAPER_TRADING_SESSION_GATE,
 )
 from core.ig_client import IGClient, POSITIONS_API_ERROR
 from core.indicators import analyze_timeframe, detect_setup
@@ -350,6 +350,13 @@ class TradingMonitor:
         if not session["active"] and not force_scan:
             logger.debug("Off-hours — heartbeat only")
             return OFFHOURS_INTERVAL_SECONDS
+
+        # --- Paper trading session gate (Tokyo-only until London/NY validated) ---
+        if PAPER_TRADING_SESSION_GATE and not force_scan:
+            now_utc = datetime.now(timezone.utc)
+            if not (0 <= now_utc.hour < 6):
+                logger.debug("Session gate: non-Tokyo session skipped (PAPER_TRADING_SESSION_GATE=True)")
+                return OFFHOURS_INTERVAL_SECONDS
 
         # --- System paused (force scan overrides pause too) ---
         account = self.storage.get_account_state()
