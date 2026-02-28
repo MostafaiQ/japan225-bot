@@ -28,7 +28,9 @@ Loaded on every call. Contains:
 - Core digests: settings, monitor, database (always)
 - Keyword-triggered digests (e.g. "session" → session.digest.md, "risk" → risk_manager.digest.md)
 - Behaviour rules: read-before-edit, minimal diffs, git add/commit/push after changes,
-  restart bot after Python fixes, cite file:line
+  restart bot after Python fixes, cite file:line,
+  ALWAYS run commands itself (never instruct user — user is remote),
+  approval threshold mirrors Claude Code: small/safe → just do, large/risky/irreversible → ask first
 
 ## Agentic loop (chat(message, history) → str)
 1. Build system prompt with relevant digests

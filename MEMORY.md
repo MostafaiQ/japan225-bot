@@ -108,7 +108,7 @@ Fix options:
 ## Important Behavioral Notes (hard-won, never forget)
 - **POSITIONS_API_ERROR** is a sentinel in ig_client.py. Check with `is POSITIONS_API_ERROR`, not `not positions`. Empty list `[]` = no positions. Sentinel = API call failed.
 - **open_trade_atomic()** in storage.py: log_trade_open + set_position_open in one DB transaction. Always use this. Never call them separately.
-- **on_trade_confirm / on_force_scan** callbacks set on self.telegram AFTER telegram.initialize(). Order matters in TradingMonitor.start().
+- **Telegram starts FIRST** in TradingMonitor.start() — before IG connection. If IG is down, bot stays alive and retries IG every 5 min. on_trade_confirm / on_force_scan callbacks set immediately after initialize(), before start_polling().
 - **Startup sync** handles 4 cases: clean start, IG-has/DB-none (recovery), DB-has/IG-none (closed offline), both agree.
 - **MomentumTracker** is None when flat. Created at trade open, reset at close. Reinitiated in startup_sync if position recovered.
 - **Local confidence pre-gate**: only escalates to AI if local score >= 50%. AI cooldown 30min regardless of result.

@@ -7,7 +7,9 @@ __init__(): creates Storage, IGClient, RiskManager, TelegramBot, ExitManager, AI
             _position_empty_count=0
             NOTE: telegram.on_trade_confirm and on_force_scan callbacks set AFTER initialize()
 
-start(): connects IG (3 retries), initializes Telegram, runs startup_sync(), then main loop
+start(): initializes Telegram FIRST (always available), then connects IG (3 fast retries).
+  If IG fails → sends Telegram alert, retries IG every 5 min until recovered (never exits).
+  Once IG connected → startup_sync() → main loop.
 
 startup_sync(): reconciles DB ↔ IG on every restart. 4 cases:
   - IG has / DB none → write DB, init MomentumTracker, alert
