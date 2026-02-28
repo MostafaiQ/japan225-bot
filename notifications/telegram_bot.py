@@ -203,6 +203,71 @@ class TelegramBot:
         ]
         return "\n".join(lines)
 
+    def _balance_text(self) -> str:
+        acc  = self.storage.get_account_state()
+        pnl  = acc.get("total_pnl", 0)
+        cost = acc.get("total_api_cost", 0)
+        net  = pnl - cost
+        return "\n".join([
+            "💰 <b>Account Balance</b>", DIV,
+            f"Current:     <b>${acc.get('balance', 0):.2f}</b>",
+            f"Starting:    ${acc.get('starting_balance', 0):.2f}", DIV,
+            f"Total P&amp;L:   {'🟢 +' if pnl >= 0 else '🔴 '}${abs(pnl):.2f}",
+            f"API costs:   ${cost:.4f}",
+            f"Net profit:  {'🟢 +' if net >= 0 else '🔴 '}${abs(net):.2f}", DIV,
+            f"Daily loss:  ${abs(acc.get('daily_loss_today', 0)):.2f}",
+            f"Weekly loss: ${abs(acc.get('weekly_loss', 0)):.2f}",
+        ])
+
+    def _journal_text(self) -> str | None:
+        """Returns formatted text or None if no trades."""
+        trades = self.storage.get_recent_trades(5)
+        if not trades:
+            return None
+        lines = ["📒 <b>Last 5 Trades</b>", DIV]
+        for t in trades:
+            pnl  = t.get("pnl") or 0
+            sign = "+" if pnl > 0 else ""
+            icon = "🟢" if pnl > 0 else "🔴"
+            lines.append(
+                f"{icon} #{t.get('trade_number')}  {t.get('direction')}  "
+                f"<b>{sign}${pnl:.2f}</b>  {t.get('result', '—')}"
+            )
+        return "\n".join(lines)
+
+    def _today_text(self) -> str | None:
+        """Returns formatted text or None if no scans today."""
+        scans = self.storage.get_scans_today()
+        if not scans:
+            return None
+        lines = [f"📅 <b>Today's Scans</b>  ({len(scans)} total)", DIV]
+        for s in scans[-8:]:
+            badge = "🔍 <b>SETUP</b>" if s.get("setup_found") else "—"
+            lines.append(f"{s.get('session', '?')}  {_price(s.get('price', 0))}  {badge}")
+        return "\n".join(lines)
+
+    def _stats_text(self) -> str:
+        s   = self.storage.get_trade_stats()
+        pnl = s.get("total_pnl", 0)
+        return "\n".join([
+            "📈 <b>Performance Stats</b>", DIV,
+            f"Total trades: <b>{s.get('total', 0)}</b>",
+            f"Wins: 🟢 {s.get('wins', 0)}   Losses: 🔴 {s.get('losses', 0)}",
+            f"Win rate:  {_pct(s.get('win_rate', 0))}",
+            DIV,
+            f"Total P&amp;L:  {'🟢 +' if pnl >= 0 else '🔴 '}${abs(pnl):.2f}",
+            f"Avg win:    🟢 ${s.get('avg_win', 0):.2f}",
+            f"Avg loss:   🔴 ${s.get('avg_loss', 0):.2f}",
+            f"Best:       🏆 ${s.get('best_trade', 0):.2f}",
+            f"Worst:      💀 ${s.get('worst_trade', 0):.2f}",
+            DIV,
+            f"Avg confidence: {_pct(s.get('avg_confidence', 0))}",
+        ])
+
+    def _cost_text(self) -> str:
+        total = self.storage.get_api_cost_total()
+        return f"💸 <b>API Cost (trading AI)</b>\n{DIV}\nTotal: <b>${total:.4f}</b>"
+
     # ── Send methods (called by monitor.py) ───────────────────────────────
 
     async def send_alert(self, message: str, parse_mode: str = ParseMode.HTML):
@@ -375,88 +440,32 @@ class TelegramBot:
         )
 
     async def _cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        acc = self.storage.get_account_state()
-        pnl  = acc.get("total_pnl", 0)
-        cost = acc.get("total_api_cost", 0)
-        net  = pnl - cost
-        text = "\n".join([
-            "💰 <b>Account Balance</b>", DIV,
-            f"Current:     <b>${acc.get('balance', 0):.2f}</b>",
-            f"Starting:    ${acc.get('starting_balance', 0):.2f}",
-            DIV,
-            f"Total P&amp;L:   {'🟢 +' if pnl >= 0 else '🔴 '}${abs(pnl):.2f}",
-            f"API costs:   ${cost:.4f}",
-            f"Net profit:  {'🟢 +' if net >= 0 else '🔴 '}${abs(net):.2f}",
-            DIV,
-            f"Daily loss:  ${abs(acc.get('daily_loss_today', 0)):.2f}",
-            f"Weekly loss: ${abs(acc.get('weekly_loss', 0)):.2f}",
-        ])
         await update.message.reply_text(
-            text, parse_mode=ParseMode.HTML, reply_markup=_nav_kb("balance")
+            self._balance_text(), parse_mode=ParseMode.HTML, reply_markup=_nav_kb("balance")
         )
 
     async def _cmd_journal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        trades = self.storage.get_recent_trades(5)
-        if not trades:
-            await update.message.reply_text(
-                "📒 No trades recorded yet.", reply_markup=_nav_kb("journal")
-            )
-            return
-        lines = ["📒 <b>Last 5 Trades</b>", DIV]
-        for t in trades:
-            pnl  = t.get("pnl") or 0
-            sign = "+" if pnl > 0 else ""
-            icon = "🟢" if pnl > 0 else "🔴"
-            lines.append(
-                f"{icon} #{t.get('trade_number')}  {t.get('direction')}  "
-                f"<b>{sign}${pnl:.2f}</b>  {t.get('result', '—')}"
-            )
+        text = self._journal_text()
         await update.message.reply_text(
-            "\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=_nav_kb("journal")
+            text or "📒 No trades recorded yet.",
+            parse_mode=ParseMode.HTML, reply_markup=_nav_kb("journal"),
         )
 
     async def _cmd_today(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        scans = self.storage.get_scans_today()
-        if not scans:
-            await update.message.reply_text(
-                "📅 No scans today yet.", reply_markup=_nav_kb("today")
-            )
-            return
-        lines = [f"📅 <b>Today's Scans</b>  ({len(scans)} total)", DIV]
-        for s in scans[-8:]:
-            badge = "🔍 <b>SETUP</b>" if s.get("setup_found") else "—"
-            lines.append(f"{s.get('session', '?')}  {_price(s.get('price', 0))}  {badge}")
+        text = self._today_text()
         await update.message.reply_text(
-            "\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=_nav_kb("today")
+            text or "📅 No scans today yet.",
+            parse_mode=ParseMode.HTML, reply_markup=_nav_kb("today"),
         )
 
     async def _cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        s   = self.storage.get_trade_stats()
-        pnl = s.get("total_pnl", 0)
-        text = "\n".join([
-            "📈 <b>Performance Stats</b>", DIV,
-            f"Total trades: <b>{s.get('total', 0)}</b>",
-            f"Wins: 🟢 {s.get('wins', 0)}   Losses: 🔴 {s.get('losses', 0)}",
-            f"Win rate:  {_pct(s.get('win_rate', 0))}",
-            DIV,
-            f"Total P&amp;L:  {'🟢 +' if pnl >= 0 else '🔴 '}${abs(pnl):.2f}",
-            f"Avg win:    🟢 ${s.get('avg_win', 0):.2f}",
-            f"Avg loss:   🔴 ${s.get('avg_loss', 0):.2f}",
-            f"Best:       🏆 ${s.get('best_trade', 0):.2f}",
-            f"Worst:      💀 ${s.get('worst_trade', 0):.2f}",
-            DIV,
-            f"Avg confidence: {_pct(s.get('avg_confidence', 0))}",
-        ])
         await update.message.reply_text(
-            text, parse_mode=ParseMode.HTML, reply_markup=_nav_kb("stats")
+            self._stats_text(), parse_mode=ParseMode.HTML, reply_markup=_nav_kb("stats")
         )
 
     async def _cmd_cost(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        total = self.storage.get_api_cost_total()
         await update.message.reply_text(
-            f"💸 <b>API Cost (trading AI)</b>\n{DIV}\nTotal: <b>${total:.4f}</b>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=_nav_kb("cost"),
+            self._cost_text(), parse_mode=ParseMode.HTML, reply_markup=_nav_kb("cost")
         )
 
     async def _cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -513,7 +522,10 @@ class TelegramBot:
             )
             return
         await update.message.reply_text("🚨 KILL received. Closing immediately...")
-        result = self.ig.close_position(pos["deal_id"], pos["direction"], pos["lots"])
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None, lambda: self.ig.close_position(pos["deal_id"], pos["direction"], pos["lots"])
+        )
         if result:
             self.storage.set_position_closed()
             await update.message.reply_text(
@@ -545,73 +557,28 @@ class TelegramBot:
                 self._status_text(), parse_mode=ParseMode.HTML, reply_markup=_nav_kb("status")
             )
         elif cb == "menu_balance":
-            acc  = self.storage.get_account_state()
-            pnl  = acc.get("total_pnl", 0)
-            cost = acc.get("total_api_cost", 0)
-            net  = pnl - cost
-            text = "\n".join([
-                "💰 <b>Account Balance</b>", DIV,
-                f"Current:     <b>${acc.get('balance', 0):.2f}</b>",
-                f"Starting:    ${acc.get('starting_balance', 0):.2f}", DIV,
-                f"Total P&amp;L:   {'🟢 +' if pnl >= 0 else '🔴 '}${abs(pnl):.2f}",
-                f"API costs:   ${cost:.4f}",
-                f"Net profit:  {'🟢 +' if net >= 0 else '🔴 '}${abs(net):.2f}", DIV,
-                f"Daily loss:  ${abs(acc.get('daily_loss_today', 0)):.2f}",
-                f"Weekly loss: ${abs(acc.get('weekly_loss', 0)):.2f}",
-            ])
-            await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=_nav_kb("balance"))
-        elif cb == "menu_journal":
-            trades = self.storage.get_recent_trades(5)
-            if not trades:
-                await msg.reply_text("📒 No trades recorded yet.", reply_markup=_nav_kb("journal"))
-            else:
-                lines = ["📒 <b>Last 5 Trades</b>", DIV]
-                for t in trades:
-                    pnl  = t.get("pnl") or 0
-                    sign = "+" if pnl > 0 else ""
-                    icon = "🟢" if pnl > 0 else "🔴"
-                    lines.append(
-                        f"{icon} #{t.get('trade_number')}  {t.get('direction')}  "
-                        f"<b>{sign}${pnl:.2f}</b>  {t.get('result', '—')}"
-                    )
-                await msg.reply_text(
-                    "\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=_nav_kb("journal")
-                )
-        elif cb == "menu_today":
-            scans = self.storage.get_scans_today()
-            if not scans:
-                await msg.reply_text("📅 No scans today yet.", reply_markup=_nav_kb("today"))
-            else:
-                lines = [f"📅 <b>Today's Scans</b>  ({len(scans)} total)", DIV]
-                for s in scans[-8:]:
-                    badge = "🔍 <b>SETUP</b>" if s.get("setup_found") else "—"
-                    lines.append(f"{s.get('session', '?')}  {_price(s.get('price', 0))}  {badge}")
-                await msg.reply_text(
-                    "\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=_nav_kb("today")
-                )
-        elif cb == "menu_stats":
-            s   = self.storage.get_trade_stats()
-            pnl = s.get("total_pnl", 0)
-            text = "\n".join([
-                "📈 <b>Performance Stats</b>", DIV,
-                f"Total trades: <b>{s.get('total', 0)}</b>",
-                f"Wins: 🟢 {s.get('wins', 0)}   Losses: 🔴 {s.get('losses', 0)}",
-                f"Win rate:  {_pct(s.get('win_rate', 0))}",
-                DIV,
-                f"Total P&amp;L:  {'🟢 +' if pnl >= 0 else '🔴 '}${abs(pnl):.2f}",
-                f"Avg win:    🟢 ${s.get('avg_win', 0):.2f}",
-                f"Avg loss:   🔴 ${s.get('avg_loss', 0):.2f}",
-                f"Best:       🏆 ${s.get('best_trade', 0):.2f}",
-                f"Worst:      💀 ${s.get('worst_trade', 0):.2f}",
-                DIV,
-                f"Avg confidence: {_pct(s.get('avg_confidence', 0))}",
-            ])
-            await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=_nav_kb("stats"))
-        elif cb == "menu_cost":
-            total = self.storage.get_api_cost_total()
             await msg.reply_text(
-                f"💸 <b>API Cost (trading AI)</b>\n{DIV}\nTotal: <b>${total:.4f}</b>",
-                parse_mode=ParseMode.HTML, reply_markup=_nav_kb("cost"),
+                self._balance_text(), parse_mode=ParseMode.HTML, reply_markup=_nav_kb("balance")
+            )
+        elif cb == "menu_journal":
+            text = self._journal_text()
+            await msg.reply_text(
+                text or "📒 No trades recorded yet.",
+                parse_mode=ParseMode.HTML, reply_markup=_nav_kb("journal"),
+            )
+        elif cb == "menu_today":
+            text = self._today_text()
+            await msg.reply_text(
+                text or "📅 No scans today yet.",
+                parse_mode=ParseMode.HTML, reply_markup=_nav_kb("today"),
+            )
+        elif cb == "menu_stats":
+            await msg.reply_text(
+                self._stats_text(), parse_mode=ParseMode.HTML, reply_markup=_nav_kb("stats")
+            )
+        elif cb == "menu_cost":
+            await msg.reply_text(
+                self._cost_text(), parse_mode=ParseMode.HTML, reply_markup=_nav_kb("cost")
             )
         elif cb == "menu_force":
             await msg.reply_text(
@@ -658,7 +625,10 @@ class TelegramBot:
                 await msg.reply_text("⚠️ IG client not connected.", parse_mode=ParseMode.HTML)
             else:
                 await msg.reply_text("🚨 KILL received. Closing immediately...")
-                result = self.ig.close_position(pos["deal_id"], pos["direction"], pos["lots"])
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    None, lambda: self.ig.close_position(pos["deal_id"], pos["direction"], pos["lots"])
+                )
                 if result:
                     self.storage.set_position_closed()
                     await msg.reply_text(
@@ -733,7 +703,10 @@ class TelegramBot:
                     "⚠️ IG client not connected.", parse_mode=ParseMode.HTML
                 )
                 return
-            result = self.ig.close_position(pos["deal_id"], pos["direction"], pos["lots"])
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None, lambda: self.ig.close_position(pos["deal_id"], pos["direction"], pos["lots"])
+            )
             if result:
                 self.storage.set_position_closed()
                 await query.edit_message_text(

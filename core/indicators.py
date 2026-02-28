@@ -314,7 +314,7 @@ def detect_setup(
         # --- LONG Setup 1: Bollinger Mid Bounce ---
         if bb_mid and rsi_15m:
             near_mid_pts = abs(price - bb_mid) <= 30  # Fixed: point distance, not percentile
-            rsi_ok_long = 35 <= rsi_15m <= 55
+            rsi_ok_long = 35 <= rsi_15m <= 60  # expanded: 55→60, valid pullbacks at RSI 56-60
             above_ema50 = tf_15m.get("above_ema50")
 
             if near_mid_pts and rsi_ok_long and above_ema50:
@@ -341,7 +341,7 @@ def detect_setup(
         # --- LONG Setup 2: EMA50 Bounce ---
         if ema50_15m and rsi_15m:
             dist_ema50 = abs(price - ema50_15m)
-            if dist_ema50 <= 30 and rsi_15m < 50 and price >= ema50_15m - 10:
+            if dist_ema50 <= 30 and rsi_15m < 55 and price >= ema50_15m - 10:  # < 50 → < 55
                 entry = price
                 sl = entry - 200
                 tp = entry + 400
@@ -397,7 +397,7 @@ def detect_setup(
         if ema50_15m and rsi_15m:
             dist_ema50 = abs(price - ema50_15m)
             # Price must be at or just below EMA50 (came up to test it)
-            at_ema50_from_below = price <= ema50_15m + 5 and dist_ema50 <= 30
+            at_ema50_from_below = price <= ema50_15m + 2 and dist_ema50 <= 30  # +5 → +2 (Finding 5)
             if at_ema50_from_below and 50 <= rsi_15m <= 70:
                 entry = price
                 sl = entry + 200

@@ -35,6 +35,23 @@ _COSTS_PATH    = PROJECT_ROOT / "storage" / "data" / "chat_costs.json"
 # Pricing: claude-sonnet-4-6  (USD / 1M tokens)
 _PRICE = {"input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30}
 
+# Module-level client singleton (reuses HTTP connection pool across requests)
+_client: anthropic.Anthropic | None = None
+
+
+def _get_client() -> anthropic.Anthropic:
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic(
+            api_key=os.getenv("ANTHROPIC_API_KEY"),
+            default_headers={"anthropic-beta": "token-efficient-tools-2025-02-19"},
+        )
+    return _client
+
+
+# System-prompt cache: avoid re-reading disk on every request when files unchanged
+_system_cache: dict = {"key": None, "result": None}
+
 
 def _calc_cost(usage) -> float:
     return (
@@ -46,7 +63,7 @@ def _calc_cost(usage) -> float:
 
 
 def _log_cost(usage, iteration: int):
-    """Append one cost entry to chat_costs.json (max 500 kept)."""
+    """Append one cost entry to chat_costs.json (max 500 kept). Atomic write."""
     try:
         _COSTS_PATH.parent.mkdir(parents=True, exist_ok=True)
         entries = json.loads(_COSTS_PATH.read_text()) if _COSTS_PATH.exists() else []
@@ -60,7 +77,9 @@ def _log_cost(usage, iteration: int):
             "cost_usd":    round(_calc_cost(usage), 6),
             "iteration":   iteration,
         })
-        _COSTS_PATH.write_text(json.dumps(entries[-500:]))
+        tmp = _COSTS_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(entries[-500:]))
+        tmp.replace(_COSTS_PATH)  # atomic on Linux
     except Exception:
         pass  # never let logging break the chat
 
@@ -258,13 +277,23 @@ def _load(path: Path) -> str:
 
 
 def _build_system(user_msg: str) -> list[dict]:
-    """Returns system as a list with cache_control for prompt caching."""
-    memory = _load(MEMORY_PATH)
+    """Returns system as a list with cache_control for prompt caching.
+    Result is cached by (digest set, file mtimes) to avoid disk re-reads."""
+    global _system_cache
 
     digest_names = set(CORE_DIGESTS)
     for kw, name in KEYWORD_MAP.items():
         if kw in user_msg.lower():
             digest_names.add(name)
+
+    paths = [MEMORY_PATH] + [DIGESTS_DIR / f"{n}.digest.md" for n in sorted(digest_names)]
+    mtime_sum = sum(p.stat().st_mtime for p in paths if p.exists())
+    cache_key = (frozenset(digest_names), mtime_sum)
+
+    if _system_cache["key"] == cache_key:
+        return _system_cache["result"]
+
+    memory = _load(MEMORY_PATH)
 
     digests = []
     for name in sorted(digest_names):
@@ -311,7 +340,9 @@ def _build_system(user_msg: str) -> list[dict]:
     ])
 
     # Mark with cache_control so Anthropic caches this on repeated calls
-    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+    result = [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+    _system_cache.update({"key": cache_key, "result": result})
+    return result
 
 
 # ── Main chat function ────────────────────────────────────────────────────────
@@ -321,12 +352,7 @@ def chat(message: str, history: list[dict]) -> str:
     Agentic loop with tool use. Returns final text response.
     Uses prompt caching + token-efficient-tools beta for cost savings.
     """
-    client = anthropic.Anthropic(
-        api_key=os.getenv("ANTHROPIC_API_KEY"),
-        # token-efficient-tools beta: ~14% savings on tool definition tokens
-        default_headers={"anthropic-beta": "token-efficient-tools-2025-02-19"},
-    )
-
+    client = _get_client()
     system = _build_system(message)
 
     msgs = [

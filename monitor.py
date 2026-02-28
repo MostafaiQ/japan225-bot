@@ -69,6 +69,7 @@ class TradingMonitor:
         self.scanning_paused = False  # /pause command toggles this
         self.momentum_tracker: MomentumTracker = None
         self._position_empty_count = 0  # Consecutive empty responses from IG
+        self._force_scan_event = asyncio.Event()
         self._started_at = datetime.now(timezone.utc)
         self._last_scan_time: datetime | None = None
         self._next_scan_in: int | None = None
@@ -164,7 +165,7 @@ class TradingMonitor:
                 "entry_price": pos.get("level"),
                 "stop_level": pos.get("stop_level"),
                 "limit_level": pos.get("limit_level"),
-                "opened_at": pos.get("created", datetime.now().isoformat()),
+                "opened_at": pos.get("created", datetime.now(timezone.utc).isoformat()),
                 "confidence": 0,
             })
             # Init momentum tracker for recovered position
@@ -184,7 +185,7 @@ class TradingMonitor:
             if deal_id:
                 # Attempt to record the close
                 self.storage.log_trade_close(deal_id, {
-                    "closed_at": datetime.now().isoformat(),
+                    "closed_at": datetime.now(timezone.utc).isoformat(),
                     "result": "CLOSED_WHILE_OFFLINE",
                     "notes": "Position detected closed on bot restart",
                 })
@@ -307,7 +308,11 @@ class TradingMonitor:
                 await asyncio.sleep(MONITOR_INTERVAL_SECONDS)
             else:
                 interval = await self._scanning_cycle()
-                await asyncio.sleep(interval)
+                try:
+                    await asyncio.wait_for(self._force_scan_event.wait(), timeout=interval)
+                    self._force_scan_event.clear()
+                except asyncio.TimeoutError:
+                    pass
 
         except Exception as e:
             logger.error(f"Main cycle error: {e}", exc_info=True)
@@ -761,8 +766,10 @@ class TradingMonitor:
         duration = 0
         if opened_at:
             try:
-                open_dt = datetime.fromisoformat(opened_at)
-                duration = int((datetime.now() - open_dt).total_seconds() / 60)
+                open_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+                if open_dt.tzinfo is None:
+                    open_dt = open_dt.replace(tzinfo=timezone.utc)
+                duration = int((datetime.now(timezone.utc) - open_dt).total_seconds() / 60)
             except ValueError:
                 pass
 
@@ -905,11 +912,9 @@ class TradingMonitor:
         logger.info(f"Trade #{trade_num} opened: {direction} @ {actual_entry:.0f}")
 
     async def _on_force_scan(self):
-        """Triggered by /force command."""
+        """Triggered by /force command. Wakes the main loop immediately."""
         await self.telegram.send_alert("Force scan requested. Running next cycle immediately...")
-        # The main loop will pick up the next cycle naturally;
-        # for a real force, we'd interrupt the sleep — this is sufficient
-        # since the loop interval is short (5 min max)
+        self._force_scan_event.set()
 
     # ============================================================
     # SHUTDOWN

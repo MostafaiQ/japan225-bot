@@ -33,7 +33,7 @@ MIN_CONFIDENCE_LONG = 70
 MIN_CONFIDENCE_SHORT = 75
 
 # RSI ranges
-LONG_RSI_LOW, LONG_RSI_HIGH = 35, 55
+LONG_RSI_LOW, LONG_RSI_HIGH = 35, 60  # expanded upper bound: valid pullback entries at RSI 56-60
 SHORT_RSI_LOW, SHORT_RSI_HIGH = 55, 75
 
 # Bollinger nearness threshold (points from midband)
@@ -209,8 +209,8 @@ def compute_confidence(
     # SHORT: 4H RSI not oversold (>30) AND not above 60 (still has room to fall)
     if rsi_4h is not None:
         if direction == "LONG":
-            c6 = 40 <= rsi_4h <= 70
-            reasons["macro"] = f"4H RSI: {rsi_4h:.1f} (want 40-70)"
+            c6 = 35 <= rsi_4h <= 75  # expanded: strong trends can have 4H RSI 70-75 during pullbacks
+            reasons["macro"] = f"4H RSI: {rsi_4h:.1f} (want 35-75)"
         else:
             c6 = 30 <= rsi_4h <= 60
             reasons["macro"] = f"4H RSI: {rsi_4h:.1f} (want 30-60 for short)"

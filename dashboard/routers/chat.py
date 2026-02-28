@@ -4,11 +4,12 @@ GET  /api/chat/history     — load shared chat history (cross-device sync)
 POST /api/chat/history     — save shared chat history
 """
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 router = APIRouter()
 
@@ -25,10 +26,10 @@ def _read_history() -> dict:
 def _write_history(messages: list) -> str:
     _HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).isoformat()
-    _HISTORY_PATH.write_text(json.dumps({
-        "messages": messages[-40:],   # keep last 40 entries (20 pairs)
-        "updated_at": ts,
-    }))
+    data = json.dumps({"messages": messages[-40:], "updated_at": ts})
+    tmp = _HISTORY_PATH.with_suffix(".tmp")
+    tmp.write_text(data)
+    tmp.replace(_HISTORY_PATH)  # atomic on Linux
     return ts
 
 
@@ -71,6 +72,18 @@ async def get_chat_costs():
 class ChatRequest(BaseModel):
     message: str
     history: list[dict] = []
+
+    @field_validator("message")
+    @classmethod
+    def message_not_too_long(cls, v):
+        if len(v) > 8000:
+            raise ValueError("message too long (max 8000 chars)")
+        return v.strip()
+
+    @field_validator("history")
+    @classmethod
+    def history_cap(cls, v):
+        return v[-20:]
 
 
 @router.post("/api/chat")
