@@ -9,41 +9,6 @@ Automated Japan 225 Cash CFD scanning system on IG Markets. Runs entirely on an 
 ## Architecture
 
 ```
-Oracle Cloud VM (always-on, does everything)
-┌─────────────────────────────────────────────────────────────────┐
-│  monitor.py                                                     │
-│                                                                 │
-│  SCANNING MODE (no open position)                               │
-│  - Every 5 min during active sessions (Tokyo/London/NY)         │
-│  - Every 30 min off-hours (heartbeat only)                      │
-│  - Local pre-screen → confidence score → AI escalation          │
-│  - AI cooldown: 30 min between escalations (cost control)       │
-│  - Supports LONG and SHORT setups                               │
-│                                                                 │
-│  MONITORING MODE (position open)                                │
-│  - Every 60 seconds                                             │
-│  - 3-phase exit management (breakeven / runner)                 │
-│  - Adverse move alerts (mild / moderate / severe)               │
-│  - Stale data detection                                         │
-│                                                                 │
-│  TELEGRAM BOT (always listening)                                │
-│  - /status /balance /close etc.                                 │
-│  - CONFIRM / REJECT trade alerts                                │
-│  - Inline Close / Hold buttons on position alerts               │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**One process, one VM:**
-
-- **monitor.py:** Runs 24/7 on Oracle Cloud Free Tier. Scans for setups every 5 minutes during active market sessions, monitors open positions every 60 seconds, handles all Telegram commands, executes trades on user confirmation, and manages the 3-phase exit strategy.
-
-GitHub Actions is used **only for CI tests** (on pull requests). Scanning no longer runs on GitHub Actions.
-
----
-
-## Architecture
-
-```
 Oracle VM (always-on, does everything)
 ┌─────────────────────────────────────────────────────────────────┐
 │  monitor.py  (systemd: japan225-bot)                            │
@@ -167,11 +132,12 @@ IG_API_KEY
 IG_USERNAME
 IG_PASSWORD
 IG_ACC_NUMBER
-IG_ENV          (demo or live)
+IG_ENV              (demo or live)
 ANTHROPIC_API_KEY
 TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID
-TRADING_MODE    (paper or live)
+TRADING_MODE        (paper or live)
+DASHBOARD_TOKEN     (long random secret for web dashboard auth)
 ```
 
 ---
@@ -228,10 +194,10 @@ Every 5 minutes during active sessions:
 
 1. **Session check:** Active session? (Tokyo / London / NY). Skip if off-hours or no-trade day.
 2. **Pre-check:** System active? No open position? Not in cooldown?
-3. **IG API:** Fetch 15M candles for local pre-screen.
+3. **IG API:** Fetch 15M + Daily candles in parallel for local pre-screen.
 4. **Indicators:** Calculate Bollinger Bands, EMA 50/200, RSI, VWAP. Detect LONG or SHORT setup.
 5. **Confidence score:** Score the setup locally (0–100%). Skip AI if below threshold.
-6. **AI escalation (if passes):** Fetch 4H/Daily data + web research (news, VIX, USD/JPY, calendar).
+6. **AI escalation (if passes):** Fetch 4H data + web research (news, VIX, USD/JPY, calendar).
 7. **Sonnet pre-screen:** Quick analysis to confirm the setup.
 8. **Opus confirmation:** Deep analysis only if Sonnet agrees (saves cost). 30-min AI cooldown.
 9. **Risk validation:** 11 independent checks must ALL pass.
