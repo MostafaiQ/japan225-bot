@@ -4,7 +4,7 @@
 ## class TradingMonitor
 __init__(): creates Storage, IGClient, RiskManager, TelegramBot, ExitManager, AIAnalyzer,
             WebResearcher. Sets scanning_paused=False, momentum_tracker=None,
-            _position_empty_count=0
+            _position_empty_count=0, _force_scan_event=asyncio.Event()
             NOTE: telegram.on_trade_confirm and on_force_scan callbacks set AFTER initialize()
 
 start(): initializes Telegram FIRST (always available), then connects IG (3 fast retries).
@@ -17,7 +17,8 @@ startup_sync(): reconciles DB ↔ IG on every restart. 4 cases:
   - Both agree → reinit MomentumTracker from DB state, alert
   - Neither → clean start alert
 
-_main_cycle(): dispatches to _monitoring_cycle or _scanning_cycle based on DB position state
+_main_cycle(): dispatches to _monitoring_cycle or _scanning_cycle based on DB position state.
+  Scanning sleep uses asyncio.wait_for(_force_scan_event.wait(), timeout=interval) — interruptible.
 
 _scanning_cycle() -> int (sleep seconds):
   1. get_current_session() → skip if not active
@@ -49,7 +50,7 @@ _handle_position_closed(pos_state): logs trade, sends Telegram, resets momentum_
 _on_trade_confirm(alert_data): re-fetches price, checks drift vs PRICE_DRIFT_ABORT_PTS,
   calls ig.open_position(), open_trade_atomic(), inits MomentumTracker
 
-_on_force_scan(): sends alert (actual interrupt not implemented — next cycle picks up naturally)
+_on_force_scan(): sends alert + sets _force_scan_event (wakes scanning sleep immediately)
 
 _shutdown(): alerts Telegram, stops telegram polling, closes researcher
 

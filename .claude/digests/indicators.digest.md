@@ -30,6 +30,10 @@ detect_setup(tf_daily, tf_4h, tf_15m, tf_5m=None) -> dict
   # SHORT paths (if daily_bullish=False): bollinger_upper_rejection, ema50_rejection
   # CRITICAL: daily_bullish=None → both branches skip → found=False always
   #   daily_bullish = tf_daily.get("above_ema200_fallback")
+  # LONG BB mid bounce: near_mid_pts ±30, rsi_ok_long 35-60, above_ema50
+  # LONG EMA50 bounce:  dist_ema50 ≤30, rsi_15m < 55, price >= ema50_15m - 10
+  # SHORT BB upper:     near_upper_pts ±30, rsi_ok_short 55-75, below_ema50
+  # SHORT EMA50 reject: price <= ema50_15m + 2, dist ≤30, rsi 50-70
   # LONG SL: entry - 200, capped at ema50_15m - 20. TP: entry + 400
   # SHORT SL: entry + 200. TP: entry - 400
 

@@ -9,8 +9,8 @@ Digests live in `.claude/digests/`. Read only the digest(s) relevant to your tas
 ```
 Oracle VM: monitor.py (24/7, systemd: japan225-bot)
   SCANNING (no position): every 5min active sessions, 30min off-hours
-    → 15M candles only → detect_setup() pre-screen → if found:
-    → AI cooldown check (30min) → fetch 4H+Daily → compute_confidence()
+    → fetch 15M+Daily in parallel → detect_setup() pre-screen → if found:
+    → AI cooldown check (30min) → fetch 4H → compute_confidence() (Daily reused from pre-screen)
     → if score >= 50%: escalate to Sonnet → if Sonnet >=70%: Opus confirm
     → if AI confirms & risk passes: Telegram CONFIRM/REJECT alert (15min TTL)
   MONITORING (position open): every 60s
@@ -92,6 +92,8 @@ Dashboard chat uses: MODEL = "claude-sonnet-4-6" (in claude_client.py, NOT setti
 - **Local confidence pre-gate**: only escalates to AI if local score >= 50%. AI cooldown 30min regardless of result.
 - **WebResearcher.research()** is synchronous/blocking. Called in executor: `run_in_executor(None, self.researcher.research)`.
 - **detect_setup()** is bidirectional: LONG (BB mid bounce, EMA50 bounce) requires `daily_bullish=True`. SHORT (BB upper rejection, EMA50 rejection) requires `daily_bullish=False`.
+  RSI windows (updated 2026-02-28): LONG BB mid: 35-60. LONG EMA50: rsi<55. SHORT BB upper: 55-75. SHORT EMA50: rsi 50-70 + price<=ema50+2.
+  4H macro: LONG 35-75 (confidence.py), SHORT 30-60. ig.close_position() calls use run_in_executor in Telegram handlers.
 - **Session logic**: session.py uses UTC. SESSIONS dict in settings.py is Kuwait Time reference only. `get_current_session()` is authoritative.
 - **SEVERE adverse move** at Phase.INITIAL → auto-moves SL to breakeven (entry + BREAKEVEN_BUFFER=10). Does NOT close.
 - **Dashboard ngrok header**: all fetch() calls must include `ngrok-skip-browser-warning: true` or the ngrok interstitial blocks the request.

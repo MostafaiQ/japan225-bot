@@ -11,6 +11,9 @@ MAX_ITERATIONS = 20   # max tool-use loops per request
 - Prompt caching: system prompt has cache_control:ephemeral → 10% on cache hits
 - Token-efficient-tools beta header: ~14% savings on tool definition tokens
   Header: "anthropic-beta": "token-efficient-tools-2025-02-19"
+- Module-level client singleton (_client): reuses HTTP connection pool across requests
+- mtime-based system prompt cache (_system_cache): avoids re-reading disk if files unchanged
+  Key: (frozenset(digest_names), sum(mtime of source files))
 
 ## Tools available to Claude
 read_file(path)                     → reads up to 14 000 chars, truncates with notice
@@ -38,6 +41,7 @@ _calc_cost(usage) → float  — uses response.usage fields including prompt cac
 _log_cost(usage, iteration) → appends to storage/data/chat_costs.json (max 500 entries)
   Entry fields: ts, model, input, output, cache_write, cache_read, cost_usd, iteration
   Called after EVERY client.messages.create() in the agentic loop
+  Atomic write: tmp file → os.replace() to prevent corruption
 _COSTS_PATH = PROJECT_ROOT / "storage" / "data" / "chat_costs.json"
 
 ## Agentic loop (chat(message, history) → str)

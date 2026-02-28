@@ -19,6 +19,15 @@ _NAV: dict[ctx_name → [(label, callback_data)]] — context-aware 3-button row
 _nav_kb(ctx="default") → InlineKeyboardMarkup (1 row of 3 context buttons)
 Contexts: status, balance, journal, stats, today, cost, pause, resume, force, kill, close, default
 
+## Text helpers (instance methods, no async)
+_status_text()  → str   — full status block
+_balance_text() → str   — account balance block
+_journal_text() → str | None  — last 5 trades (None if no trades)
+_today_text()   → str | None  — today's scans (None if no scans)
+_stats_text()   → str   — performance stats block
+_cost_text()    → str   — API cost line
+Used by both command handlers and _dispatch_menu (DRY).
+
 ## class TelegramBot
 __init__(storage, ig_client=None)
 on_trade_confirm: Optional[Callable]  — set by TradingMonitor after initialize()
@@ -66,7 +75,7 @@ send_adverse_alert(message, tier, deal_id)  → tier-colored alert with Close no
 ## Inline button callbacks (CallbackQueryHandler)
 confirm_trade     → checks expiry → on_trade_confirm(alert_data) → clears pending_alert
 reject_trade      → clears pending_alert, appends REJECTED to message
-close_position:<id> → validates deal_id match → ig.close_position() → records in DB
+close_position:<id> → validates deal_id match → run_in_executor(ig.close_position()) → records in DB
 hold_position     → appends "Holding position" to message
 noop              → no-op
 menu_status/balance/journal/today/stats/cost/force/pause/resume/close/kill → same as /commands
