@@ -842,7 +842,7 @@ function addMsg(role, text) {
 async function doControl(action) {
   const info = {
     'force-scan': ['Force scan now?', 'Triggers an immediate market scan outside the normal interval.'],
-    'restart':    ['Restart the bot?', 'Monitor service will restart. You'll get a warning if a position is open.'],
+    'restart':    ['Restart the bot?', 'Monitor service will restart. Warning shown if position is open.'],
     'stop':       ['Stop the bot?', 'Monitor service will stop. No scanning or monitoring until manually restarted.'],
   };
   if (!await confirm2(...info[action])) return;
