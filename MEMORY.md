@@ -62,11 +62,11 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 | `dashboard/routers/config.py` | GET/POST /api/config — two-tier: hot (live) vs restart |
 | `dashboard/routers/history.py` | GET /api/history — closed trade journal |
 | `dashboard/routers/logs.py` | GET /api/logs?type=scan|system |
-| `dashboard/routers/chat.py` | POST /api/chat → agentic Claude |
+| `dashboard/routers/chat.py` | POST /api/chat → agentic Claude · GET/POST /api/chat/history (cross-device sync) · GET /api/chat/costs |
 | `dashboard/routers/controls.py` | POST /api/controls/{force-scan,restart,stop}, POST /api/apply-fix |
 | `dashboard/services/db_reader.py` | Read-only SQLite (WAL mode, uri=file:...?mode=ro) |
 | `dashboard/services/config_manager.py` | dashboard_overrides.json — hot/restart key validation, atomic write |
-| `dashboard/services/claude_client.py` | Agentic Claude loop. Tools: read/edit/write/run/search. Prompt caching. |
+| `dashboard/services/claude_client.py` | Agentic Claude loop. Tools: read/edit/write/run/search. Prompt caching. Cost tracking (_log_cost → chat_costs.json). |
 | `dashboard/services/git_ops.py` | apply_fix: patch --dry-run → stash → apply → git commit + push |
 | `docs/index.html` | Single-page frontend. Dark theme. 6 tabs. localStorage settings + chat history. |
 
@@ -138,18 +138,23 @@ Fix options:
 | `storage/data/bot_state.json` | monitor._write_state() each cycle | /api/status router |
 | `storage/data/dashboard_overrides.json` | config_manager.write_overrides() | monitor._reload_overrides() |
 | `storage/data/force_scan.trigger` | /api/controls/force-scan | monitor._check_force_scan_trigger() |
+| `storage/data/chat_history.json` | /api/chat/history POST | /api/chat/history GET · frontend poll |
+| `storage/data/chat_costs.json` | claude_client._log_cost() per API call | /api/chat/costs GET |
 
 ---
 
 ## Telegram — Commands & Buttons
-`/menu` → interactive inline button panel (preferred entry point)
-- Info buttons: Status · Balance · Journal · Today · Stats · API Cost
-- Control buttons: Force Scan · Pause · Resume · Close Position · KILL
+Bot uses HTML parse_mode throughout. REPLY_KB (ReplyKeyboardMarkup) always-visible at bottom.
+`/menu` → full inline button panel (preferred on mobile)
+- Info: Status · Balance · Journal · Today · Stats · API Cost
+- Control: Force Scan · Pause · Resume · Close Pos · KILL
 
-Text commands still work: `/status /balance /journal /today /stats /cost /force /stop /pause /resume /close /kill`
+Reply-keyboard (4×2 bottom nav): same actions as /menu, always visible.
+_nav_kb(ctx) → contextual 1-row inline buttons appended after every command response.
+Text commands: `/status /balance /journal /today /stats /cost /force /stop /pause /resume /close /kill`
 - `/kill` = emergency close, no confirmation
 - `/close` = confirmation dialog (Close now / Hold)
-- Trade alerts: CONFIRM / REJECT inline buttons
+- Trade alerts: CONFIRM / REJECT inline buttons (15min TTL)
 - Adverse move alerts: Close now / Hold inline buttons
 
 ---

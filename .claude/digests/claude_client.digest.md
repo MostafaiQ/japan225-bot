@@ -32,10 +32,19 @@ Loaded on every call. Contains:
   ALWAYS run commands itself (never instruct user — user is remote),
   approval threshold mirrors Claude Code: small/safe → just do, large/risky/irreversible → ask first
 
+## Cost tracking
+_PRICE = {input:3.00, output:15.00, cache_write:3.75, cache_read:0.30}  (USD / 1M tokens)
+_calc_cost(usage) → float  — uses response.usage fields including prompt cache tokens
+_log_cost(usage, iteration) → appends to storage/data/chat_costs.json (max 500 entries)
+  Entry fields: ts, model, input, output, cache_write, cache_read, cost_usd, iteration
+  Called after EVERY client.messages.create() in the agentic loop
+_COSTS_PATH = PROJECT_ROOT / "storage" / "data" / "chat_costs.json"
+
 ## Agentic loop (chat(message, history) → str)
 1. Build system prompt with relevant digests
 2. Slice last MAX_TURNS*2 history entries (text-only, tool calls not preserved)
 3. Loop up to MAX_ITERATIONS:
+   - _log_cost(response.usage, iteration) called on every response
    - If stop_reason == end_turn: return final text (with action log prepended if any)
    - If stop_reason == tool_use: execute tools, append results, continue
 4. Returns "Reached iteration limit…" if loop exhausts

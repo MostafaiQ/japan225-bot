@@ -45,8 +45,12 @@ GET /api/logs?type=scan|system&lines=N  (lines: 10-200, default 70)
 Strips ANSI escape codes.
 
 ### routers/chat.py
-POST /api/chat  → body: {message, history:[{role,content}]}  → {response: str}
-Delegates to claude_client.chat()
+POST /api/chat              → body: {message, history:[{role,content}]} → {response: str}
+GET  /api/chat/history      → {messages:[{role,content}], updated_at: ISO str}
+POST /api/chat/history      → body: {messages:[]} → {ok: true, updated_at: ISO str}
+  Persists to storage/data/chat_history.json (last 40 messages). Cross-device sync.
+GET  /api/chat/costs        → {today_usd, total_usd, entries:[last 20 today]}
+  Reads storage/data/chat_costs.json (written by claude_client._log_cost())
 
 ### routers/controls.py
 POST /api/controls/force-scan  → writes storage/data/force_scan.trigger
@@ -78,13 +82,17 @@ apply_fix(target: str, diff: str) → dict
   Sequence: patch --dry-run → git stash <file> (rollback safety) → patch apply → git add/commit/push
 
 ## Inter-process communication (monitor.py ↔ dashboard)
-storage/data/bot_state.json         ← monitor._write_state() each cycle
+storage/data/bot_state.json           ← monitor._write_state() each cycle
 storage/data/dashboard_overrides.json ← config_manager, read by monitor._reload_overrides()
-storage/data/force_scan.trigger     ← created by /api/controls/force-scan, deleted by monitor
+storage/data/force_scan.trigger       ← created by /api/controls/force-scan, deleted by monitor
+storage/data/chat_history.json        ← dashboard chat history (cross-device sync, last 40 msgs)
+storage/data/chat_costs.json          ← per-call Anthropic cost log (max 500 entries)
 
 ## docs/index.html (frontend)
 Single-page app. Dark trading theme. 6 tabs: Overview, Config, History, Logs, Chat, Controls.
 Settings modal: API URL + DASHBOARD_TOKEN stored in localStorage.
 All fetch() calls include headers: Authorization: Bearer <token>, ngrok-skip-browser-warning: true
-Chat: marked.js markdown rendering, localStorage persistence (key: chatHistory), max 20 messages (splice oldest 2)
+Chat: marked.js markdown rendering, localStorage + server-side persistence.
+  Cross-device sync: saves to POST /api/chat/history on send, polls GET /api/chat/history every 5s.
+  Max 40 messages kept server-side. BroadcastChannel('j225') for instant same-browser sync.
 Auto-refresh: Overview tab every 15s.
