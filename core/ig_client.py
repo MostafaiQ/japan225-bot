@@ -21,6 +21,10 @@ from config.settings import (
     EPIC, CURRENCY, EXPIRY, TRADING_MODE, CONTRACT_SIZE, MARGIN_FACTOR,
 )
 
+# Sentinel returned by get_open_positions() on API failure.
+# Callers must check: if result is POSITIONS_API_ERROR: handle failure
+POSITIONS_API_ERROR = object()
+
 logger = logging.getLogger(__name__)
 
 
@@ -305,10 +309,20 @@ class IGClient:
             logger.error(f"Failed to close position {deal_id}: {e}")
             return None
     
-    def get_open_positions(self) -> list[dict]:
-        """Get all open positions."""
+    def get_open_positions(self):
+        """
+        Get all open positions for our instrument.
+
+        Returns:
+            list[dict]         - positions list (may be empty if none open)
+            POSITIONS_API_ERROR - sentinel if the API call itself failed
+
+        CALLERS MUST CHECK: `if result is POSITIONS_API_ERROR`
+        Never treat API_ERROR as "no position open".
+        """
         if not self.ensure_connected():
-            return []
+            logger.error("get_open_positions: connection unavailable")
+            return POSITIONS_API_ERROR
         try:
             positions = self.ig.fetch_open_positions()
             result = []
@@ -329,7 +343,7 @@ class IGClient:
             return [p for p in result if p.get("epic") == EPIC]
         except Exception as e:
             logger.error(f"Failed to fetch positions: {e}")
-            return []
+            return POSITIONS_API_ERROR
     
     def get_account_info(self) -> Optional[dict]:
         """Get account balance and margin info."""
@@ -381,17 +395,29 @@ class IGClient:
     # ==========================================
     
     def _confirm_deal(self, deal_reference, max_retries: int = 3) -> Optional[dict]:
-        """Confirm a deal reference. Retries on failure."""
+        """
+        Confirm a deal reference. Retries with exponential backoff.
+        IG docs: confirmations can take 2-10 seconds during volatile markets.
+        Backoff: 2s, 4s, 8s = 14 seconds total before giving up.
+
+        IMPORTANT: If this returns None, the order may still have been placed
+        at IG. Callers must NOT assume the position is closed on None return.
+        """
+        wait_times = [2, 4, 8]
         for attempt in range(max_retries):
             try:
-                time.sleep(0.5 * (attempt + 1))  # Backoff
+                time.sleep(wait_times[attempt])
                 confirmation = self.ig.fetch_deal_by_deal_reference(deal_reference)
-                return confirmation
+                if confirmation:
+                    return confirmation
+                # Empty response — IG not ready yet, keep retrying
+                logger.warning(f"Deal confirm attempt {attempt + 1}: empty response, retrying...")
             except Exception as e:
                 logger.warning(f"Deal confirm attempt {attempt + 1} failed: {e}")
-                if attempt == max_retries - 1:
-                    logger.error(f"Deal confirmation failed after {max_retries} attempts")
-                    return None
+        logger.error(
+            f"Deal confirmation failed after {max_retries} attempts for ref {deal_reference}. "
+            "Order may still be open at broker — check IG manually."
+        )
         return None
     
     def _paper_open(self, direction, size, stop, limit) -> dict:

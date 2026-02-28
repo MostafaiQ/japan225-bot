@@ -52,8 +52,10 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("journal", self._cmd_journal))
         self.app.add_handler(CommandHandler("today", self._cmd_today))
         self.app.add_handler(CommandHandler("stop", self._cmd_stop))
+        self.app.add_handler(CommandHandler("pause", self._cmd_stop))    # alias
         self.app.add_handler(CommandHandler("resume", self._cmd_resume))
         self.app.add_handler(CommandHandler("close", self._cmd_close))
+        self.app.add_handler(CommandHandler("kill", self._cmd_kill))     # emergency close
         self.app.add_handler(CommandHandler("force", self._cmd_force))
         self.app.add_handler(CommandHandler("cost", self._cmd_cost))
         self.app.add_handler(CommandHandler("stats", self._cmd_stats))
@@ -99,34 +101,33 @@ class TelegramBot:
     async def send_trade_alert(self, trade_data: dict):
         """
         Send a trade setup alert with CONFIRM/REJECT buttons.
-        
+
         trade_data should contain:
             direction, entry, sl, tp, lots, confidence, rr_ratio,
-            margin, setup_type, reasoning, session
+            margin, free_margin, setup_type, reasoning, session
         """
         direction = trade_data.get("direction", "LONG")
-        emoji = "🟢" if direction == "LONG" else "🔴"
-        
+        sl_label = f"SL: {trade_data.get('sl', 0):.0f} (-${trade_data.get('dollar_risk', 0):.2f})"
+        tp_label = f"TP: {trade_data.get('tp', 0):.0f} (+${trade_data.get('dollar_reward', 0):.2f})"
+
         text = (
-            f"{emoji} *TRADE SIGNAL*\n\n"
-            f"*Direction:* {direction}\n"
-            f"*Entry:* {trade_data.get('entry', 0):.0f}\n"
-            f"*Stop Loss:* {trade_data.get('sl', 0):.0f} (-${trade_data.get('dollar_risk', 0):.2f})\n"
-            f"*Take Profit:* {trade_data.get('tp', 0):.0f} (+${trade_data.get('dollar_reward', 0):.2f})\n"
-            f"*R:R:* 1:{trade_data.get('rr_ratio', 0):.2f}\n"
-            f"*Lots:* {trade_data.get('lots', 0)}\n"
-            f"*Margin:* ${trade_data.get('margin', 0):.2f}\n"
-            f"*Confidence:* {trade_data.get('confidence', 0)}%\n"
-            f"*Setup:* {trade_data.get('setup_type', 'N/A')}\n"
-            f"*Session:* {trade_data.get('session', 'N/A')}\n\n"
-            f"_{trade_data.get('reasoning', '')}_\n\n"
-            f"Expires in {TRADE_EXPIRY_MINUTES} minutes."
+            f"SETUP FOUND\n\n"
+            f"Direction: {direction}\n"
+            f"Entry: {trade_data.get('entry', 0):.0f}\n"
+            f"{sl_label}\n"
+            f"{tp_label}\n"
+            f"R:R: 1:{trade_data.get('rr_ratio', 0):.2f}\n"
+            f"Confidence: {trade_data.get('confidence', 0)}%\n"
+            f"Margin: ${trade_data.get('margin', 0):.2f} / Free: ${trade_data.get('free_margin', 0):.2f}\n"
+            f"Setup: {trade_data.get('setup_type', 'N/A')} | {trade_data.get('session', 'N/A')}\n\n"
+            f"{trade_data.get('reasoning', '')}\n\n"
+            f"Expires in {TRADE_EXPIRY_MINUTES} min."
         )
-        
+
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("CONFIRM", callback_data="confirm_trade"),
-                InlineKeyboardButton("REJECT", callback_data="reject_trade"),
+                InlineKeyboardButton("Confirm", callback_data="confirm_trade"),
+                InlineKeyboardButton("Reject", callback_data="reject_trade"),
             ]
         ])
         
@@ -160,10 +161,38 @@ class TelegramBot:
         await self.send_alert(text, parse_mode=None)
     
     async def send_position_update(self, pnl_points: float, phase: str, current_price: float):
-        """Send periodic position status update."""
-        emoji = "📈" if pnl_points > 0 else "📉"
-        text = f"{emoji} Position: {pnl_points:+.0f}pts | Phase: {phase} | Price: {current_price:.0f}"
+        """Send periodic position status update (milestones only, not every cycle)."""
+        arrow = "+" if pnl_points >= 0 else ""
+        text = (
+            f"POSITION UPDATE\n"
+            f"P&L: {arrow}{pnl_points:.0f} pts | Phase: {phase} | Price: {current_price:.0f}"
+        )
         await self.send_alert(text, parse_mode=None)
+
+    async def send_adverse_alert(self, message: str, tier: str, deal_id: str):
+        """
+        Send an adverse momentum alert with Close/Hold buttons.
+        tier: 'mild' | 'moderate' | 'severe'
+        """
+        # Only add buttons for moderate and severe (mild is informational only)
+        if tier in ("moderate", "severe"):
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("Close now", callback_data=f"close_position:{deal_id}"),
+                    InlineKeyboardButton("Hold", callback_data="hold_position"),
+                ]
+            ])
+            try:
+                await self.app.bot.send_message(
+                    chat_id=TELEGRAM_CHAT_ID,
+                    text=message,
+                    reply_markup=keyboard,
+                )
+                return
+            except Exception as e:
+                logger.error(f"Failed to send adverse alert: {e}")
+        # Mild — plain text, no buttons
+        await self.send_alert(message, parse_mode=None)
     
     # ==========================================
     # COMMAND HANDLERS
@@ -176,16 +205,17 @@ class TelegramBot:
     
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
-            "/status - Position & balance\n"
+            "/status - Mode, position & balance\n"
             "/balance - Account details\n"
             "/journal - Recent trades\n"
             "/today - Today's scans\n"
             "/stats - Performance stats\n"
             "/cost - API costs\n"
             "/force - Force scan now\n"
-            "/stop - Pause system\n"
-            "/resume - Resume system\n"
-            "/close - Close position"
+            "/stop or /pause - Pause new entries\n"
+            "/resume - Resume scanning\n"
+            "/close - Close position (confirm first)\n"
+            "/kill - EMERGENCY: close position immediately, no confirm"
         )
     
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -292,23 +322,44 @@ class TelegramBot:
         await update.message.reply_text("System RESUMED. Scanning active.")
     
     async def _cmd_close(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Close position with inline confirmation."""
         pos = self.storage.get_position_state()
         if not pos.get("has_open"):
             await update.message.reply_text("No open position to close.")
             return
-        
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Yes, close now", callback_data=f"close_position:{pos.get('deal_id')}"),
+                InlineKeyboardButton("Cancel", callback_data="hold_position"),
+            ]
+        ])
+        await update.message.reply_text(
+            f"Close {pos.get('direction')} position @ entry {pos.get('entry_price', 0):.0f}?\n"
+            f"Current stop: {pos.get('stop_level', 0):.0f}",
+            reply_markup=keyboard,
+        )
+
+    async def _cmd_kill(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Emergency close — no confirmation required."""
+        pos = self.storage.get_position_state()
+        if not pos.get("has_open"):
+            await update.message.reply_text("No open position.")
+            return
+
         if not self.ig:
             await update.message.reply_text("IG client not connected.")
             return
-        
+
+        await update.message.reply_text("KILL command received. Closing position immediately...")
         result = self.ig.close_position(
             pos["deal_id"], pos["direction"], pos["lots"]
         )
         if result:
             self.storage.set_position_closed()
-            await update.message.reply_text("Position closed.")
+            await update.message.reply_text("Position KILLED (emergency close).")
         else:
-            await update.message.reply_text("Failed to close position. Check logs.")
+            await update.message.reply_text("Kill FAILED. Check IG immediately.")
     
     async def _cmd_force(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Forcing immediate scan...")
@@ -357,6 +408,25 @@ class TelegramBot:
             await query.edit_message_text(
                 query.message.text + "\n\nREJECTED by user."
             )
+
+        elif query.data.startswith("close_position:"):
+            deal_id = query.data.split(":", 1)[1]
+            pos = self.storage.get_position_state()
+            if not pos.get("has_open") or pos.get("deal_id") != deal_id:
+                await query.edit_message_text("Position already closed or deal ID mismatch.")
+                return
+            if not self.ig:
+                await query.edit_message_text("IG client not connected.")
+                return
+            result = self.ig.close_position(pos["deal_id"], pos["direction"], pos["lots"])
+            if result:
+                self.storage.set_position_closed()
+                await query.edit_message_text(query.message.text + "\n\nPosition CLOSED.")
+            else:
+                await query.edit_message_text("Close FAILED. Check IG manually.")
+
+        elif query.data == "hold_position":
+            await query.edit_message_text(query.message.text + "\n\nHolding position.")
 
 
 async def send_standalone_message(message: str):

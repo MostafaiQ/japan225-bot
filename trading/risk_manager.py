@@ -10,9 +10,10 @@ from typing import Optional
 from config.settings import (
     MAX_MARGIN_PERCENT, MAX_OPEN_POSITIONS, MAX_CONSECUTIVE_LOSSES,
     COOLDOWN_HOURS, DAILY_LOSS_LIMIT_PERCENT, WEEKLY_LOSS_LIMIT_PERCENT,
-    MIN_CONFIDENCE, EVENT_BLACKOUT_MINUTES, MIN_RR_RATIO,
+    MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, EVENT_BLACKOUT_MINUTES, MIN_RR_RATIO,
     BLOCKED_DAYS, MONTHEND_BLACKOUT_DAYS, SPREAD_ESTIMATE,
     CONTRACT_SIZE, MARGIN_FACTOR, MIN_LOT_SIZE,
+    FRIDAY_BLACKOUT_START_UTC, FRIDAY_BLACKOUT_END_UTC,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,10 @@ class RiskManager:
     ) -> dict:
         """
         Run ALL pre-trade checks. Returns pass/fail with reasons.
+        Direction must be 'LONG' or 'SHORT' (or 'BUY'/'SELL').
+        """
+        """
+        Run ALL pre-trade checks. Returns pass/fail with reasons.
         
         Returns:
             {
@@ -49,14 +54,45 @@ class RiskManager:
         checks = {}
         warnings = []
         rejection = None
-        
-        # --- CHECK 1: Confidence Floor ---
+
+        # Normalise direction to LONG/SHORT
+        direction = direction.upper()
+        if direction == "BUY":
+            direction = "LONG"
+        elif direction == "SELL":
+            direction = "SHORT"
+
+        # --- CHECK 0: SL/TP Direction Validation (HARD SAFETY) ---
+        # For LONG: SL must be below entry, TP must be above entry.
+        # For SHORT: SL must be above entry, TP must be below entry.
+        sl_tp_valid = True
+        if direction == "LONG":
+            if not (stop_loss < entry < take_profit):
+                sl_tp_valid = False
+                rejection = (
+                    f"DIRECTION MISMATCH for LONG: need SL({stop_loss:.0f}) < "
+                    f"entry({entry:.0f}) < TP({take_profit:.0f}). Aborting."
+                )
+        elif direction == "SHORT":
+            if not (take_profit < entry < stop_loss):
+                sl_tp_valid = False
+                rejection = (
+                    f"DIRECTION MISMATCH for SHORT: need TP({take_profit:.0f}) < "
+                    f"entry({entry:.0f}) < SL({stop_loss:.0f}). Aborting."
+                )
+        checks["sl_tp_direction"] = {
+            "pass": sl_tp_valid,
+            "detail": "SL/TP positions valid for direction" if sl_tp_valid else rejection,
+        }
+
+        # --- CHECK 1: Confidence Floor (direction-specific) ---
+        min_conf = MIN_CONFIDENCE_SHORT if direction == "SHORT" else MIN_CONFIDENCE
         checks["confidence"] = {
-            "pass": confidence >= MIN_CONFIDENCE,
-            "detail": f"Confidence {confidence}% vs minimum {MIN_CONFIDENCE}%",
+            "pass": confidence >= min_conf,
+            "detail": f"Confidence {confidence}% vs minimum {min_conf}% ({direction})",
         }
         if not checks["confidence"]["pass"]:
-            rejection = f"Confidence {confidence}% below {MIN_CONFIDENCE}% floor. HARD RULE."
+            rejection = rejection or f"Confidence {confidence}% below {min_conf}% floor for {direction}. HARD RULE."
         
         # --- CHECK 2: Margin ---
         margin = lots * CONTRACT_SIZE * entry * MARGIN_FACTOR
@@ -70,18 +106,22 @@ class RiskManager:
             rejection = f"Margin {margin_pct:.1%} exceeds 50%. Max lots at this price: {max_lots}"
         
         # --- CHECK 3: R:R Ratio ---
+        # Spread is paid twice: widens risk on entry, reduces reward on exit.
         risk = abs(entry - stop_loss)
         reward = abs(take_profit - entry)
         rr = reward / risk if risk > 0 else 0
-        # Adjust for spread
+        effective_risk = risk + SPREAD_ESTIMATE
         effective_reward = reward - SPREAD_ESTIMATE
-        effective_rr = effective_reward / risk if risk > 0 else 0
+        effective_rr = effective_reward / effective_risk if effective_risk > 0 else 0
         checks["risk_reward"] = {
             "pass": effective_rr >= MIN_RR_RATIO,
-            "detail": f"R:R = 1:{rr:.2f} (effective 1:{effective_rr:.2f} after spread). Min 1:{MIN_RR_RATIO}",
+            "detail": (
+                f"Gross R:R = 1:{rr:.2f} | Effective 1:{effective_rr:.2f} "
+                f"(risk +{SPREAD_ESTIMATE}pt, reward -{SPREAD_ESTIMATE}pt spread). Min 1:{MIN_RR_RATIO}"
+            ),
         }
         if not checks["risk_reward"]["pass"]:
-            rejection = rejection or f"R:R {effective_rr:.2f} below minimum {MIN_RR_RATIO}. Need wider TP or tighter SL."
+            rejection = rejection or f"Effective R:R {effective_rr:.2f} below minimum {MIN_RR_RATIO}. Need wider TP or tighter SL."
         
         # --- CHECK 4: Max Positions ---
         state = self.storage.get_position_state()
@@ -154,30 +194,39 @@ class RiskManager:
             rejection = rejection or f"High-impact event within {EVENT_BLACKOUT_MINUTES} minutes. Standing aside."
         
         # --- CHECK 9: Friday / Month-End ---
+        import calendar as cal_module
+        from datetime import timezone
         now = datetime.now()
+        now_utc = datetime.now(timezone.utc)
         is_blocked_day = False
-        if now.weekday() in BLOCKED_DAYS:
-            # Need to check if specific events are today
-            if upcoming_events:
-                blocked_keywords = BLOCKED_DAYS[now.weekday()]
+        block_reason = ""
+
+        if now.weekday() == 4:  # Friday
+            utc_time = now_utc.strftime("%H:%M")
+            # Default block during the NFP/high-impact data window (12:00-16:00 UTC)
+            in_friday_window = FRIDAY_BLACKOUT_START_UTC <= utc_time <= FRIDAY_BLACKOUT_END_UTC
+            if in_friday_window:
+                is_blocked_day = True
+                block_reason = f"Friday high-impact window ({FRIDAY_BLACKOUT_START_UTC}-{FRIDAY_BLACKOUT_END_UTC} UTC)"
+            # Also block if specific events found in calendar (even outside default window)
+            if upcoming_events and not is_blocked_day:
+                blocked_keywords = BLOCKED_DAYS.get(4, [])
                 for event in upcoming_events:
                     if any(kw.lower() in event.get("name", "").lower() for kw in blocked_keywords):
                         is_blocked_day = True
+                        block_reason = f"Friday with {event.get('name', 'high-impact event')}"
                         break
-        
+
         # Month-end check
-        import calendar
-        last_day = calendar.monthrange(now.year, now.month)[1]
+        last_day = cal_module.monthrange(now.year, now.month)[1]
         days_until_monthend = last_day - now.day
         is_monthend = days_until_monthend < MONTHEND_BLACKOUT_DAYS
-        
+        if is_monthend:
+            block_reason = f"Month-end rebalancing ({days_until_monthend} days to EOM)"
+
         checks["calendar_block"] = {
             "pass": not is_blocked_day and not is_monthend,
-            "detail": (
-                f"Friday with blocked data" if is_blocked_day else
-                f"Month-end rebalancing zone" if is_monthend else
-                "Calendar clear"
-            ),
+            "detail": block_reason if (is_blocked_day or is_monthend) else "Calendar clear",
         }
         if not checks["calendar_block"]["pass"]:
             rejection = rejection or checks["calendar_block"]["detail"]

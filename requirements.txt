@@ -4,9 +4,11 @@ anthropic>=0.40.0
 python-telegram-bot>=21.0
 python-dotenv>=1.0.0
 httpx>=0.25.0
+yfinance>=0.2.36
 
 # Testing
 pytest>=8.0.0
+pytest-asyncio>=0.23.0
 
 # Optional: for Oracle Cloud streaming
 # lightstreamer-client-lib>=1.0.0

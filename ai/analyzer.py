@@ -30,33 +30,43 @@ PRICING = {
 
 
 def build_system_prompt() -> str:
-    """Build the system prompt with all trading rules."""
-    return """You are a Japan 225 Cash CFD trading analyst. Your job is to analyze market data and determine if there is a valid trading setup.
+    """Build the system prompt with all trading rules. Bidirectional."""
+    return """You are a Japan 225 Cash CFD trading analyst. Analyze market data and determine if there is a valid trading setup.
 
-RULES (non-negotiable):
-- Only LONG setups (trend following on bullish daily structure)
-- Entry must be at a technical level (Bollinger mid, EMA50 bounce)
-- RSI 15M must be 35-55 (not overbought)
-- Daily trend must be bullish (price above EMA200)
-- 4H RSI must not be >75 (overbought)
-- Minimum R:R is 1:1.5 after spread (7pts)
+SUPPORTED DIRECTIONS: LONG and SHORT. Do not bias toward either direction.
+
+LONG RULES:
+- Entry at technical level: Bollinger midband or EMA50 (within 30 points)
+- RSI 15M: 35-55 (entry zone)
+- Daily trend bullish: price above EMA200 (or EMA50 if EMA200 unavailable)
+- 4H RSI not overbought (< 75)
+
+SHORT RULES:
+- Entry at technical level: Bollinger upper band or EMA50 rejection (within 30 points)
+- RSI 15M: 55-75 (showing weakness, not yet oversold)
+- Daily trend bearish: price below EMA200 (or EMA50 if EMA200 unavailable)
+- 4H RSI not oversold (> 25)
+- SHORT minimum confidence: 75% (higher bar — BOJ intervention risk)
+
+COMMON RULES (both directions):
+- Minimum R:R is 1:1.5 after spread (7pt spread costs both entry and exit)
 - No trades if high-impact event within 60 minutes
+- Default SL: 200 points | Default TP: 400 points (1:2 R:R)
 
-CONFIDENCE SCORING (8 criteria, 10pts each + 30 base):
-1. daily_bullish: Daily trend bullish (above EMA200)
-2. entry_at_tech_level: Entry at Bollinger mid or EMA50
-3. rsi_15m_in_range: RSI 15M between 35-55
-4. tp_viable: Take profit level is achievable (no major resistance before)
-5. higher_lows: Price making higher lows
-6. macro_bullish: News/sentiment supports long
+CONFIDENCE SCORING (8 criteria, 10pts each + 30 base, cap 100%):
+1. daily_trend: Daily trend aligned with direction
+2. entry_at_tech_level: Entry at Bollinger band / EMA50 (within 30 pts)
+3. rsi_15m_in_range: RSI 15M in correct zone for direction
+4. tp_viable: 100+ points of clear space to TP target
+5. price_structure: Higher lows (LONG) or lower highs (SHORT) on 15M
+6. macro_aligned: News/sentiment/USD-JPY supports direction
 7. no_event_1hr: No high-impact event within 1 hour
-8. no_friday_monthend: Not Friday with data release or month-end
+8. no_friday_monthend: Not Friday data window or month-end
 
 EXIT STRATEGY:
-- Default SL: 200 points (adjustable based on structure)
-- Default TP: 400 points (1:2 R:R)
-- At +150pts: move SL to breakeven
-- If price reaches 75% of TP within 2 hours: activate trailing stop (runner)
+- At +150pts: move SL to breakeven (entry + spread buffer)
+- Default TP: +400pts (1:2 R:R on 200pt SL)
+- If price reaches 75% of TP within 2 hours: activate trailing stop at 150pts
 
 RESPOND IN JSON ONLY. No markdown, no explanation outside the JSON."""
 
@@ -66,50 +76,73 @@ def build_scan_prompt(
     recent_scans: list,
     market_context: dict,
     web_research: dict,
+    prescreen_direction: str = None,
+    local_confidence: dict = None,
 ) -> str:
-    """Build the user prompt for a scan analysis."""
-    prompt = f"""Analyze the following Japan 225 Cash data and determine if there is a valid trading setup.
+    """
+    Build the user prompt for a scan analysis.
+
+    prescreen_direction: 'LONG', 'SHORT', or None (if pre-screen detected a direction)
+    local_confidence: output of core.confidence.compute_confidence() for context
+    """
+    prescreen_block = ""
+    if prescreen_direction:
+        prescreen_block = f"""
+PRE-SCREEN DETECTED: {prescreen_direction} setup forming locally.
+Analyze the data and CONFIRM or REJECT this direction.
+You MAY suggest the opposite direction or NO TRADE if the data supports it.
+Do NOT feel obligated to confirm just because the pre-screen flagged it.
+"""
+
+    local_conf_block = ""
+    if local_confidence:
+        local_conf_block = f"""
+LOCAL CONFIDENCE SCORE: {local_confidence.get('score', 'N/A')}% ({local_confidence.get('passed_criteria', 'N/A')}/{local_confidence.get('total_criteria', 8)} criteria)
+Local breakdown: {json.dumps(local_confidence.get('criteria', {}), default=str)}
+"""
+
+    prompt = f"""Analyze the following Japan 225 Cash CFD data and determine if there is a valid trading setup.
 
 CURRENT TIMESTAMP: {datetime.now().isoformat()}
-
-INDICATOR DATA (4 timeframes):
+{prescreen_block}{local_conf_block}
+INDICATOR DATA (available timeframes):
 {json.dumps(indicators, indent=2, default=str)}
 
-RECENT SCAN HISTORY (last 5 scans for trend context):
+RECENT SCAN HISTORY (last 5 for trend context):
 {json.dumps(recent_scans[-5:], indent=2, default=str) if recent_scans else "No previous scans today."}
 
 MARKET CONTEXT:
 {json.dumps(market_context, indent=2, default=str)}
 
-WEB RESEARCH:
+WEB RESEARCH (USD/JPY, VIX, news, calendar):
 {json.dumps(web_research, indent=2, default=str)}
 
 Respond with ONLY this JSON structure:
 {{
     "setup_found": true/false,
-    "direction": "LONG" or null,
+    "direction": "LONG" or "SHORT" or null,
     "entry": price or null,
     "stop_loss": price or null,
     "take_profit": price or null,
     "confidence": 0-100,
     "confidence_breakdown": {{
-        "daily_bullish": true/false,
+        "daily_trend": true/false,
         "entry_at_tech_level": true/false,
         "rsi_15m_in_range": true/false,
         "tp_viable": true/false,
-        "higher_lows": true/false,
-        "macro_bullish": true/false,
+        "price_structure": true/false,
+        "macro_aligned": true/false,
         "no_event_1hr": true/false,
         "no_friday_monthend": true/false
     }},
-    "setup_type": "bollinger_mid_bounce" or "ema50_bounce" or null,
-    "reasoning": "Brief explanation",
+    "setup_type": "bollinger_mid_bounce" or "bollinger_upper_rejection" or "ema50_bounce" or "ema50_rejection" or null,
+    "reasoning": "Brief explanation of decision",
     "key_levels": {{
-        "support": [list of support levels],
-        "resistance": [list of resistance levels]
+        "support": [list of support prices],
+        "resistance": [list of resistance prices]
     }},
     "trend_observation": "How price has been moving across recent scans",
-    "warnings": ["any risk warnings"]
+    "warnings": ["any risk warnings or concerns"]
 }}"""
     return prompt
 
@@ -127,9 +160,12 @@ class AIAnalyzer:
         recent_scans: list,
         market_context: dict,
         web_research: dict,
+        prescreen_direction: str = None,
+        local_confidence: dict = None,
     ) -> dict:
         """
-        Run a scan analysis with Sonnet 4.5 (cheaper, routine scanning).
+        Run a scan analysis with Sonnet (cheaper, routine scanning).
+        prescreen_direction and local_confidence are passed into the prompt for context.
         Returns parsed analysis dict.
         """
         return self._analyze(
@@ -138,6 +174,8 @@ class AIAnalyzer:
             recent_scans=recent_scans,
             market_context=market_context,
             web_research=web_research,
+            prescreen_direction=prescreen_direction,
+            local_confidence=local_confidence,
         )
     
     def confirm_with_opus(
@@ -164,12 +202,15 @@ class AIAnalyzer:
             web_research=web_research,
         )
         
-        # Opus must independently confirm >= MIN_CONFIDENCE
-        if result.get("confidence", 0) < MIN_CONFIDENCE:
+        # Opus must independently confirm >= direction-appropriate threshold
+        direction = result.get("direction", "LONG") or "LONG"
+        from config.settings import MIN_CONFIDENCE_SHORT
+        threshold = MIN_CONFIDENCE_SHORT if direction == "SHORT" else MIN_CONFIDENCE
+        if result.get("confidence", 0) < threshold:
             result["setup_found"] = False
             result["reasoning"] = (
                 f"Opus rejected: confidence {result.get('confidence', 0)}% "
-                f"below {MIN_CONFIDENCE}% threshold. "
+                f"below {threshold}% threshold for {direction}. "
                 f"Original reasoning: {result.get('reasoning', '')}"
             )
         
@@ -182,11 +223,15 @@ class AIAnalyzer:
         recent_scans: list,
         market_context: dict,
         web_research: dict,
+        prescreen_direction: str = None,
+        local_confidence: dict = None,
     ) -> dict:
         """Send analysis request to Claude API."""
         system_prompt = build_system_prompt()
         user_prompt = build_scan_prompt(
-            indicators, recent_scans, market_context, web_research
+            indicators, recent_scans, market_context, web_research,
+            prescreen_direction=prescreen_direction,
+            local_confidence=local_confidence,
         )
         
         try:
@@ -285,20 +330,43 @@ class WebResearcher:
             return None
     
     def _get_usd_jpy(self) -> Optional[float]:
-        """Get current USD/JPY rate."""
+        """
+        Get current USD/JPY rate from frankfurter.app (free, no API key).
+        USD/JPY direction matters: JPY strength = bearish for Nikkei 225.
+        """
         try:
-            return None  # Will integrate with free API
+            from config.settings import USD_JPY_API
+            resp = self.client.get(USD_JPY_API, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                rate = data.get("rates", {}).get("JPY")
+                if rate:
+                    logger.debug(f"USD/JPY: {rate:.2f}")
+                    return float(rate)
         except Exception as e:
             logger.warning(f"USD/JPY fetch failed: {e}")
-            return None
-    
-    def _get_fear_greed(self) -> Optional[int]:
-        """Get CNN Fear & Greed Index."""
+        return None
+
+    def _get_vix(self) -> Optional[float]:
+        """
+        Get VIX level via yfinance (free, no API key).
+        VIX > 25 = elevated risk, Nikkei correlation strengthens.
+        """
         try:
-            return None  # Will integrate with free API
+            import yfinance as yf
+            ticker = yf.Ticker("^VIX")
+            info = ticker.fast_info
+            vix = getattr(info, "last_price", None)
+            if vix:
+                logger.debug(f"VIX: {vix:.2f}")
+                return float(vix)
         except Exception as e:
-            logger.warning(f"Fear & Greed fetch failed: {e}")
-            return None
+            logger.warning(f"VIX fetch failed (yfinance): {e}")
+        return None
+
+    def _get_fear_greed(self) -> Optional[int]:
+        """Get CNN Fear & Greed Index (placeholder — no reliable free endpoint)."""
+        return None
     
     def close(self):
         self.client.close()

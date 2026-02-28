@@ -159,8 +159,45 @@ AI_TEMPERATURE = 0.1  # Low temp for consistent analysis
 # ============================================
 # POSITION MONITOR
 # ============================================
-MONITOR_INTERVAL_SECONDS = 60  # Check every 60 seconds
-MONITOR_USE_STREAMING = False  # Start with REST polling, upgrade later
+MONITOR_INTERVAL_SECONDS = 60       # Position check interval (seconds)
+SCAN_INTERVAL_SECONDS = 300         # Entry scan interval when flat (5 min)
+OFFHOURS_INTERVAL_SECONDS = 1800    # Off-hours heartbeat (30 min)
+MONITOR_USE_STREAMING = False       # Start with REST polling, upgrade later
+
+# ============================================
+# ENTRY SCANNING
+# ============================================
+AI_COOLDOWN_MINUTES = 30            # Suppress duplicate AI escalations
+PRICE_DRIFT_ABORT_PTS = 20          # Abort trade if price moved this far during analysis
+STALE_DATA_THRESHOLD = 10           # Identical price readings = stale data alert
+PRE_SCREEN_CANDLES = 50             # Candles for 15M pre-screen (enough for BB20 + EMA50)
+AI_ESCALATION_CANDLES = 100         # Candles for 4H/Daily when escalating to AI
+
+# ============================================
+# SHORT TRADING
+# ============================================
+MIN_CONFIDENCE_SHORT = 75           # Higher bar for shorts (BOJ intervention risk)
+SHORT_RSI_LOW = 55                  # RSI zone for short entries
+SHORT_RSI_HIGH = 75
+
+# ============================================
+# ADVERSE MOVE TIERS (position monitoring)
+# ============================================
+ADVERSE_MILD_PTS = 30               # Alert only
+ADVERSE_MODERATE_PTS = 50          # Alert + suggest close
+ADVERSE_SEVERE_PTS = 80            # Auto move SL to breakeven, then alert
+
+# ============================================
+# FRIDAY BLACKOUT
+# ============================================
+FRIDAY_BLACKOUT_START_UTC = "12:00"  # Default Friday no-trade window (covers NFP)
+FRIDAY_BLACKOUT_END_UTC = "16:00"
+
+# ============================================
+# FREE MARKET DATA APIS (no key required)
+# ============================================
+USD_JPY_API = "https://api.frankfurter.app/latest?from=USD&to=JPY"
+SAFETY_CONSECUTIVE_EMPTY = 2        # Require N consecutive empty position responses before accepting close
 
 # ============================================
 # COMPOUND PLAN

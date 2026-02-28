@@ -40,7 +40,7 @@ echo -e "${GREEN}OK${NC}"
 
 # --- Step 4: Unit tests (no credentials needed) ---
 echo -e "${YELLOW}[4/8] Running unit tests...${NC}"
-python -m pytest tests/test_indicators.py -v --tb=short
+python3 -m pytest tests/ -q --tb=short
 echo -e "${GREEN}OK${NC}"
 
 # --- Step 5: Database init ---

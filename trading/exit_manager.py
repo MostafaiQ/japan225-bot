@@ -7,6 +7,7 @@ Phase 3: Runner mode (75% of TP fast) - remove TP, activate trailing stop
 
 This runs on the position monitor (every 60 seconds), NOT the 2-hour scan.
 """
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -145,71 +146,83 @@ class ExitManager:
         
         return result
     
+    async def _run_sync(self, fn, *args, **kwargs):
+        """
+        Run a synchronous IG API call in a thread pool executor so it
+        doesn't block the asyncio event loop (Telegram polling, timers, etc.).
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+
     async def execute_action(self, position: dict, action: dict) -> bool:
         """Execute the recommended exit action via IG API."""
         deal_id = position.get("deal_id")
-        
+
         if action["action"] == "none":
             return True
-        
+
         if action["action"] == "move_be":
-            success = self.ig.modify_position(
+            success = await self._run_sync(
+                self.ig.modify_position,
                 deal_id=deal_id,
                 stop_level=action["new_stop"],
                 limit_level=action["new_limit"],
             )
             if success:
-                # Update stored phase
                 self.storage.update_position_phase(deal_id, ExitPhase.BREAKEVEN)
                 if self.telegram:
                     await self.telegram.send_alert(
-                        f"🔒 *SL moved to breakeven*\n"
+                        f"*SL moved to breakeven*\n"
                         f"Stop: {action['new_stop']:.0f}\n"
                         f"{action['details']}"
                     )
             return success
-        
+
         if action["action"] == "activate_runner":
             # First try trailing stop via API
-            success = self.ig.modify_position(
+            success = await self._run_sync(
+                self.ig.modify_position,
                 deal_id=deal_id,
                 trailing_stop=True,
                 trailing_stop_distance=TRAILING_STOP_DISTANCE,
                 trailing_stop_increment=TRAILING_STOP_INCREMENT,
-                limit_level=None,  # Remove TP
+                limit_level=None,
             )
-            
+
             if not success:
-                # Fallback: just move stop up and remove TP
-                logger.warning("Trailing stop not available, using manual trail")
-                success = self.ig.modify_position(
+                # Fallback: manual stop placement, no TP
+                logger.warning("Trailing stop not available via API, using manual trail")
+                success = await self._run_sync(
+                    self.ig.modify_position,
                     deal_id=deal_id,
                     stop_level=action["new_stop"],
                     limit_level=None,
                 )
-            
+
             if success:
                 self.storage.update_position_phase(deal_id, ExitPhase.RUNNER)
                 if self.telegram:
                     await self.telegram.send_alert(
-                        f"🏃 *RUNNER MODE ACTIVATED*\n"
+                        f"*RUNNER MODE ACTIVATED*\n"
                         f"Trailing stop: {TRAILING_STOP_DISTANCE}pts\n"
                         f"{action['details']}"
                     )
             return success
-        
+
         if action["action"] == "close_early":
             direction = position.get("direction", "BUY")
             size = position.get("size", 0)
-            result = self.ig.close_position(deal_id, direction, size)
+            result = await self._run_sync(
+                self.ig.close_position, deal_id, direction, size
+            )
             if result:
                 self.storage.update_position_phase(deal_id, ExitPhase.CLOSED)
                 if self.telegram:
                     await self.telegram.send_alert(
-                        f"⚡ *Position closed early*\n{action['details']}"
+                        f"*Position closed early*\n{action['details']}"
                     )
             return result is not None
-        
+
         return False
     
     def manual_trail_update(self, position: dict) -> Optional[dict]:

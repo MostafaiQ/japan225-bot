@@ -178,20 +178,22 @@ df -h
 
 ---
 
-## Keeping the Database in Sync
+## Database Architecture
 
-The SQLite database lives in `storage/data/trading.db`. The GitHub Actions scanner commits scan results back to the repo. The monitor reads from its local copy.
+The SQLite database lives **exclusively on the Oracle Cloud VM** at `storage/data/trading.db`.
 
-To keep them in sync, add a cron job on the Oracle VM:
+**GitHub Actions does NOT write to the database.** The scan workflow runs AI analysis and sends trade alerts via Telegram, but all persistent state (trades, positions, account history, scan history) is written only by `monitor.py` on the VM.
+
+This means:
+- No `git pull` cron job needed — there is no DB to sync from GitHub
+- No DB lock conflicts — only one process writes
+- DB is never accidentally overwritten by a `git pull`
+
+To back up the database from the VM:
 
 ```bash
-crontab -e
-```
-
-Add this line (pulls latest scan data every 30 minutes):
-
-```
-*/30 * * * * cd /home/ubuntu/japan225-bot && git pull --quiet 2>/dev/null
+# On your local machine
+scp ubuntu@YOUR_IP:/home/ubuntu/japan225-bot/storage/data/trading.db ./trading_backup.db
 ```
 
 ---
@@ -241,7 +243,7 @@ Ensure only ONE instance of monitor.py is running. Two instances will fight over
 Check the Actions tab for error logs. Most common: expired secrets or IG API downtime.
 
 **Database locked errors:**
-Only one process should write to the DB at a time. The scanner (GitHub Actions) and monitor (Oracle VM) use separate DB files. Sync via git pull.
+The database lives only on the VM and is written only by `monitor.py`. If you see lock errors, ensure only one instance of `monitor.py` is running: `ps aux | grep monitor.py`.
 
 ---
 

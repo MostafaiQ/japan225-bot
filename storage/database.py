@@ -14,6 +14,23 @@ from config.settings import DB_PATH
 
 logger = logging.getLogger(__name__)
 
+# Whitelists prevent SQL injection via f-string column interpolation
+_ACCOUNT_STATE_COLUMNS = {
+    "balance", "starting_balance", "total_pnl", "total_api_cost",
+    "daily_loss_today", "daily_loss_date", "weekly_loss", "weekly_loss_start",
+    "consecutive_losses", "last_loss_time", "system_active",
+    "compound_trade_number", "updated_at",
+}
+_MARKET_CONTEXT_COLUMNS = {
+    "date", "economic_events", "macro_snapshot", "session_summaries",
+    "trend_observation", "updated_at",
+}
+_POSITION_STATE_COLUMNS = {
+    "has_open", "deal_id", "direction", "lots", "entry_price",
+    "stop_level", "limit_level", "opened_at", "phase", "confidence",
+    "pending_alert", "updated_at",
+}
+
 
 class Storage:
     """SQLite-backed persistent storage for the trading bot."""
@@ -110,11 +127,25 @@ class Storage:
                     trend_observation TEXT,
                     updated_at TEXT
                 );
-                
+
+                CREATE TABLE IF NOT EXISTS price_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    session TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS ai_cooldown (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    last_escalation TEXT,
+                    direction TEXT
+                );
+
                 -- Initialize singleton rows if empty
                 INSERT OR IGNORE INTO position_state (id, has_open) VALUES (1, 0);
                 INSERT OR IGNORE INTO account_state (id, balance, starting_balance) VALUES (1, 20.09, 16.67);
                 INSERT OR IGNORE INTO market_context (id, date) VALUES (1, date('now'));
+                INSERT OR IGNORE INTO ai_cooldown (id) VALUES (1);
             """)
             logger.info("Database initialized")
     
@@ -375,9 +406,12 @@ class Storage:
         return state
     
     def update_account_state(self, **kwargs):
-        """Update account state fields."""
+        """Update account state fields. Only whitelisted columns accepted."""
         with self._conn() as conn:
             for key, value in kwargs.items():
+                if key not in _ACCOUNT_STATE_COLUMNS:
+                    logger.error(f"update_account_state: rejected unknown column '{key}'")
+                    continue
                 conn.execute(
                     f"UPDATE account_state SET {key} = ?, updated_at = ? WHERE id = 1",
                     (value, datetime.now().isoformat())
@@ -440,9 +474,12 @@ class Storage:
         return ctx
     
     def update_market_context(self, **kwargs):
-        """Update market context fields."""
+        """Update market context fields. Only whitelisted columns accepted."""
         with self._conn() as conn:
             for key, value in kwargs.items():
+                if key not in _MARKET_CONTEXT_COLUMNS:
+                    logger.error(f"update_market_context: rejected unknown column '{key}'")
+                    continue
                 if isinstance(value, (dict, list)):
                     value = json.dumps(value)
                 conn.execute(
@@ -479,6 +516,121 @@ class Storage:
                     pass
         return d
     
+    # ==========================================
+    # ATOMIC TRADE OPEN (trade log + position state in one transaction)
+    # ==========================================
+
+    def open_trade_atomic(self, trade: dict, position: dict) -> int:
+        """
+        Log trade open AND set position state in a single transaction.
+        Prevents the DB from ever being in a state where a trade is logged
+        but the position state isn't set (or vice versa).
+
+        Returns trade number on success.
+        """
+        with self._conn() as conn:
+            row = conn.execute("SELECT MAX(trade_number) as max_num FROM trades").fetchone()
+            trade_num = (row["max_num"] or 0) + 1
+
+            conn.execute("""
+                INSERT INTO trades (trade_number, deal_id, opened_at, direction, lots,
+                    entry_price, stop_loss, take_profit, balance_before, confidence,
+                    confidence_breakdown, setup_type, session, ai_analysis, news_at_entry)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                trade_num,
+                trade.get("deal_id"),
+                trade.get("opened_at", datetime.now().isoformat()),
+                trade.get("direction"),
+                trade.get("lots"),
+                trade.get("entry_price"),
+                trade.get("stop_loss"),
+                trade.get("take_profit"),
+                trade.get("balance_before"),
+                trade.get("confidence"),
+                json.dumps(trade.get("confidence_breakdown", {})),
+                trade.get("setup_type"),
+                trade.get("session"),
+                trade.get("ai_analysis"),
+                json.dumps(trade.get("news_at_entry", [])),
+            ))
+
+            conn.execute("""
+                UPDATE position_state SET
+                    has_open = 1, deal_id = ?, direction = ?, lots = ?,
+                    entry_price = ?, stop_level = ?, limit_level = ?,
+                    opened_at = ?, phase = 'initial', confidence = ?,
+                    pending_alert = NULL, updated_at = ?
+                WHERE id = 1
+            """, (
+                position.get("deal_id"),
+                position.get("direction"),
+                position.get("lots"),
+                position.get("entry_price"),
+                position.get("stop_level"),
+                position.get("limit_level"),
+                position.get("opened_at", datetime.now().isoformat()),
+                position.get("confidence"),
+                datetime.now().isoformat(),
+            ))
+
+        return trade_num
+
+    # ==========================================
+    # PRICE HISTORY (for momentum tracking)
+    # ==========================================
+
+    def save_price_point(self, price: float, session: str = None):
+        """Save a price reading for momentum calculation."""
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO price_history (timestamp, price, session) VALUES (?, ?, ?)",
+                (datetime.now().isoformat(), price, session)
+            )
+            # Keep only last 60 readings (1 hour at 1-min intervals)
+            conn.execute("""
+                DELETE FROM price_history WHERE id NOT IN (
+                    SELECT id FROM price_history ORDER BY id DESC LIMIT 60
+                )
+            """)
+
+    def get_recent_prices(self, n: int = 10) -> list[dict]:
+        """Get the last N price readings, oldest first."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM price_history ORDER BY id DESC LIMIT ?", (n,)
+            ).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+    # ==========================================
+    # AI COOLDOWN (duplicate signal suppression)
+    # ==========================================
+
+    def get_ai_cooldown(self) -> Optional[dict]:
+        """Get the last AI escalation time and direction."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM ai_cooldown WHERE id = 1").fetchone()
+        return dict(row) if row else None
+
+    def set_ai_cooldown(self, direction: str):
+        """Record that AI was just escalated. Resets the 30-min cooldown."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE ai_cooldown SET last_escalation = ?, direction = ? WHERE id = 1",
+                (datetime.now().isoformat(), direction)
+            )
+
+    def is_ai_on_cooldown(self, cooldown_minutes: int = 30) -> bool:
+        """Returns True if AI was escalated within the last cooldown_minutes."""
+        state = self.get_ai_cooldown()
+        if not state or not state.get("last_escalation"):
+            return False
+        try:
+            last = datetime.fromisoformat(state["last_escalation"])
+            return (datetime.now() - last).total_seconds() < cooldown_minutes * 60
+        except ValueError:
+            return False
+
     def get_api_cost_total(self) -> float:
         """Get total API cost across all scans and trades."""
         with self._conn() as conn:
