@@ -544,7 +544,7 @@ async function req(method, path, body) {
   if (!S.url) throw Object.assign(new Error('NOT_CONFIGURED'), {code:'NOT_CONFIGURED'});
   const r = await fetch(S.url + path, {
     method,
-    headers: { 'Authorization': 'Bearer ' + S.token, 'Content-Type': 'application/json' },
+    headers: { 'Authorization': 'Bearer ' + S.token, 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
     body: body ? JSON.stringify(body) : undefined,
   });
   const d = await r.json().catch(() => ({}));
@@ -877,7 +877,7 @@ async function saveSettings() {
   const token = document.getElementById('sToken').value.trim();
   if (!url) { alert2('sAlert','err','URL is required'); return; }
   try {
-    const r = await fetch(url + '/api/health', { headers:{'Authorization':'Bearer '+token} });
+    const r = await fetch(url + '/api/health', { headers:{'Authorization':'Bearer '+token,'ngrok-skip-browser-warning':'true'} });
     if (!r.ok) throw new Error('HTTP ' + r.status);
   } catch(e) { alert2('sAlert','err','Cannot connect: ' + e.message); return; }
   S.url = url; S.token = token;
