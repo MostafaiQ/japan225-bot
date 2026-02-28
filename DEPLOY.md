@@ -145,6 +145,109 @@ sudo journalctl -u japan225-bot -f
 
 ---
 
+## Step 7: Set Up the Web Dashboard
+
+The dashboard is a FastAPI app served via an ngrok tunnel, with a static frontend on GitHub Pages.
+
+### 7a — Add dashboard credentials to `.env`
+
+```bash
+nano .env
+```
+
+Add:
+```
+DASHBOARD_TOKEN=choose_a_long_random_secret
+```
+
+### 7b — Install ngrok
+
+```bash
+curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+sudo apt update && sudo apt install ngrok
+ngrok config add-authtoken YOUR_NGROK_AUTHTOKEN
+```
+
+Get a free static domain at `dashboard.ngrok.com → Domains → New Domain`.
+
+### 7c — Create dashboard systemd service
+
+```bash
+sudo nano /etc/systemd/system/japan225-dashboard.service
+```
+
+```ini
+[Unit]
+Description=Japan 225 Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/japan225-bot
+Environment=PATH=/home/ubuntu/japan225-bot/venv/bin:/usr/bin
+EnvironmentFile=/home/ubuntu/japan225-bot/.env
+ExecStart=/home/ubuntu/japan225-bot/venv/bin/python dashboard/run.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 7d — Create ngrok systemd service
+
+```bash
+sudo nano /etc/systemd/system/japan225-ngrok.service
+```
+
+```ini
+[Unit]
+Description=Japan 225 ngrok Tunnel
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+ExecStart=/usr/local/bin/ngrok http --domain=YOUR_STATIC_DOMAIN.ngrok-free.app 8080
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Replace `YOUR_STATIC_DOMAIN` with your actual ngrok domain.
+
+### 7e — Enable and start
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable japan225-dashboard japan225-ngrok
+sudo systemctl start japan225-dashboard japan225-ngrok
+```
+
+### 7f — Connect the frontend
+
+1. Open `https://mostafaiq.github.io/japan225-bot/`
+2. Click ⚙ (top-right)
+3. Enter your ngrok URL (`https://YOUR_STATIC_DOMAIN.ngrok-free.app`)
+4. Enter your `DASHBOARD_TOKEN`
+5. Click **Save & Connect**
+
+### 7g — Verify all three services
+
+```bash
+sudo systemctl status japan225-bot japan225-dashboard japan225-ngrok
+```
+
+---
+
 ## Maintenance Commands
 
 ```bash
@@ -220,11 +323,14 @@ When ready:
 **Monitor crashes and restarts:**
 Systemd auto-restarts after 30 seconds. Check logs: `journalctl -u japan225-bot --since "10 min ago"`.
 
-**IG API connection fails:**
-Tokens expire after ~6 hours. The bot auto-reauthenticates. If persistent, check credentials.
+**IG API returns 503 (weekend maintenance / outage):**
+The bot stays alive. Telegram is started before the IG connection attempt, so it remains fully responsive. The bot sends you a Telegram alert and retries IG every 5 minutes. No action needed — it self-recovers when IG comes back up.
+
+**IG API connection fails (persistent):**
+Tokens expire after ~6 hours. The bot auto-reauthenticates. If it keeps failing outside of known maintenance windows, check your `.env` credentials with `./setup.sh`.
 
 **Telegram bot not responding:**
-Ensure only ONE instance of `monitor.py` is running. Two instances will fight over Telegram updates: `ps aux | grep monitor.py`.
+The bot only stops responding to Telegram if the `japan225-bot` process has died entirely. Check: `sudo systemctl status japan225-bot`. If it's stopped, start it: `sudo systemctl start japan225-bot`. Also ensure only ONE instance is running: `ps aux | grep monitor.py`.
 
 **Scans not firing every 5 minutes:**
 Check that the VM clock is correct (`date`) and that the current time is within an active session (Tokyo/London/NY in Kuwait time UTC+3). Off-hours = 30-min heartbeat only.

@@ -130,10 +130,34 @@ TRADING_MODE    (paper or live)
 
 ---
 
+## Web Dashboard
+
+A mobile-friendly web dashboard for remote monitoring and control — no SSH required.
+
+- **URL:** `https://mostafaiq.github.io/japan225-bot/`
+- **Backend:** ngrok tunnel to FastAPI on the VM (port 8080)
+- **Auth:** Bearer token (your `DASHBOARD_TOKEN` from `.env`)
+
+| Tab | What it does |
+|-----|-------------|
+| **Overview** | Bot status, active position with live P&L, recent scan table. Auto-refreshes every 15s. |
+| **Config** | Hot-reload settings (confidence, cooldown, scan interval, pause toggle) and restart-required settings (SL/TP/breakeven distances). |
+| **History** | Full trade journal with W/L stats and total P&L. |
+| **Logs** | Scan log and system log viewer, colour-coded by severity. |
+| **Chat** | Fully agentic Claude Code. Reads files, fixes bugs, runs shell commands, pushes to GitHub. Cross-device synced — conversations persist across phone, tablet, and desktop. |
+| **Controls** | Force scan, restart bot, stop bot, apply a raw unified diff. |
+
+Chat history is stored server-side and synced across all devices every 5 seconds. Open the dashboard on your phone and PC simultaneously — messages appear on both.
+
+---
+
 ## Telegram Commands
+
+Use `/menu` for an interactive inline button panel (easiest on mobile).
 
 | Command | Description |
 |---------|-------------|
+| `/menu` | Interactive inline panel with all Info + Control buttons |
 | `/status` | Current mode, position, balance, today's P&L |
 | `/balance` | Account details, compound plan progress |
 | `/journal` | Last 5 trades with results |
@@ -146,7 +170,9 @@ TRADING_MODE    (paper or live)
 | `/close` | Close any open position (asks for confirmation) |
 | `/kill` | EMERGENCY: close position immediately, no confirmation |
 
-Trade alerts also include inline **CONFIRM** / **REJECT** buttons. Position alerts include inline **Close now** / **Hold** buttons.
+Trade alerts include inline **CONFIRM** / **REJECT** buttons. Position alerts include inline **Close now** / **Hold** buttons.
+
+**Telegram stays available even when IG is down.** If IG Markets returns 503 (e.g. weekend maintenance), the bot sends a Telegram alert and retries the IG connection every 5 minutes — it does not exit.
 
 ---
 
@@ -277,9 +303,18 @@ TRADING_MODE=paper python monitor.py
 
 ---
 
-## Deployment
+## Dashboard Deployment
 
-See [DEPLOY.md](DEPLOY.md) for the full Oracle Cloud deployment guide.
+The dashboard runs as two additional systemd services on the same Oracle VM:
+
+| Service | What it runs |
+|---------|-------------|
+| `japan225-dashboard` | FastAPI on `127.0.0.1:8080` |
+| `japan225-ngrok` | ngrok tunnel (static free domain) |
+
+See [DEPLOY.md](DEPLOY.md) for full setup instructions including the dashboard and ngrok services.
+
+## Deployment
 
 Quick summary:
 1. Create an Oracle Cloud Always Free VM (ARM, 1 OCPU, 6GB RAM)

@@ -586,6 +586,7 @@ const S = {
   tab:    'overview',
   logType: 'scan',
   chat:   [],          // history [{role,content}]
+  historyUpdatedAt: '', // last known server timestamp for cross-device sync
   timer:  null,
 };
 
@@ -917,12 +918,65 @@ function addMsg(role, text, time) {
 
 function _saveHistory() {
   localStorage.setItem('chatHistory', JSON.stringify(S.chat));
-  bcPost('chat', S.chat);
+  bcPost('chat', S.chat);  // same-browser tabs (instant)
+  // Push to server so other devices pick it up via polling
+  if (S.url) req('POST', '/api/chat/history', { messages: S.chat })
+    .then(d => { if (d.updated_at) S.historyUpdatedAt = d.updated_at; })
+    .catch(() => {});
+}
+
+// ── Cross-device chat sync: poll server every 5s ──────────────────────────
+async function _pollHistory() {
+  if (!S.url) return;
+  try {
+    const d = await req('GET', '/api/chat/history');
+    if (d.updated_at && d.updated_at !== S.historyUpdatedAt &&
+        Array.isArray(d.messages) && d.messages.length > 0) {
+      S.historyUpdatedAt = d.updated_at;
+      S.chat = d.messages;
+      localStorage.setItem('chatHistory', JSON.stringify(S.chat));
+      const box = document.getElementById('chatBox');
+      if (box) { box.innerHTML = ''; S.chat.forEach(m => addMsg(m.role, m.content)); }
+    }
+  } catch(_) {}
+}
+
+// ── Init chat: server first, localStorage fallback ────────────────────────
+async function _initChat() {
+  if (S.url) {
+    try {
+      const d = await req('GET', '/api/chat/history');
+      if (d.updated_at && Array.isArray(d.messages) && d.messages.length > 0) {
+        S.historyUpdatedAt = d.updated_at;
+        S.chat = d.messages;
+        localStorage.setItem('chatHistory', JSON.stringify(S.chat));
+        const box = document.getElementById('chatBox');
+        box.innerHTML = '';
+        S.chat.forEach(m => addMsg(m.role, m.content));
+        return;
+      }
+    } catch(_) {}
+  }
+  // Fallback: localStorage
+  const saved = localStorage.getItem('chatHistory');
+  if (saved) {
+    try {
+      const hist = JSON.parse(saved);
+      if (Array.isArray(hist) && hist.length > 0) {
+        S.chat = hist;
+        const box = document.getElementById('chatBox');
+        box.innerHTML = '';
+        hist.forEach(m => addMsg(m.role, m.content));
+      }
+    } catch(_) {}
+  }
 }
 
 function clearChat() {
   S.chat = [];
+  S.historyUpdatedAt = '';
   localStorage.removeItem('chatHistory');
+  if (S.url) req('POST', '/api/chat/history', { messages: [] }).catch(() => {});
   const box = document.getElementById('chatBox');
   box.innerHTML = `<div class="chat-msg assistant">
     <div class="bubble md">${marked.parse("Hi! I'm Claude, connected to your Japan 225 bot. I can read files, fix bugs, check logs, and push changes to GitHub. What do you need?")}</div>
@@ -1039,21 +1093,9 @@ function fmtDt(iso) {
   } else {
     loadOverview();
   }
-  // Restore chat history from localStorage
-  const saved = localStorage.getItem('chatHistory');
-  if (saved) {
-    try {
-      const hist = JSON.parse(saved);
-      if (Array.isArray(hist) && hist.length > 0) {
-        S.chat = hist;
-        const box = document.getElementById('chatBox');
-        box.innerHTML = '';  // clear static welcome message
-        hist.forEach(m => addMsg(m.role, m.content));
-      }
-    } catch(e) { /* ignore malformed storage */ }
-  }
-  // auto-refresh overview every 15s
-  setInterval(() => { if (S.tab === 'overview' && S.url) loadOverview(); }, 15000);
+  _initChat();                                                         // server-first, localStorage fallback
+  setInterval(() => { if (S.tab === 'overview' && S.url) loadOverview(); }, 15000);  // overview auto-refresh
+  setInterval(_pollHistory, 5000);                                     // cross-device chat sync
 })();
 </script>
 </body>
