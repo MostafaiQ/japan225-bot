@@ -74,10 +74,11 @@ POSITION_CHECK_EVERY_N_CYCLES = 15  # 15 × 2s = 30s position existence check; p
 ADVERSE_LOOKBACK_READINGS = 150     # 150 × 2s = 5-minute adverse window
 AI_COOLDOWN_MINUTES = 30       PRICE_DRIFT_ABORT_PTS = 20     SAFETY_CONSECUTIVE_EMPTY = 2
 ADVERSE_MILD_PTS = 60          ADVERSE_MODERATE_PTS = 120     ADVERSE_SEVERE_PTS = 175
-PAPER_TRADING_SESSION_GATE = False (all sessions enabled — Tokyo 49% WR, London 44%, NY 48%)
+PAPER_TRADING_SESSION_GATE = REMOVED. All sessions live.
 ENABLE_EMA50_BOUNCE_SETUP = False (disabled until validated)
 RSI_ENTRY_HIGH_BOUNCE = 55 (relaxed from 48 for frequency; AI gates RSI 48-55 range)
 SONNET_MODEL = "claude-sonnet-4-5-20250929"   OPUS_MODEL = "claude-opus-4-6"
+TRADING_MODE default = "live" (env var in .env also set to "live"). Paper mode code REMOVED.
 ```
 Dashboard chat uses: MODEL = "claude-sonnet-4-6" (in claude_client.py, NOT settings.py)
 
@@ -103,9 +104,8 @@ HC-prescribed 6-fix redesign applied 2026-02-28. All 233 tests pass.
 - Root cause: BB mid bounce = mean-reversion logic in +21% trending bull market
 - Backtest data: Tokyo-session only (^N225). IG CFD London/NY sessions unvalidated.
 
-### HC NO-GO conditions (must meet before live capital):
-- Paper trading: minimum 30 trades, win rate >=35%, PF >=1.3, avg duration >=45min
-- All in Tokyo session (00:00-06:00 UTC) only until PAPER_TRADING_SESSION_GATE lifted
+### Live trading active from Sunday night (2026-03-01).
+HC NO-GO conditions superseded — user approved going live.
 
 ---
 

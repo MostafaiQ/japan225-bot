@@ -36,7 +36,7 @@ DEFAULTS = {
     "DEFAULT_SL_DISTANCE":    200,
     "DEFAULT_TP_DISTANCE":    400,
     "MAX_MARGIN_PERCENT":     0.50,
-    "TRADING_MODE":           "paper",
+    "TRADING_MODE":           "live",
 }
 
 

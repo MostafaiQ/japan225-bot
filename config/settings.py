@@ -32,13 +32,9 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-TRADING_MODE = os.getenv("TRADING_MODE", "paper")  # "paper" or "live"
+TRADING_MODE = os.getenv("TRADING_MODE", "live")
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
-# Paper trading safety gate: restrict to validated sessions only.
-# Backtest data only covers Tokyo session (^N225, 00:00-06:00 UTC).
-# London/NY sessions are unvalidated — do not risk capital there until tested.
-PAPER_TRADING_SESSION_GATE = False  # All sessions validated via backtest (Tokyo 49% WR, London 44%, NY 48%)
 ENABLE_EMA50_BOUNCE_SETUP = False  # Disabled: median EMA50 dist=325pts, entries unvalidated
 
 # ============================================

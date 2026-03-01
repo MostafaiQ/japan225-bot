@@ -18,7 +18,7 @@ from trading_ig.rest import IGException
 
 from config.settings import (
     IG_API_KEY, IG_USERNAME, IG_PASSWORD, IG_ACC_NUMBER, IG_ENV,
-    EPIC, CURRENCY, EXPIRY, TRADING_MODE, CONTRACT_SIZE, MARGIN_FACTOR,
+    EPIC, CURRENCY, EXPIRY, CONTRACT_SIZE, MARGIN_FACTOR,
 )
 
 # Sentinel returned by get_open_positions() on API failure.
@@ -35,7 +35,6 @@ class IGClient:
         self.ig = None
         self.authenticated = False
         self.last_auth_time = None
-        self.paper_mode = TRADING_MODE == "paper"
         self._request_count = 0
         self._last_request_time = 0
     
@@ -177,9 +176,6 @@ class IGClient:
         Returns dict with deal_id, level, stop, limit on success.
         Returns None on failure.
         """
-        if self.paper_mode:
-            return self._paper_open(direction, size, stop_level, limit_level)
-        
         if not self.ensure_connected():
             return None
         
@@ -246,10 +242,6 @@ class IGClient:
         Modify stop loss and/or take profit on an open position.
         Returns True on success.
         """
-        if self.paper_mode:
-            logger.info(f"[PAPER] Modify {deal_id}: SL={stop_level} TP={limit_level}")
-            return True
-        
         if not self.ensure_connected():
             return False
         
@@ -279,10 +271,6 @@ class IGClient:
         Close an open position.
         Direction should be opposite of the open position.
         """
-        if self.paper_mode:
-            logger.info(f"[PAPER] Close {deal_id}: {direction} {size}")
-            return {"deal_id": deal_id, "status": "CLOSED_PAPER"}
-        
         if not self.ensure_connected():
             return None
         
@@ -419,24 +407,6 @@ class IGClient:
             "Order may still be open at broker — check IG manually."
         )
         return None
-    
-    def _paper_open(self, direction, size, stop, limit) -> dict:
-        """Simulate opening a position in paper mode."""
-        market = self.get_market_info()
-        price = market["offer"] if direction.upper() == "BUY" else market["bid"]
-        
-        result = {
-            "deal_id": f"PAPER_{int(time.time())}",
-            "direction": direction.upper(),
-            "size": size,
-            "level": price,
-            "stop_level": stop,
-            "limit_level": limit,
-            "status": "OPEN_PAPER",
-            "timestamp": datetime.now().isoformat(),
-        }
-        logger.info(f"[PAPER] Position opened: {result}")
-        return result
     
     def calculate_margin(self, size: float, price: Optional[float] = None) -> float:
         """Calculate margin for a given position size."""

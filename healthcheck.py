@@ -192,8 +192,8 @@ else:
     last = state.get("last_scan", "N/A")
     print(f"  {'Last scan:':<20} {last}")
 
-# PAPER TRADES
-h("PAPER TRADES  (HC NO-GO: 30 trades, WR ≥35%, PF ≥1.3 before live)")
+# LIVE TRADES
+h("LIVE TRADES")
 stats = db_stats()
 if stats is None:
     warn("DB not found")
@@ -205,11 +205,8 @@ else:
     losses = stats.get("losses") or 0
     avg    = stats.get("avg_pnl")
     wr     = (wins / closed * 100) if closed > 0 else 0
-    needed = max(0, 30 - closed)
-    line = f"{closed}/30 closed  |  {wins}W {losses}L  |  WR {wr:.0f}%  |  Avg PnL: {avg or 'N/A'}"
-    (ok if closed >= 30 else warn)(line)
-    if needed > 0:
-        print(f"  {'Need:':<20} {needed} more trade(s) before live capital")
+    line = f"{closed} closed  |  {wins}W {losses}L  |  WR {wr:.0f}%  |  Avg PnL: {avg or 'N/A'}"
+    print(f"  {line}")
     if stats.get("recent"):
         print("  Recent trades:")
         for t in stats["recent"]:
