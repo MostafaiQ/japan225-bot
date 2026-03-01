@@ -16,7 +16,7 @@ evaluate_position(position: dict) -> dict
   # Phase transitions:
   #   INITIAL → BREAKEVEN: pnl_points >= BREAKEVEN_TRIGGER(150)
   #     new_stop = entry ± BREAKEVEN_BUFFER(10)  [+ for BUY, - for SELL]
-  #   BREAKEVEN → RUNNER: pnl >= 75% of TP AND opened < 2 hours ago
+  #   BREAKEVEN → RUNNER: pnl >= 75% of TP AND time_open < 2 hours (is_fast_trade gate)
   #     new_stop = current ± TRAILING_STOP_DISTANCE(150), new_limit=None (remove TP)
   #   RUNNER: action="none" (manual_trail_update handles movement)
 

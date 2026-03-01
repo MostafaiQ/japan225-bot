@@ -9,7 +9,7 @@ This runs on the position monitor (every 60 seconds), NOT the 2-hour scan.
 """
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 from config.settings import (
@@ -111,11 +111,11 @@ class ExitManager:
             tp_distance = abs(limit_level - entry)
             progress = pnl_points / tp_distance if tp_distance > 0 else 0
             
-            # Runner condition: reached 75% of TP within first 2 hours
-            is_fast = time_open and time_open < timedelta(hours=2)
+            # Runner condition: reached 75% of TP within 2 hours (slow trades don't get runner)
             is_near_tp = progress >= RUNNER_VELOCITY_THRESHOLD
-            
-            if is_fast and is_near_tp:
+            is_fast_trade = time_open is None or time_open.total_seconds() < 7200
+
+            if is_near_tp and is_fast_trade:
                 if direction == "BUY":
                     trail_stop = current - TRAILING_STOP_DISTANCE
                 else:
@@ -124,9 +124,9 @@ class ExitManager:
                 result.update({
                     "action": "activate_runner",
                     "details": (
-                        f"RUNNER DETECTED. Price at {progress:.0%} of TP in "
-                        f"{time_open.total_seconds()/60:.0f} min. "
-                        f"Removing TP, trailing stop at {TRAILING_STOP_DISTANCE}pts."
+                        f"RUNNER DETECTED. Price at {progress:.0%} of TP"
+                        + (f" ({time_open.total_seconds()/60:.0f} min open)" if time_open else "") +
+                        f". Removing TP, trailing stop at {TRAILING_STOP_DISTANCE}pts."
                     ),
                     "new_stop": trail_stop,
                     "new_limit": None,  # Remove TP to let it run
