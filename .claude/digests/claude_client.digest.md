@@ -16,12 +16,19 @@ MAX_RAW_TURNS = 2        # raw turns always kept
 SUMMARY_MAX_CHARS = 600  # ~150 tokens max for rolling summary
 BOT_STATE_FILE  = storage/data/bot_state.json
 CHAT_USAGE_FILE = storage/data/chat_usage.json
+CHAT_COSTS_FILE = storage/data/chat_costs.json
 SKILLS_DIR = ~/.claude/skills/
 
 ## chat(message, history) -> str
 1. _track_usage(message) — classify + log intent
 2. _build_prompt() — state snapshot + compressed history + message
 3. subprocess.run claude --print. timeout=180s.
+4. _log_chat_cost(prompt, response) — estimate cost from char count, append to chat_costs.json
+
+## _log_chat_cost(prompt, response) -> None
+Estimates cost: Sonnet $3/M input, $15/M output, 1 token ≈ 4 chars.
+Appends {ts, cost_usd, input_chars, output_chars} to chat_costs.json (max 500 entries).
+GET /api/chat/costs now returns real today/total estimates.
 
 ## compress_history(history) -> list[dict]
 Call from chat router after each response, before saving to chat_history.json.

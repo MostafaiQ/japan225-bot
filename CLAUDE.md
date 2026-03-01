@@ -58,6 +58,17 @@ When user asks about prompt performance → use `/prompt-audit` workflow:
   2. Query last 5 losing trades and their ai_analysis field.
   3. Find patterns: what did Sonnet/Opus say that was wrong? What context was missing?
 
+## Handling Operational Questions (dashboard chat)
+User is a trader, not a developer. When they ask operational questions:
+- "What's wrong?" / "Is the bot working?" → check `systemctl is-active japan225-bot japan225-dashboard japan225-ngrok` then read last 20 lines of `storage/data/bot_state.json`
+- "Why no trades?" → check bot_state.json session, is_no_trade_day(), then recent scans in DB
+- "What happened to cost?" / "API usage?" → read `storage/data/chat_costs.json` for chat costs + `sqlite3 storage/data/trading.db "SELECT SUM(api_cost) FROM scans WHERE timestamp LIKE '$(date +%Y-%m-%d)%'"` for scan costs
+- "Is IG down?" / "API issues?" → check journalctl for IG errors, use WebSearch for "IG Index API status" if needed
+- "Why off-hours?" → explain that off_hours = no active trading session (Tokyo 00-06, London 08-16, NY 16-21 UTC). Normal for weekends.
+- "What do the logs mean?" → read `/api/logs?type=scan` result from recent journalctl or explain the outcome codes in recent_scans
+- Always give a DIRECT answer. Never say "probably" or "might". Check the actual data first.
+- If you need to run a command and it might affect the bot, warn the user first.
+
 ## Standing Rules
 - Minimal diffs. Never delete+rewrite unchanged lines.
 - After any code change: update MEMORY.md first, then the relevant digest.

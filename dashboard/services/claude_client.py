@@ -20,7 +20,7 @@ import logging
 import os
 import re
 import subprocess
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,12 @@ CHAT_USAGE_FILE = PROJECT_ROOT / "storage" / "data" / "chat_usage.json"
 SKILLS_DIR = Path.home() / ".claude" / "skills"
 
 CLAUDE_BIN = "/home/ubuntu/.local/bin/claude"
+CHAT_COSTS_FILE = PROJECT_ROOT / "storage" / "data" / "chat_costs.json"
+
+# Rough cost estimate: claude-sonnet-4-5 (what claude CLI uses by default)
+# $3/M input tokens, $15/M output tokens. 1 token ≈ 4 chars.
+_SONNET_INPUT_PER_CHAR  = 3.0  / 1_000_000 / 4   # $/char input
+_SONNET_OUTPUT_PER_CHAR = 15.0 / 1_000_000 / 4   # $/char output
 
 # Rolling summary: keep last 2 raw turns + a compressed summary of everything older.
 # Summary is maintained as a single paragraph, updated after each assistant reply.
@@ -81,11 +87,15 @@ def chat(message: str, history: list[dict]) -> str:
         response = result.stdout.strip()
         if not response:
             stderr = result.stderr.strip()
-            response = stderr if stderr else "(no response)"
+            if result.returncode != 0:
+                response = f"Claude Code failed (exit {result.returncode}). {stderr[:300] if stderr else 'No output.'}"
+            else:
+                response = stderr if stderr else "(no response — Claude Code returned empty output)"
+        _log_chat_cost(prompt, response)
         return response
 
     except subprocess.TimeoutExpired:
-        return "Claude Code timed out (3 min limit). Break the task into smaller steps."
+        return "Claude Code timed out (3 min limit). Try a more specific question."
     except FileNotFoundError:
         return f"Claude Code binary not found at {CLAUDE_BIN}. Check installation."
     except Exception as e:
@@ -228,6 +238,32 @@ def _absorb_into_summary(existing: str, turns: list[dict]) -> str:
         combined = combined[combined.index(" ") + 1:] if " " in combined else combined
 
     return combined
+
+
+def _log_chat_cost(prompt: str, response: str) -> None:
+    """Estimate cost from char count and append to chat_costs.json (max 500 entries)."""
+    try:
+        cost = len(prompt) * _SONNET_INPUT_PER_CHAR + len(response) * _SONNET_OUTPUT_PER_CHAR
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "cost_usd": round(cost, 6),
+            "input_chars": len(prompt),
+            "output_chars": len(response),
+        }
+        data: list = []
+        if CHAT_COSTS_FILE.exists():
+            try:
+                data = json.loads(CHAT_COSTS_FILE.read_text())
+                if not isinstance(data, list):
+                    data = []
+            except Exception:
+                data = []
+        data.append(entry)
+        if len(data) > 500:
+            data = data[-500:]
+        CHAT_COSTS_FILE.write_text(json.dumps(data))
+    except Exception as e:
+        logger.debug(f"_log_chat_cost failed (non-fatal): {e}")
 
 
 def _track_usage(message: str) -> None:

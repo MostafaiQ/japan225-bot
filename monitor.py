@@ -76,6 +76,7 @@ class TradingMonitor:
         self._last_scan_time: datetime | None = None
         self._next_scan_in: int | None = None
         self._current_price: float | None = None
+        self._last_scan_detail: dict = {}  # dashboard: shows last scan outcome
         # Paths for dashboard integration
         self._state_path   = Path(__file__).parent / "storage" / "data" / "bot_state.json"
         self._overrides_path = Path(__file__).parent / "storage" / "data" / "dashboard_overrides.json"
@@ -270,6 +271,7 @@ class TradingMonitor:
                 "current_price":  self._current_price,
                 "uptime":         f"{h}h {m}m",
                 "started_at":     self._started_at.isoformat(),
+                "last_scan_detail": self._last_scan_detail,
             }
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._state_path.with_suffix(".tmp")
@@ -299,9 +301,19 @@ class TradingMonitor:
             self._reload_overrides()
 
             if not self.ig.ensure_connected():
+                self._ig_fail_count = getattr(self, '_ig_fail_count', 0) + 1
                 logger.warning("IG reconnection failed. Sleeping 60s.")
+                if self._ig_fail_count == 1 or self._ig_fail_count % 10 == 0:
+                    await self.telegram.send_alert(
+                        f"⚠️ IG API unreachable (attempt {self._ig_fail_count}, ~{self._ig_fail_count} min). "
+                        f"Retrying every 60s."
+                    )
                 await asyncio.sleep(60)
                 return
+
+            if getattr(self, '_ig_fail_count', 0) > 0:
+                await self.telegram.send_alert("✅ IG API reconnected. Resuming normal operation.")
+                self._ig_fail_count = 0
 
             pos_state = self.storage.get_position_state()
 
@@ -400,6 +412,13 @@ class TradingMonitor:
 
         if not setup["found"]:
             logger.info(f"Pre-screen: no setup. {setup['reasoning'][:80]}")
+            self._last_scan_detail = {"outcome": "no_setup", "price": current_price, "details": setup["reasoning"][:80]}
+            self.storage.save_scan({
+                "timestamp": datetime.now().isoformat(), "session": session["name"],
+                "price": current_price, "indicators": {}, "market_context": {},
+                "analysis": {"setup_found": False, "reasoning": setup["reasoning"][:120]},
+                "setup_found": False, "confidence": None, "action_taken": "no_setup", "api_cost": 0,
+            })
             return SCAN_INTERVAL_SECONDS
 
         prescreen_direction = setup["direction"]
@@ -408,6 +427,13 @@ class TradingMonitor:
         # --- AI cooldown check ---
         if self.storage.is_ai_on_cooldown(AI_COOLDOWN_MINUTES):
             logger.info(f"AI on cooldown ({AI_COOLDOWN_MINUTES} min). Skipping escalation.")
+            self._last_scan_detail = {"outcome": "cooldown", "direction": prescreen_direction, "price": current_price, "setup_type": setup.get("type")}
+            self.storage.save_scan({
+                "timestamp": datetime.now().isoformat(), "session": session["name"],
+                "price": current_price, "indicators": {}, "market_context": {},
+                "analysis": {"setup_found": True, "reasoning": f"[AI Cooldown] {prescreen_direction} setup found, cooldown active"},
+                "setup_found": False, "confidence": None, "action_taken": f"cooldown_{prescreen_direction.lower()}", "api_cost": 0,
+            })
             return SCAN_INTERVAL_SECONDS
 
         # --- Fetch 4H for full analysis (1 API call; daily already fetched above) ---
@@ -439,9 +465,23 @@ class TradingMonitor:
         criteria = local_conf.get("criteria", {})
         if not criteria.get("no_event_1hr", True):
             logger.info("Hard block: HIGH-impact event within 60min. No AI evaluation.")
+            self._last_scan_detail = {"outcome": "event_block", "direction": prescreen_direction, "confidence": local_conf["score"], "price": current_price}
+            self.storage.save_scan({
+                "timestamp": datetime.now().isoformat(), "session": session["name"],
+                "price": current_price, "indicators": {}, "market_context": {},
+                "analysis": {"setup_found": False, "reasoning": "[Hard block] High-impact event within 60min"},
+                "setup_found": False, "confidence": local_conf["score"], "action_taken": f"event_block_{prescreen_direction.lower()}", "api_cost": 0,
+            })
             return SCAN_INTERVAL_SECONDS
         if not criteria.get("no_friday_monthend", True):
             logger.info("Hard block: Friday/month-end blackout. No AI evaluation.")
+            self._last_scan_detail = {"outcome": "friday_block", "direction": prescreen_direction, "confidence": local_conf["score"], "price": current_price}
+            self.storage.save_scan({
+                "timestamp": datetime.now().isoformat(), "session": session["name"],
+                "price": current_price, "indicators": {}, "market_context": {},
+                "analysis": {"setup_found": False, "reasoning": "[Hard block] Friday/month-end blackout"},
+                "setup_found": False, "confidence": local_conf["score"], "action_taken": f"friday_block_{prescreen_direction.lower()}", "api_cost": 0,
+            })
             return SCAN_INTERVAL_SECONDS
 
         # --- Haiku gate at HAIKU_MIN_SCORE (35%) — lower than old 50% hard floor ---
@@ -453,6 +493,13 @@ class TradingMonitor:
                 f"Local score {local_conf['score']}% below Haiku floor ({HAIKU_MIN_SCORE}%). "
                 f"Skipping (true technical junk)."
             )
+            self._last_scan_detail = {"outcome": "low_conf", "direction": prescreen_direction, "confidence": local_conf["score"], "price": current_price, "setup_type": setup.get("type")}
+            self.storage.save_scan({
+                "timestamp": datetime.now().isoformat(), "session": session["name"],
+                "price": current_price, "indicators": {}, "market_context": {},
+                "analysis": {"setup_found": False, "reasoning": f"[Low confidence] {local_conf['score']}% < {HAIKU_MIN_SCORE}% floor"},
+                "setup_found": False, "confidence": local_conf["score"], "action_taken": f"low_conf_{prescreen_direction.lower()}", "api_cost": 0,
+            })
             return SCAN_INTERVAL_SECONDS
 
         failed_criteria = [k for k, v in criteria.items() if not v
@@ -476,6 +523,7 @@ class TradingMonitor:
 
         if not haiku_result.get("should_escalate", True):
             logger.info(f"Haiku gate: REJECTED. {haiku_result.get('reason', '')}")
+            self._last_scan_detail = {"outcome": "haiku_rejected", "direction": prescreen_direction, "confidence": local_conf["score"], "price": current_price, "setup_type": setup.get("type"), "reason": haiku_result.get("reason", "")[:80]}
             self.storage.save_scan({
                 "timestamp": datetime.now().isoformat(),
                 "session": session["name"],
@@ -573,6 +621,7 @@ class TradingMonitor:
                 f"Found={final_result.get('setup_found')}, "
                 f"Confidence={final_confidence}% (need {min_conf}%)"
             )
+            self._last_scan_detail = {"outcome": "ai_rejected", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
             return SCAN_INTERVAL_SECONDS
 
         # --- Risk validation ---
@@ -640,6 +689,7 @@ class TradingMonitor:
             "ai_analysis": final_result.get("reasoning", ""),
         }
 
+        self._last_scan_detail = {"outcome": "trade_alert", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
         self.storage.set_pending_alert(trade_alert)
         await self.telegram.send_trade_alert(trade_alert)
         logger.info(f"Trade alert sent: {direction} @ {entry:.0f}, confidence={final_confidence}%")

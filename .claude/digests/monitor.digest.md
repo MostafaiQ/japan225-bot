@@ -20,6 +20,14 @@ startup_sync(): reconciles DB ↔ IG on every restart. 4 cases:
 _main_cycle(): dispatches to _monitoring_cycle or _scanning_cycle based on DB position state.
   Scanning sleep uses asyncio.wait_for(_force_scan_event.wait(), timeout=interval) — interruptible.
 
+self._last_scan_detail: dict — set at every _scanning_cycle outcome. Included in bot_state.json.
+  Keys: outcome (no_setup|cooldown|low_conf|event_block|friday_block|haiku_rejected|ai_rejected|trade_alert),
+        direction, confidence, price, setup_type, reason (haiku only)
+
+_scanning_cycle() now writes save_scan() for: no_setup, cooldown, low_conf, event_block, friday_block.
+  (previously only haiku_rejected and full Sonnet/Opus runs wrote to DB)
+  off_hours early return does NOT write scan records (no analysis done).
+
 _scanning_cycle() -> int (sleep seconds):
   1. get_current_session() → skip if not active
   2. is_no_trade_day() → skip

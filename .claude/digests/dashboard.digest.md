@@ -40,17 +40,18 @@ GET /api/history?limit=N  → {trades, total, wins, losses, total_pnl}
 
 ### routers/logs.py
 GET /api/logs?type=scan|system&lines=N  (lines: 10-200, default 70)
-  scan   → journalctl filtered by: SCAN|SETUP|SIGNAL|TRADE|ALERT|CONFIRM|PHASE|MOMENTUM|ERROR|WARN
+  scan   → journalctl filtered by: SCAN|SETUP|SIGNAL|TRADE|ALERT|CONFIRM|PHASE|MOMENTUM|ERROR|WARN|CONFIDENCE|HAIKU|SONNET|OPUS|REJECTED|APPROVED|COOLDOWN|ESCALAT|PRE-SCREEN|SCREEN:|BLOCK
   system → raw journalctl output
 Strips ANSI escape codes.
 
 ### routers/chat.py
-POST /api/chat              → body: {message, history:[{role,content}]} → {response: str}
+POST /api/chat              → body: {message, history:[{role,content}]} → {job_id, status:"pending"}
+GET  /api/chat/status/{id}  → {status:"pending"|"done"|"error", response:str|null} — poll every 4s
 GET  /api/chat/history      → {messages:[{role,content}], updated_at: ISO str}
 POST /api/chat/history      → body: {messages:[]} → {ok: true, updated_at: ISO str}
   Persists to storage/data/chat_history.json (last 40 messages). Cross-device sync.
-GET  /api/chat/costs        → {today_usd, total_usd, entries:[last 20 today]}
-  Reads storage/data/chat_costs.json (written by claude_client._log_cost())
+GET  /api/chat/costs        → {today_usd, total_usd, note:"estimate", entries:[last 20 today]}
+  Reads storage/data/chat_costs.json (written by claude_client._log_chat_cost())
 
 ### routers/controls.py
 POST /api/controls/force-scan  → writes storage/data/force_scan.trigger

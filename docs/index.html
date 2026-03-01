@@ -591,6 +591,7 @@ const S = {
   chat:   [],          // history [{role,content}]
   historyUpdatedAt: '', // last known server timestamp for cross-device sync
   timer:  null,
+  pendingJob: null,    // {job_id, timer, thinkEl} — survives ngrok reconnect via localStorage
 };
 
 // ══════════════════════════════════════════════
@@ -678,17 +679,36 @@ async function loadOverview() {
 }
 
 function renderStatus(d) {
+  const det = d.last_scan_detail || {};
+  let lastScanHtml = '—';
+  if (det.outcome) {
+    const outcomeMap = {
+      no_setup:      '<span class="badge b-neutral">No Setup</span>',
+      cooldown:      '<span class="badge b-warn">Cooldown</span>',
+      low_conf:      '<span class="badge b-neutral">Low Conf</span>',
+      event_block:   '<span class="badge b-warn">Event Block</span>',
+      friday_block:  '<span class="badge b-warn">Fri Block</span>',
+      haiku_rejected:'<span class="badge b-neutral">Haiku ✗</span>',
+      ai_rejected:   '<span class="badge b-neutral">AI ✗</span>',
+      trade_alert:   '<span class="badge b-long">Trade Alert!</span>',
+    };
+    const badge = outcomeMap[det.outcome] || `<span class="badge b-neutral">${esc(det.outcome)}</span>`;
+    const dir   = det.direction ? ` ${det.direction}` : '';
+    const conf  = det.confidence != null ? ` ${det.confidence}%` : '';
+    lastScanHtml = badge + `<span style="font-size:12px;color:var(--text-muted);margin-left:6px;">${esc(dir + conf)}</span>`;
+  }
   const rows = [
-    ['Session',       d.session      || '—'],
-    ['Phase',         d.phase        || '—'],
-    ['Scanning',      d.scanning_paused
+    ['Session',        d.session      || '—'],
+    ['Phase',          d.phase        || '—'],
+    ['Scanning',       d.scanning_paused
       ? '<span class="badge b-warn">PAUSED</span>'
       : '<span class="badge b-long">ACTIVE</span>'],
-    ['Last Scan',     d.last_scan    ? ago(d.last_scan) : '—'],
-    ['Next Scan In',  d.next_scan_in != null ? d.next_scan_in + 's' : '—'],
-    ['AI Calls Today',d.ai_calls_today ?? '—'],
-    ['Cost Today',    d.cost_today   != null ? '$' + d.cost_today.toFixed(4) : '—'],
-    ['Uptime',        d.uptime       || '—'],
+    ['Last Scan',      d.last_scan    ? ago(d.last_scan) : '—'],
+    ['Last Result',    lastScanHtml],
+    ['Next Scan In',   d.next_scan_in != null ? d.next_scan_in + 's' : '—'],
+    ['AI Calls Today', d.ai_calls_today ?? '—'],
+    ['Scan Cost',      d.cost_today   != null ? '$' + d.cost_today.toFixed(4) : '—'],
+    ['Uptime',         d.uptime       || '—'],
   ];
   document.getElementById('statusRows').innerHTML = rows.map(([l,v]) =>
     `<div class="stat-row"><span class="stat-label">${l}</span><span class="stat-value">${v}</span></div>`
@@ -731,23 +751,41 @@ function renderPos(p) {
     </div>`;
 }
 
+const _actionLabels = {
+  no_setup:            '—',
+  cooldown_long:       '⏳ Cooldown (L)',
+  cooldown_short:      '⏳ Cooldown (S)',
+  event_block_long:    '🚫 Event (L)',
+  event_block_short:   '🚫 Event (S)',
+  friday_block_long:   '🚫 Fri (L)',
+  friday_block_short:  '🚫 Fri (S)',
+  low_conf_long:       '📉 Low conf (L)',
+  low_conf_short:      '📉 Low conf (S)',
+  haiku_rejected:      '🤖 Haiku ✗',
+  pending:             '📤 Alert sent',
+};
 function renderScans(scans) {
   const tb = document.getElementById('scansBody');
-  if (!scans.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">No scans yet</td></tr>'; return; }
+  if (!scans.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">No scans during active session yet</td></tr>'; return; }
   tb.innerHTML = scans.map(s => {
+    const act = s.action_taken || '';
+    const dir = s.direction;
     const setup = s.setup_found
-      ? `<span class="badge b-long">${s.direction || 'Found'}</span>`
-      : '<span class="badge b-neutral">—</span>';
-    const conf = s.confidence
-      ? `<span class="${s.confidence >= 70 ? 'c-long' : 'c-dim'}">${s.confidence}%</span>`
+      ? `<span class="badge b-long">${dir || 'Found'}</span>`
+      : dir
+        ? `<span class="badge b-neutral">${dir}</span>`
+        : '<span class="badge b-neutral">—</span>';
+    const conf = s.confidence != null
+      ? `<span class="${s.confidence >= 70 ? 'c-long' : s.confidence >= 40 ? 'c-warn' : 'c-dim'}">${s.confidence}%</span>`
       : '—';
+    const action = _actionLabels[act] || (act ? esc(act) : '—');
     return `<tr>
       <td>${fmtTime(s.timestamp)}</td>
       <td>${s.session || '—'}</td>
       <td>${fmt1(s.price)}</td>
       <td>${setup}</td>
       <td>${conf}</td>
-      <td style="font-size:12px;">${s.action_taken || '—'}</td>
+      <td style="font-size:12px;">${action}</td>
     </tr>`;
   }).join('');
 }
@@ -898,15 +936,80 @@ async function sendChat() {
   _saveHistory();
   const btn = document.getElementById('chatBtn');
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
-  try {
-    const d = await req('POST', '/api/chat', { message: msg, history: S.chat });
-    const reply = d.response || '(no response)';
-    S.chat.push({ role:'assistant', content: reply });
-    _saveHistory();
-    addMsg('assistant', reply);
-    _refreshChatCost();
-  } catch(e) { addMsg('assistant', '⚠ Error: ' + e.message); }
-  finally { btn.disabled = false; btn.innerHTML = 'Send'; }
+  // Show thinking bubble immediately — survives ngrok drops
+  const thinkEl = _addThinkingBubble();
+  const statusEl = thinkEl.querySelector('.think-status');
+  // Retry POST until ngrok reconnects — never give up
+  let posted = false;
+  while (!posted) {
+    try {
+      const d = await req('POST', '/api/chat', { message: msg, history: S.chat });
+      posted = true;
+      if (d.job_id) {
+        localStorage.setItem('pendingJob', JSON.stringify({ job_id: d.job_id }));
+        _startJobPolling(d.job_id, thinkEl);
+        // button stays disabled until job finishes (managed inside _startJobPolling)
+      } else if (d.response) {
+        // Legacy sync fallback
+        if (thinkEl) thinkEl.remove();
+        S.chat.push({ role:'assistant', content: d.response });
+        _saveHistory();
+        addMsg('assistant', d.response);
+        _refreshChatCost();
+        btn.disabled = false; btn.innerHTML = 'Send';
+      }
+    } catch(_) {
+      // ngrok dropped — keep thinking bubble, retry in 5s
+      if (statusEl) statusEl.textContent = 'Reconnecting…';
+      await new Promise(r => setTimeout(r, 5000));
+      if (statusEl) statusEl.textContent = 'Retrying…';
+    }
+  }
+}
+
+const _thinkPhrases = ['Thinking…', 'Reading files…', 'Checking logs…', 'Still working…', 'Almost done…', 'Finalising…'];
+
+function _addThinkingBubble() {
+  const box = document.getElementById('chatBox');
+  const d = document.createElement('div');
+  d.className = 'chat-msg assistant';
+  d.innerHTML = '<div class="bubble md"><span class="spinner"></span> <span class="think-status">Thinking…</span></div>';
+  box.appendChild(d);
+  box.scrollTop = box.scrollHeight;
+  return d;
+}
+
+function _startJobPolling(jobId, thinkEl) {
+  if (S.pendingJob && S.pendingJob.timer) clearInterval(S.pendingJob.timer);
+  const statusEl = thinkEl ? thinkEl.querySelector('.think-status') : null;
+  let attempt = 0;
+
+  const poll = async () => {
+    attempt++;
+    if (statusEl) statusEl.textContent = _thinkPhrases[Math.min(Math.floor(attempt / 2), _thinkPhrases.length - 1)];
+    try {
+      const d = await req('GET', '/api/chat/status/' + jobId);
+      if (d.status === 'done' || d.status === 'error') {
+        clearInterval(S.pendingJob && S.pendingJob.timer);
+        localStorage.removeItem('pendingJob');
+        S.pendingJob = null;
+        if (thinkEl) thinkEl.remove();
+        const btn = document.getElementById('chatBtn');
+        if (btn) { btn.disabled = false; btn.innerHTML = 'Send'; }
+        const reply = d.response || '(no response)';
+        S.chat.push({ role:'assistant', content: reply });
+        _saveHistory();
+        addMsg('assistant', reply);
+        _refreshChatCost();
+      }
+    } catch(_) {
+      // ngrok down — show reconnecting status, keep polling
+      if (statusEl) statusEl.textContent = 'Reconnecting…';
+    }
+  };
+
+  const timer = setInterval(poll, 4000);
+  S.pendingJob = { job_id: jobId, timer, thinkEl };
 }
 function addMsg(role, text, time) {
   const box = document.getElementById('chatBox');
@@ -993,12 +1096,16 @@ function clearChat() {
 async function _refreshChatCost() {
   if (!S.url) return;
   try {
-    const d = await req('GET', '/api/chat/costs');
+    const [chatD, statusD] = await Promise.all([
+      req('GET', '/api/chat/costs'),
+      req('GET', '/api/status').catch(() => ({})),
+    ]);
     const badge = document.getElementById('chatCostBadge');
     if (!badge) return;
-    // Claude Code CLI — costs tracked in Anthropic console, not here
-    const note = d.note || 'Claude Code CLI';
-    badge.textContent = note;
+    const chatCost  = chatD.today_usd != null ? `Chat ~$${chatD.today_usd.toFixed(3)}` : '';
+    const scanCost  = statusD.cost_today != null ? `Bot $${statusD.cost_today.toFixed(4)}` : '';
+    const parts = [chatCost, scanCost].filter(Boolean);
+    badge.textContent = parts.length ? parts.join(' | ') + ' today (est)' : 'Costs in Anthropic console';
   } catch(_) {}
 }
 
@@ -1113,6 +1220,17 @@ function fmtDt(iso) {
   }
   _initChat();                                                         // server-first, localStorage fallback
   _refreshChatCost();                                                  // show cost badge immediately
+  // Recover any job that was in-flight when page was refreshed
+  const _savedJob = localStorage.getItem('pendingJob');
+  if (_savedJob) {
+    try {
+      const { job_id } = JSON.parse(_savedJob);
+      if (job_id) {
+        const thinkEl = _addThinkingBubble();
+        _startJobPolling(job_id, thinkEl);
+      }
+    } catch(_) { localStorage.removeItem('pendingJob'); }
+  }
   setInterval(() => { if (S.tab === 'overview' && S.url) loadOverview(); }, 15000);  // overview auto-refresh
   setInterval(_pollHistory, 5000);                                     // cross-device chat sync
   setInterval(_refreshChatCost, 30000);                               // chat cost badge refresh

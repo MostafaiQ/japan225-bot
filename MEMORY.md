@@ -88,6 +88,13 @@ Dashboard chat: Claude Code CLI (claude --print). No model constant needed.
 ## Known Bug
 *(none)*
 
+## Dashboard Fixes Applied (2026-03-01)
+- monitor.py: _last_scan_detail added to bot_state.json. Scan records written for ALL active-session outcomes (no_setup, cooldown, low_conf, event_block, friday_block). Previously only Haiku-rejected and Sonnet/Opus scans wrote records.
+- logs.py: grep pattern expanded with CONFIDENCE|HAIKU|SONNET|OPUS|REJECTED|APPROVED|COOLDOWN|ESCALAT|PRE-SCREEN|SCREEN:|BLOCK so all scan messages appear in Logs tab.
+- claude_client.py: _log_chat_cost() re-added — estimates cost from char count (Sonnet pricing), writes to chat_costs.json. Better empty-response error messages.
+- chat.py: /api/chat/costs now returns real today/total estimates from chat_costs.json.
+- docs/index.html: Overview "Last Result" row shows last scan outcome badge+direction+confidence. Recent Scans table has readable action labels. Chat cost badge shows both chat (est) and bot scan costs.
+
 ## Strategy History (archived — see high-chancellor-archive.md for full details)
 HC 6-fix redesign 2026-02-28: ADVERSE tiers widened, bounce confirmation added, RSI tuned,
 C4 redesigned, EMA50 bounce disabled, session gate removed. All 233 tests pass.

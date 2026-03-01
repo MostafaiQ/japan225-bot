@@ -45,7 +45,7 @@ async def logs(
 ):
     if type == "scan":
         # Filter for trading-relevant lines
-        entries = _journalctl(lines * 3, grep=r"SCAN|SETUP|SIGNAL|TRADE|ALERT|CONFIRM|PHASE|MOMENTUM|ERROR|WARN")
+        entries = _journalctl(lines * 3, grep=r"SCAN|SETUP|SIGNAL|TRADE|ALERT|CONFIRM|PHASE|MOMENTUM|ERROR|WARN|CONFIDENCE|HAIKU|SONNET|OPUS|REJECTED|APPROVED|COOLDOWN|ESCALAT|PRE-SCREEN|SCREEN:|BLOCK")
         entries = entries[-lines:]
     else:
         entries = _journalctl(lines)
