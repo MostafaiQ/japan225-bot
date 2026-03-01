@@ -267,8 +267,9 @@ class TestResetAlertState:
 
 
 class TestMaxPriceBuffer:
-    def test_buffer_capped_at_60(self):
+    def test_buffer_capped_at_120(self):
+        """Buffer holds 120 readings = 1 hour at 30s monitoring interval."""
         t = MomentumTracker("LONG", 38000)
-        for i in range(70):
+        for i in range(130):
             t.add_price(38000 + i)
-        assert len(t._prices) == 60
+        assert len(t._prices) == 120

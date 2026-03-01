@@ -58,6 +58,7 @@ get_recent_prices(n=10) -> list[dict]
 get_ai_cooldown() -> Optional[dict]
 set_ai_cooldown(direction: str)              # Sets timestamp + direction
 is_ai_on_cooldown(cooldown_minutes=30) -> bool
+clear_ai_cooldown()                          # Resets to NULL — called by _handle_position_closed() on trade close
 
 ## Cost tracking
 get_api_cost_total() -> float

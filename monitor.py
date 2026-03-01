@@ -796,6 +796,7 @@ class TradingMonitor:
         })
         self.storage.record_trade_result(pnl_dollars, new_balance)
         self.storage.set_position_closed()
+        self.storage.clear_ai_cooldown()  # Position closed — allow immediate AI escalation on next scan
         self.momentum_tracker = None
 
         sign = "+" if pnl_dollars >= 0 else ""

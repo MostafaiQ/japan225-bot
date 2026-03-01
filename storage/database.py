@@ -632,6 +632,11 @@ class Storage:
         except ValueError:
             return False
 
+    def clear_ai_cooldown(self):
+        """Reset AI cooldown — called when a position closes so the next scan can escalate immediately."""
+        with self._conn() as conn:
+            conn.execute("UPDATE ai_cooldown SET last_escalation = NULL, direction = NULL WHERE id = 1")
+
     def get_api_cost_total(self) -> float:
         """Get total API cost across all scans and trades."""
         with self._conn() as conn:

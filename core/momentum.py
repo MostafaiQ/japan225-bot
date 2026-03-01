@@ -17,6 +17,7 @@ from config.settings import (
     ADVERSE_MODERATE_PTS,
     ADVERSE_SEVERE_PTS,
     STALE_DATA_THRESHOLD,
+    ADVERSE_LOOKBACK_READINGS,
     CONTRACT_SIZE,
 )
 
@@ -52,8 +53,8 @@ class MomentumTracker:
             "price": price,
             "timestamp": datetime.now().isoformat(),
         })
-        # Keep last 60 readings (1 hour at 1-min intervals)
-        if len(self._prices) > 60:
+        # Keep last 120 readings (1 hour at 30s intervals)
+        if len(self._prices) > 120:
             self._prices.pop(0)
 
     def current_pnl_points(self) -> float:
@@ -76,7 +77,7 @@ class MomentumTracker:
         if len(self._prices) < 2:
             return 0.0
 
-        lookback = min(5, len(self._prices))
+        lookback = min(ADVERSE_LOOKBACK_READINGS, len(self._prices))
         reference = self._prices[-lookback]["price"]
         current = self._prices[-1]["price"]
 
