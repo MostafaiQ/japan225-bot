@@ -73,6 +73,7 @@ SCAN_INTERVAL_SECONDS = 300    MONITOR_INTERVAL_SECONDS = 2   OFFHOURS_INTERVAL_
 POSITION_CHECK_EVERY_N_CYCLES = 15  # 15 × 2s = 30s position existence check; position cycle REPLACES price cycle = exactly 30 calls/min
 ADVERSE_LOOKBACK_READINGS = 150     # 150 × 2s = 5-minute adverse window
 AI_COOLDOWN_MINUTES = 30       PRICE_DRIFT_ABORT_PTS = 20     SAFETY_CONSECUTIVE_EMPTY = 2
+HAIKU_MIN_SCORE = 40  # "at least 1 criterion must pass" — scores discrete: 30,40,50... (35 was unreachable)
 ADVERSE_MILD_PTS = 60          ADVERSE_MODERATE_PTS = 120     ADVERSE_SEVERE_PTS = 175
 PAPER_TRADING_SESSION_GATE = REMOVED. All sessions live.
 ENABLE_EMA50_BOUNCE_SETUP = False (disabled until validated)
