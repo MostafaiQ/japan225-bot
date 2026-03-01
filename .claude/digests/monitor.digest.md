@@ -31,9 +31,14 @@ _scanning_cycle() -> int (sleep seconds):
   7. storage.is_ai_on_cooldown(30min)
   8. fetch 4H candles → 1 API call (daily already fetched in step 5, reused here)
   9. researcher.research() → web data
-  10. compute_confidence() → if score < 50: skip
-  10b. market_context["prescreen_setup"] = {type, reasoning, session} — injected before Sonnet call
-  11. set_ai_cooldown(), scan_with_sonnet()
+  10. compute_confidence() → extract criteria dict
+  10b. HARD BLOCKS: C7(no_event_1hr) + C8(no_friday_monthend) fail → skip immediately (no cooldown)
+  10c. if score < HAIKU_MIN_SCORE (35%) → skip (true technical junk)
+  10d. precheck_with_haiku() with full context: web_research, failed_criteria, indicators, live_edge
+       → if Haiku rejects: save cheap scan record, return (NO cooldown burned)
+  10e. market_context["prescreen_setup"] = {type, reasoning, session} — injected before Sonnet call
+  11. set_ai_cooldown() ← moved here (after Haiku approves, not at local gate)
+      scan_with_sonnet() with live_edge_block
   12. if Sonnet >=70%: confirm_with_opus()
   13. save_scan(), risk.validate_trade()
   14. set_pending_alert(), telegram.send_trade_alert()

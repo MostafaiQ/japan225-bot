@@ -340,34 +340,66 @@ class AIAnalyzer:
         session: str,
         live_edge_block: str = None,
         local_confidence: dict = None,
+        web_research: dict = None,
+        failed_criteria: list = None,
+        indicators: dict = None,
     ) -> dict:
         """
         Haiku pre-gate: cheap filter (~$0.0013/call) before Sonnet analysis.
-        Uses a slim context — only setup fundamentals + live edge.
-        Returns {should_escalate: bool, reason: str, _cost: float}.
+        Now receives full macro context (web_research, failed criteria, indicator snapshot)
+        so it can intelligently evaluate setups that scored 35-49% locally.
 
-        Skip Sonnet if Haiku says not worth it (obvious reject patterns:
-        cold setup type in current session, volume=LOW on mid bounce, etc.)
+        Key insight: static local score = pure technical criteria only.
+        Haiku can see USD/JPY trend, VIX, news, volume, and override a low local score
+        if external macro context strongly supports the setup.
+
+        Returns {should_escalate: bool, reason: str, _cost: float}.
         """
-        edge_str = live_edge_block or "(no edge data yet)"
-        lc_str = ""
-        if local_confidence:
-            lc_str = (
-                f"Local score: {local_confidence.get('score', '?')}% "
-                f"({local_confidence.get('passed_criteria', '?')}/8 criteria)"
+        edge_str = live_edge_block or "(no live edge data yet — bot is new)"
+
+        score = local_confidence.get("score", "?") if local_confidence else "?"
+        passed = local_confidence.get("passed_criteria", "?") if local_confidence else "?"
+
+        # Format which technical criteria failed and why that might be overridable
+        failed_str = ""
+        if failed_criteria:
+            failed_str = (
+                f"\nFAILED LOCAL CRITERIA (technical code only — you may override with macro context):\n"
+                + "\n".join(f"  ✗ {c}" for c in failed_criteria)
+                + "\n"
             )
 
+        # Compact indicator snapshot for Haiku context
+        ind_str = ""
+        if indicators:
+            ind_str = "\nINDICATOR SNAPSHOT:\n" + _fmt_indicators(indicators) + "\n"
+
+        # Compact web research
+        web_str = ""
+        if web_research:
+            web_str = "\nMACRO CONTEXT:\n" + _fmt_web_research(web_research) + "\n"
+
         prompt = (
-            f"Japan 225 pre-screen. Should this escalate to full AI analysis?\n\n"
+            f"Japan 225 pre-screen gate. Decide: escalate to full Sonnet analysis or reject?\n\n"
             f"Setup: {setup_type} | Direction: {direction} | Session: {session}\n"
             f"RSI 15M: {rsi_15m} | Volume: {volume_signal}\n"
-            f"{lc_str}\n\n"
+            f"Local score: {score}% ({passed}/8 technical criteria passed)\n"
+            f"{failed_str}{ind_str}{web_str}"
             f"{edge_str}\n\n"
-            f"Known bad patterns (reject without escalating):\n"
-            f"- volume=LOW on bollinger_mid_bounce (thin bounce, no buyers)\n"
-            f"- Setup type or session WR <35% live (cold, no edge right now)\n"
-            f"- RSI extremely outside normal range for setup type\n\n"
-            f"Use submit_precheck tool. Be decisive — this saves expensive Sonnet call."
+            f"DECISION FRAMEWORK:\n"
+            f"REJECT (return false) if:\n"
+            f"  - volume=LOW on bollinger_mid_bounce (thin bounce, no real buyers)\n"
+            f"  - This setup type + session is cold (WR <35% live) with no macro override\n"
+            f"  - RSI badly outside valid range (not just borderline) AND no macro support\n"
+            f"  - Multiple technical failures AND macro is neutral/negative\n\n"
+            f"ESCALATE (return true) if:\n"
+            f"  - Technical criteria that failed are soft (C5 price structure, C4 tp_viable)\n"
+            f"    AND macro context (USD/JPY trend, VIX, news) strongly supports direction\n"
+            f"  - Low local score is explained by macro factors the code can't see\n"
+            f"  - Volume is HIGH or NORMAL, and macro is supportive\n"
+            f"  - Live edge shows this setup type still has positive WR (>40%)\n\n"
+            f"Be decisive. This is a cheap filter — if genuinely uncertain, escalate.\n"
+            f"Sonnet (30x more expensive) will make the final analytical call."
         )
 
         try:

@@ -33,7 +33,7 @@ from config.settings import (
     LOG_FORMAT, LOG_LEVEL, TRADING_MODE, CONTRACT_SIZE,
     MONITOR_INTERVAL_SECONDS, POSITION_CHECK_EVERY_N_CYCLES,
     SCAN_INTERVAL_SECONDS, OFFHOURS_INTERVAL_SECONDS,
-    AI_COOLDOWN_MINUTES, PRICE_DRIFT_ABORT_PTS, SAFETY_CONSECUTIVE_EMPTY,
+    AI_COOLDOWN_MINUTES, HAIKU_MIN_SCORE, PRICE_DRIFT_ABORT_PTS, SAFETY_CONSECUTIVE_EMPTY,
     calculate_margin, calculate_profit, SPREAD_ESTIMATE,
     MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, BREAKEVEN_BUFFER,
     ADVERSE_SEVERE_PTS, DAILY_EMA200_CANDLES,
@@ -435,24 +435,81 @@ class TradingMonitor:
         )
         logger.info(f"Local confidence: {local_conf['score']}% ({prescreen_direction})")
 
-        # Only escalate to AI if local score is at least 50% (4/8 criteria)
-        if local_conf["score"] < 50:
-            logger.info(f"Local confidence too low ({local_conf['score']}%). Not escalating.")
+        # --- Hard blocks: C7/C8 are non-negotiable regardless of score or AI opinion ---
+        criteria = local_conf.get("criteria", {})
+        if not criteria.get("no_event_1hr", True):
+            logger.info("Hard block: HIGH-impact event within 60min. No AI evaluation.")
+            return SCAN_INTERVAL_SECONDS
+        if not criteria.get("no_friday_monthend", True):
+            logger.info("Hard block: Friday/month-end blackout. No AI evaluation.")
             return SCAN_INTERVAL_SECONDS
 
-        # --- Escalate to Sonnet ---
-        logger.info(f"Escalating to Sonnet... (local: {local_conf['score']}%)")
+        # --- Haiku gate at HAIKU_MIN_SCORE (35%) — lower than old 50% hard floor ---
+        # Setups scoring 35-49% are now evaluated by Haiku with full macro context instead of
+        # being silently dropped. The static local score only sees technical criteria; Haiku
+        # can see USD/JPY trend, VIX, news, and reason about whether external factors override.
+        if local_conf["score"] < HAIKU_MIN_SCORE:
+            logger.info(
+                f"Local score {local_conf['score']}% below Haiku floor ({HAIKU_MIN_SCORE}%). "
+                f"Skipping (true technical junk)."
+            )
+            return SCAN_INTERVAL_SECONDS
+
+        failed_criteria = [k for k, v in criteria.items() if not v
+                           and k not in ("no_event_1hr", "no_friday_monthend")]
+        live_edge = self.storage.get_ai_context_block()
+        indicators = {"m15": tf_15m, "h4": tf_4h, "daily": tf_daily}
+
+        haiku_result = self.analyzer.precheck_with_haiku(
+            setup_type=setup.get("type", ""),
+            direction=prescreen_direction,
+            rsi_15m=tf_15m.get("rsi", 0),
+            volume_signal=tf_15m.get("volume_signal", "NORMAL"),
+            session=session.get("name", ""),
+            live_edge_block=live_edge,
+            local_confidence=local_conf,
+            web_research=web_research,
+            failed_criteria=failed_criteria,
+            indicators=indicators,
+        )
+        haiku_cost = haiku_result.get("_cost", 0)
+
+        if not haiku_result.get("should_escalate", True):
+            logger.info(f"Haiku gate: REJECTED. {haiku_result.get('reason', '')}")
+            self.storage.save_scan({
+                "timestamp": datetime.now().isoformat(),
+                "session": session["name"],
+                "price": current_price,
+                "indicators": {},
+                "market_context": {},
+                "analysis": {
+                    "setup_found": False,
+                    "reasoning": f"[Haiku rejected] {haiku_result.get('reason', '')}",
+                },
+                "setup_found": False,
+                "confidence": local_conf["score"],
+                "action_taken": "haiku_rejected",
+                "api_cost": haiku_cost,
+            })
+            return SCAN_INTERVAL_SECONDS
+
+        # Haiku approved → NOW set cooldown and escalate to Sonnet.
+        # Cooldown placed here (not at local gate) so Haiku rejections don't burn the 30-min window.
+        logger.info(
+            f"Haiku gate: APPROVED (local={local_conf['score']}%). Escalating to Sonnet..."
+        )
         self.storage.set_ai_cooldown(prescreen_direction)
 
-        indicators = {"m15": tf_15m, "h4": tf_4h, "daily": tf_daily}
         recent_scans = self.storage.get_recent_scans(5)
         market_context = self.storage.get_market_context()
-        # Add pre-screen setup details so Sonnet/Opus see the specific setup type and reasoning
         market_context["prescreen_setup"] = {
             "type": setup.get("type"),
             "reasoning": setup.get("reasoning"),
             "session": session.get("name"),
         }
+        market_context["prescreen_setup_type"] = setup.get("type", "")
+        market_context["prescreen_reasoning"]  = setup.get("reasoning", "")
+        market_context["session_name"]         = session.get("name", "")
 
         sonnet_result = self.analyzer.scan_with_sonnet(
             indicators=indicators,
@@ -461,6 +518,7 @@ class TradingMonitor:
             web_research=web_research,
             prescreen_direction=prescreen_direction,
             local_confidence=local_conf,
+            live_edge_block=live_edge,
         )
 
         sonnet_confidence = sonnet_result.get("confidence", 0)
@@ -477,6 +535,7 @@ class TradingMonitor:
                 market_context=market_context,
                 web_research=web_research,
                 sonnet_analysis=sonnet_result,
+                live_edge_block=live_edge,
             )
             final_result = opus_result
             logger.info(
@@ -486,7 +545,8 @@ class TradingMonitor:
 
         # --- Save scan ---
         scan_cost = (
-            sonnet_result.get("_cost", 0)
+            haiku_cost
+            + sonnet_result.get("_cost", 0)
             + (final_result.get("_cost", 0) if final_result is not sonnet_result else 0)
         )
         self.storage.save_scan({

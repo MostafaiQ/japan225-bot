@@ -115,7 +115,9 @@ Results WITHOUT AI filter (worst case):
 PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 
 ## AI Pipeline (updated 2026-03-01) — 3-tier: Haiku → Sonnet → Opus
-- Haiku pre-gate: ~$0.0013/call, filters obvious rejects before Sonnet
+- Haiku pre-gate: ~$0.0013/call, filters obvious rejects before Sonnet. Gate at HAIKU_MIN_SCORE=35%.
+  C7/C8 (event/blackout) hard-blocked BEFORE Haiku. Cooldown set AFTER Haiku approves (not at gate).
+  Setups scoring 35-49%: Haiku sees web_research+failed_criteria+indicators — can override static code.
 - Sonnet: tool use structured output, prompt caching, compact pipe-format inputs (~$0.004/call)
 - Opus: devil's advocate framing, skipped if Sonnet >=87% or <=threshold+2 (~$0.010/call)
 - prompt_learnings.json: auto-updated after each trade close, injected into future prompts

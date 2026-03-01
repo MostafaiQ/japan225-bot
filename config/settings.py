@@ -184,7 +184,10 @@ MONITOR_USE_STREAMING = False       # Start with REST polling, upgrade later
 # ============================================
 # ENTRY SCANNING
 # ============================================
-AI_COOLDOWN_MINUTES = 30            # Suppress duplicate AI escalations
+AI_COOLDOWN_MINUTES = 30            # Suppress duplicate AI escalations (set AFTER Haiku approves)
+HAIKU_MIN_SCORE = 35                # Minimum local score to reach Haiku gate (was 50 hard-gate to Sonnet)
+                                    # Setups at 35-49%: Haiku evaluates with full macro context
+                                    # C7/C8 (event/blackout) are hard-blocked BEFORE Haiku regardless of score
 PRICE_DRIFT_ABORT_PTS = 20          # Abort trade if price moved this far during analysis
 STALE_DATA_THRESHOLD = 10           # Identical price readings = stale data alert
 ADVERSE_LOOKBACK_READINGS = 150     # Readings to look back for adverse_move (150 × 2s = 5min window)
