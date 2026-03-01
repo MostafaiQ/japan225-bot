@@ -62,3 +62,11 @@ clear_ai_cooldown()                          # Resets to NULL — called by _han
 
 ## Cost tracking
 get_api_cost_total() -> float
+
+## AI context for prompts (added 2026-03-01)
+get_ai_context_block(n_trades=20) -> str
+  # Returns compact LIVE EDGE TRACKER string (~250 tokens) for injection into Sonnet/Opus prompts.
+  # Queries last n_trades closed trades. Computes WR by setup_type and session.
+  # Includes: streak count, last win time, cold-streak warnings vs backtest baselines.
+  # Returns "" if fewer than 3 closed trades (insufficient data).
+  # Baselines: bb_mid_bounce=47% | bb_lower_bounce=45% | Tokyo=49% | London=44% | NY=48%

@@ -1,0 +1,77 @@
+# Japan 225 Bot — Claude Code Instructions
+
+## START HERE (every session, every dashboard query)
+
+1. Read `MEMORY.md` first — full architecture, file map, key constants, known bugs.
+2. For the specific module you need: read `.claude/digests/<module>.digest.md` only.
+3. **Never read raw .py source files** unless the digest is missing or you are making a code change.
+4. For live bot status: read `storage/data/bot_state.json` — do not call APIs or read monitor.py.
+5. For trade history: `sqlite3 storage/data/trading.db "SELECT ..."` — do not read database.py.
+
+## Digest Index (read the digest, not the source)
+| Digest | Covers |
+|--------|--------|
+| settings | All constants, model names, thresholds |
+| monitor | Main loop, scanning/monitoring cycles, startup sync |
+| database | SQLite schema, all Storage methods |
+| indicators | analyze_timeframe(), detect_setup(), all setup types |
+| session | get_current_session(), blackout rules |
+| momentum | MomentumTracker, adverse tier logic |
+| confidence | compute_confidence(), 8-criteria scoring |
+| ig_client | IG REST API, connect, prices, open/modify/close |
+| risk_manager | validate_trade(), 11 checks, get_safe_lot_size() |
+| exit_manager | evaluate_position(), ExitPhase, trailing stop |
+| analyzer | AIAnalyzer, Haiku/Sonnet/Opus pipeline, tool use schema |
+| telegram_bot | Commands, buttons, alert flow |
+| dashboard | FastAPI routes, systemd units, ngrok |
+| claude_client | Dashboard chat, history summarizer, usage tracker |
+
+## Response Style (dashboard chat)
+- Status queries: 2–4 sentences max. No headers.
+- Code questions: answer directly, reference file:line if relevant.
+- Only expand with detail if user explicitly asks.
+- No markdown headers in chat responses — renders as raw # symbols in dashboard.
+- Never reproduce large file contents unless explicitly asked.
+
+## Available Skills (invoke for common tasks)
+When user asks to review recent trades → use `/trade-review` workflow:
+  1. `sqlite3 storage/data/trading.db "SELECT trade_number,direction,setup_type,session,confidence,pnl,result FROM trades ORDER BY id DESC LIMIT 10"`
+  2. Format as compact table. Identify worst trade. Read its ai_analysis field. Explain what AI missed.
+
+When user asks about strategy performance → use `/strategy-health` workflow:
+  1. Query trades grouped by setup_type and session (last 20 closed trades).
+  2. Compare WR to backtest baseline: bb_mid_bounce=47%, bb_lower_bounce=45%, Tokyo=49%, London=44%, NY=48%.
+  3. Flag anything >10% below baseline. Suggest if confidence threshold needs adjustment.
+
+When user asks about API costs → use `/cost-report` workflow:
+  1. `sqlite3 storage/data/trading.db "SELECT SUM(api_cost) FROM scans"` and same for trades.
+  2. Compute cost-per-evaluation and Sonnet vs Opus split from scan records.
+  3. Report: total spent, per-trade cost, whether Opus is adding value (WR on Opus-confirmed vs Sonnet-only trades).
+
+When user asks to check deployment health → use `/deploy-check` workflow:
+  1. `systemctl is-active japan225-bot japan225-dashboard japan225-ngrok`
+  2. `tail -20 logs/monitor.log` for recent errors.
+  3. Check git status for uncommitted changes. Check if MEMORY.md was updated after last code change.
+
+When user asks about prompt performance → use `/prompt-audit` workflow:
+  1. Read `storage/data/prompt_learnings.json` if it exists.
+  2. Query last 5 losing trades and their ai_analysis field.
+  3. Find patterns: what did Sonnet/Opus say that was wrong? What context was missing?
+
+## Standing Rules
+- Minimal diffs. Never delete+rewrite unchanged lines.
+- After any code change: update MEMORY.md first, then the relevant digest.
+- Never commit .env or *.db files.
+- If no digest exists for a file you changed, create one.
+- `POSITIONS_API_ERROR` is a sentinel — check with `is`, not `not`.
+- `open_trade_atomic()` is the only safe way to log a trade open.
+
+## Key File Locations
+```
+monitor.py              Main process (systemd: japan225-bot)
+config/settings.py      ALL constants — never scatter config
+ai/analyzer.py          Haiku→Sonnet→Opus pipeline, tool use schema
+storage/data/           trading.db | bot_state.json | prompt_learnings.json
+storage/data/           chat_usage.json | dashboard_overrides.json
+.claude/digests/        14 digest files — always prefer over raw source
+```

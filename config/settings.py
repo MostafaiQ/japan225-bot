@@ -167,7 +167,8 @@ MINUTE_5_CANDLES = 30  # 5M lookback for confirm_5m_entry (covers EMA9 + RSI14 +
 # AI MODELS
 # ============================================
 SONNET_MODEL = "claude-sonnet-4-5-20250929"
-OPUS_MODEL = "claude-opus-4-6"
+OPUS_MODEL   = "claude-opus-4-6"
+HAIKU_MODEL  = "claude-haiku-4-5-20251001"
 AI_MAX_TOKENS = 2000
 AI_TEMPERATURE = 0.1  # Low temp for consistent analysis
 

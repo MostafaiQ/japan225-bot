@@ -11,7 +11,7 @@ Oracle VM: monitor.py (24/7, systemd: japan225-bot)
   SCANNING (no position): every 5min active sessions, 30min off-hours
     → fetch 15M+Daily in parallel → detect_setup() pre-screen → if found:
     → AI cooldown check (30min) → fetch 4H → compute_confidence() (Daily reused from pre-screen)
-    → if score >= 50%: escalate to Sonnet → if Sonnet >=70%: Opus confirm
+    → if score >= 50%: Haiku pre-gate → Sonnet → Opus (if 70%<conf<87%)
     → if AI confirms & risk passes: Telegram CONFIRM/REJECT alert (15min TTL)
   MONITORING (position open): every 60s
     → check IG position exists (2 consecutive empty = closed, SAFETY_CONSECUTIVE_EMPTY)
@@ -38,11 +38,11 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 | `core/session.py` | get_current_session() UTC, is_no_trade_day(), is_weekend(), is_friday_blackout() |
 | `core/momentum.py` | MomentumTracker class. add_price(), should_alert(), is_stale(), milestone_alert() |
 | `core/confidence.py` | compute_confidence(direction, tf_daily, tf_4h, tf_15m, events, web) → score dict |
-| `ai/analyzer.py` | AIAnalyzer.scan_with_sonnet(), confirm_with_opus(). WebResearcher.research() |
+| `ai/analyzer.py` | AIAnalyzer. precheck_with_haiku(), scan_with_sonnet(), confirm_with_opus(). Tool use. Prompt caching. post_trade_analysis(), load_prompt_learnings(). |
 | `trading/risk_manager.py` | RiskManager.validate_trade() 11 checks. get_safe_lot_size() |
 | `trading/exit_manager.py` | ExitManager. evaluate_position(), execute_action(), manual_trail_update() |
 | `notifications/telegram_bot.py` | TelegramBot. send_trade_alert(), /menu inline buttons, /close /kill /pause /resume |
-| `storage/database.py` | Storage class. SQLite WAL mode. open_trade_atomic(), get/set position state, AI cooldown |
+| `storage/database.py` | Storage class. SQLite WAL mode. open_trade_atomic(), get/set position state, AI cooldown, get_ai_context_block() |
 
 ### Dashboard
 | File | Purpose |
@@ -85,27 +85,12 @@ Dashboard chat: Claude Code CLI (claude --print). No model constant needed.
 ---
 
 ## Known Bug
-*(none — pre-screen bug fixed 2026-02-28)*
+*(none)*
 
-## Critical Strategic Issue (found + partially fixed 2026-02-28)
-Expert agent analysis + WFO backtest confirmed ZERO edge in original strategy.
-HC-prescribed 6-fix redesign applied 2026-02-28. All 233 tests pass.
-
-### Fixes applied (HC redesign):
-1. ADVERSE tiers: 30/50/80 → 60/120/175 (80pts was inside 1-candle ATR noise)
-2. Bounce confirmation: bounce_starting = price > prev_close (no entry mid-fall)
-3. RSI tightened: LONG BB mid zone 35-60 → 35-48 then relaxed to 35-55 (2026-03-01 for frequency; AI gates 48-55 range)
-4. C4 redesigned: pts_to_upper>=350 (trivially true 78%) → price<=bb_mid (confirms actual pullback)
-5. EMA50 bounce disabled: ENABLE_EMA50_BOUNCE_SETUP=False (median dist=325pts, entries unvalidated)
-6. Session gate: PAPER_TRADING_SESSION_GATE was True (Tokyo only), now False (all sessions — backtest validated)
-
-### Original diagnosis (for reference):
-- Backtest: 613 trades, 0.8% win rate, -$126,942 P&L (60 days, before fixes)
-- Root cause: BB mid bounce = mean-reversion logic in +21% trending bull market
-- Backtest data: Tokyo-session only (^N225). IG CFD London/NY sessions unvalidated.
-
-### Live trading active from Sunday night (2026-03-01).
-HC NO-GO conditions superseded — user approved going live.
+## Strategy History (archived — see high-chancellor-archive.md for full details)
+HC 6-fix redesign 2026-02-28: ADVERSE tiers widened, bounce confirmation added, RSI tuned,
+C4 redesigned, EMA50 bounce disabled, session gate removed. All 233 tests pass.
+Live trading active 2026-03-01. Historical backtest (bad): 613 trades, 0.8% WR → fixed.
 
 ---
 
@@ -129,12 +114,16 @@ Results WITHOUT AI filter (worst case):
   bollinger_mid_bounce: 148 trades, 47% WR | bollinger_lower_bounce: 60 trades, 45% WR
 PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 
-## AI Pipeline Fixes (2026-03-01)
-1. analyzer.py build_scan_prompt(): "m15" key added to lookup → MARKET STRUCTURE block now renders in live bot.
-2. monitor.py: prescreen_setup (type + reasoning + session name) injected into market_context before Sonnet call.
-   Sonnet now sees: specific setup type, full reasoning string, and current session name.
-3. detect_setup() BB mid bounce: above_ema50 gate removed; EMA50 status in reasoning string for AI to evaluate.
-4. RSI_ENTRY_HIGH_BOUNCE: 48 → 55 (AI evaluates RSI 48-55 range; code no longer hard-blocks it).
+## AI Pipeline (updated 2026-03-01) — 3-tier: Haiku → Sonnet → Opus
+- Haiku pre-gate: ~$0.0013/call, filters obvious rejects before Sonnet
+- Sonnet: tool use structured output, prompt caching, compact pipe-format inputs (~$0.004/call)
+- Opus: devil's advocate framing, skipped if Sonnet >=87% or <=threshold+2 (~$0.010/call)
+- prompt_learnings.json: auto-updated after each trade close, injected into future prompts
+- CLAUDE.md in project root: auto-loaded by all sessions + dashboard subprocess (deadlock fix)
+- Dashboard chat: rolling history summary (capped ~650 tokens) + bot_state.json injection
+- Skills: ~/.claude/skills/ — 5 auto-drafted, more created when query type hits 5+ uses/week
+- Opus pricing corrected: $15/$75 per million tokens. Monthly cost target: ~$3-5.
+- HC retired for routine use. Use skills instead. HC = break-glass only.
 
 ## Important Behavioral Notes (hard-won, never forget)
 - **POSITIONS_API_ERROR** is a sentinel in ig_client.py. Check with `is POSITIONS_API_ERROR`, not `not positions`. Empty list `[]` = no positions. Sentinel = API call failed.
@@ -144,12 +133,11 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 - **MomentumTracker** is None when flat. Created at trade open, reset at close. Reinitiated in startup_sync if position recovered.
 - **Local confidence pre-gate**: only escalates to AI if local score >= 50%. AI cooldown 30min regardless of result.
 - **WebResearcher.research()** is synchronous/blocking. Called in executor: `run_in_executor(None, self.researcher.research)`.
-- **detect_setup()** is bidirectional: LONG (BB mid bounce, BB lower bounce) requires `daily_bullish=True`. SHORT (BB upper rejection, EMA50 rejection) requires `daily_bullish=False`.
-  RSI windows: LONG BB mid: 35-55 (RSI_ENTRY_HIGH_BOUNCE=55). LONG BB lower: 20-40. SHORT BB upper: 55-75. SHORT EMA50: rsi 50-70 + price<=ema50+2.
-  BB_MID_THRESHOLD=150pts, BB_LOWER_THRESHOLD=80pts (tighter — lower band is harder to reach).
-  Bounce confirmation (mid bounce): bounce_starting = price > prev_close. NO above_ema50 gate (EMA50 status in reasoning string for AI).
-  Lower band bounce: lower_wick >= 15pts (any rejection at extreme oversold counts).
-  4H macro: LONG 35-75 (confidence.py), SHORT 30-60. ig.close_position() calls use run_in_executor in Telegram handlers.
+- **detect_setup()** bidirectional. LONG requires daily_bullish. SHORT requires daily_bearish.
+  RSI: bb_mid 35-55 | bb_lower 20-40 | bb_upper 55-75 | ema50_rej 50-70.
+  BB_MID_THRESHOLD=150pts, BB_LOWER_THRESHOLD=80pts. bounce_starting=price>prev_close (mid bounce).
+  lower_wick>=15pts (lower bounce). NO above_ema50 gate on mid bounce (EMA50 in reasoning for AI).
+  ig.close_position() calls use run_in_executor in Telegram handlers.
 - **Session logic**: session.py uses UTC. SESSION_HOURS_UTC in settings.py is the UTC reference for backtest and monitor. `get_current_session()` is authoritative for live bot.
 - **SEVERE adverse move** at Phase.INITIAL → auto-moves SL to breakeven (entry + BREAKEVEN_BUFFER=10). Does NOT close.
 - **Dashboard ngrok header**: all fetch() calls must include `ngrok-skip-browser-warning: true` or the ngrok interstitial blocks the request.
@@ -176,29 +164,18 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 | `storage/data/force_scan.trigger` | /api/controls/force-scan | monitor._check_force_scan_trigger() |
 | `storage/data/chat_history.json` | /api/chat/history POST | /api/chat/history GET · frontend poll |
 | `storage/data/chat_costs.json` | N/A (Claude Code CLI, no cost tracking) | /api/chat/costs GET |
+| `storage/data/prompt_learnings.json` | post_trade_analysis() in analyzer.py | injected into AI prompts |
+| `storage/data/chat_usage.json` | claude_client._track_usage() | auto-skill drafting trigger |
 
 ---
 
-## Telegram — Commands & Buttons
-Bot uses HTML parse_mode throughout. REPLY_KB (ReplyKeyboardMarkup) always-visible at bottom.
-`/menu` → full inline button panel (preferred on mobile)
-- Info: Status · Balance · Journal · Today · Stats · API Cost
-- Control: Force Scan · Pause · Resume · Close Pos · KILL
+## Telegram
+HTML parse_mode. REPLY_KB (4×2) always visible. `/menu` → inline panel.
+Commands: `/status /balance /journal /today /stats /cost /force /stop /pause /resume /close /kill`
+`/kill`=emergency close (no confirm). `/close`=confirm dialog. Trade alerts: CONFIRM/REJECT (15min TTL).
+_nav_kb(ctx)=contextual inline row after every response. _dispatch_menu()=shared handler.
 
-Reply-keyboard (4×2 bottom nav): same actions as /menu, always visible.
-_nav_kb(ctx) → contextual 1-row inline buttons appended after every command response.
-Text commands: `/status /balance /journal /today /stats /cost /force /stop /pause /resume /close /kill`
-- `/kill` = emergency close, no confirmation
-- `/close` = confirmation dialog (Close now / Hold)
-- Trade alerts: CONFIRM / REJECT inline buttons (15min TTL)
-- Adverse move alerts: Close now / Hold inline buttons
-
----
-
-## DB Location
-`storage/data/trading.db` — Oracle VM only. WAL mode enabled. Never commit to git.
-
----
-
-## Digests Available
-`.claude/digests/`: settings · monitor · database · indicators · session · momentum · confidence · ig_client · risk_manager · exit_manager · analyzer · telegram_bot · dashboard · claude_client
+## DB + Digests
+DB: `storage/data/trading.db` — Oracle VM only. WAL mode. Never commit.
+Digests: `.claude/digests/` — settings · monitor · database · indicators · session · momentum ·
+confidence · ig_client · risk_manager · exit_manager · analyzer · telegram_bot · dashboard · claude_client

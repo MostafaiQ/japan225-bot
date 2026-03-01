@@ -643,3 +643,92 @@ class Storage:
             scan_cost = conn.execute("SELECT COALESCE(SUM(api_cost), 0) as total FROM scans").fetchone()
             trade_cost = conn.execute("SELECT COALESCE(SUM(api_cost), 0) as total FROM trades").fetchone()
         return (scan_cost["total"] or 0) + (trade_cost["total"] or 0)
+
+    def get_ai_context_block(self, n_trades: int = 20) -> str:
+        """
+        Build a compact LIVE EDGE TRACKER block for AI prompts (~250 tokens).
+        Queries last n_trades closed trades and formats WR by setup_type + session.
+        Returns empty string if fewer than 3 closed trades (insufficient data).
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT setup_type, session, pnl, opened_at FROM trades "
+                "WHERE pnl IS NOT NULL ORDER BY id DESC LIMIT ?",
+                (n_trades,)
+            ).fetchall()
+
+        trades = [dict(r) for r in rows]
+        if len(trades) < 3:
+            return ""
+
+        # Win rate by setup type
+        by_setup: dict[str, list] = {}
+        by_session: dict[str, list] = {}
+        for t in trades:
+            st = t.get("setup_type") or "unknown"
+            se = t.get("session") or "unknown"
+            win = 1 if (t.get("pnl") or 0) > 0 else 0
+            by_setup.setdefault(st, []).append(win)
+            by_session.setdefault(se, []).append(win)
+
+        def _wr(wins_list: list) -> str:
+            n = len(wins_list)
+            w = sum(wins_list)
+            pct = round(w / n * 100) if n else 0
+            return f"{w}W/{n-w}L({pct}%)"
+
+        setup_lines = " | ".join(
+            f"{st}:{_wr(v)}" for st, v in sorted(by_setup.items())
+        )
+        session_lines = " | ".join(
+            f"{se}:{_wr(v)}" for se, v in sorted(by_session.items())
+        )
+
+        # Current streak
+        streak_count, streak_type = 0, ""
+        for t in trades:
+            win = (t.get("pnl") or 0) > 0
+            label = "W" if win else "L"
+            if not streak_type:
+                streak_type = label
+            if label == streak_type:
+                streak_count += 1
+            else:
+                break
+
+        # Time since last win
+        last_win_str = "N/A"
+        for t in trades:
+            if (t.get("pnl") or 0) > 0:
+                try:
+                    opened = datetime.fromisoformat(t["opened_at"])
+                    hours_ago = round((datetime.now() - opened).total_seconds() / 3600, 1)
+                    last_win_str = f"{hours_ago}h ago"
+                except Exception:
+                    pass
+                break
+
+        lines = [
+            f"LIVE EDGE TRACKER (last {len(trades)} trades):",
+            f"  By setup: {setup_lines}",
+            f"  By session: {session_lines}",
+            f"  Streak: {streak_count}x{streak_type} | Last win: {last_win_str}",
+        ]
+
+        # Warn if any category is >10% below backtest baseline
+        BASELINES = {
+            "bollinger_mid_bounce": 47, "bollinger_lower_bounce": 45,
+            "bollinger_upper_rejection": 50, "ema50_rejection": 50,
+            "Tokyo": 49, "London": 44, "New York": 48,
+        }
+        warnings = []
+        for key, wins_list in {**by_setup, **by_session}.items():
+            baseline = BASELINES.get(key)
+            if baseline and len(wins_list) >= 5:
+                live_wr = sum(wins_list) / len(wins_list) * 100
+                if live_wr < baseline - 10:
+                    warnings.append(f"{key} WR={live_wr:.0f}% (baseline {baseline}%) — COLD")
+        if warnings:
+            lines.append(f"  ⚠ Cold: {' | '.join(warnings)}")
+
+        return "\n".join(lines)

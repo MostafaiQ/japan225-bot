@@ -33,8 +33,10 @@ CONFIDENCE_BASE=30  CONFIDENCE_CRITERIA = 8 keys × 10pts each  # max = 110, cap
 ## Sessions (Kuwait UTC+3 reference — session.py uses UTC internally)
 SESSIONS dict: tokyo_open/mid/late/close, london_open/mid/late, ny_open/mid/late, off_hours
 
-## AI models
-SONNET_MODEL="claude-sonnet-4-5-20250929"  OPUS_MODEL="claude-opus-4-6"
+## AI models (updated 2026-03-01 — 3-tier pipeline)
+SONNET_MODEL="claude-sonnet-4-5-20250929"  $3/$15 per million tokens
+OPUS_MODEL="claude-opus-4-6"               $15/$75 per million tokens  ← corrected
+HAIKU_MODEL="claude-haiku-4-5-20251001"    $0.80/$4 per million tokens  ← new pre-gate
 AI_MAX_TOKENS=2000  AI_TEMPERATURE=0.1
 
 ## Monitor timing

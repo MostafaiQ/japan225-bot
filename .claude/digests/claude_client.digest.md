@@ -1,39 +1,46 @@
-# dashboard/services/claude_client.py — DIGEST
-# Purpose: Dashboard chat backend. Spawns Claude Code CLI as a subprocess.
-# Updated 2026-03-01: replaced Anthropic API agentic loop with `claude --print`
+# dashboard/services/claude_client.py — DIGEST (updated 2026-03-01)
+# Dashboard chat backend. Spawns claude --print subprocess.
+# Deadlock fix: rolling history summary + bot_state injection + CLAUDE.md auto-load.
 
 ## How it works
 Calls: `claude --print --dangerously-skip-permissions`
-- stdin  = conversation history (Human/Assistant turns) + new message
+- stdin  = bot_state snapshot + compressed history + new message
 - stdout = full response after Claude Code completes all internal tool use
-- cwd    = PROJECT_ROOT (full project access)
+- cwd    = PROJECT_ROOT (CLAUDE.md auto-loaded from here)
 - env    = CLAUDECODE stripped (prevents "nested session" error)
-
-## Tools available (full Claude Code toolset)
-Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch, Agent (spawn subagents)
-No custom tool definitions needed — Claude Code handles everything natively.
-
-## chat(message: str, history: list[dict]) -> str
-- Formats history as "Human:/Assistant:" turns with separator header
-- Keeps last MAX_HISTORY_TURNS=10 pairs (20 messages)
-- timeout=180s (3 min)
-- Returns stdout; falls back to stderr; falls back to "(no response)"
-- Errors (timeout, binary not found) returned as readable strings
-
-## _build_prompt(message, history) -> str
-If history exists:
-  --- Conversation history (oldest → newest) ---
-  Human: ...
-  Assistant: ...
-  --- New message ---
-  Human: <message>
-If no history: just returns message directly.
+Tools available: Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch, Agent
 
 ## Constants
-CLAUDE_BIN        = "/home/ubuntu/.local/bin/claude"
-MAX_HISTORY_TURNS = 10
+CLAUDE_BIN = "/home/ubuntu/.local/bin/claude"
+MAX_RAW_TURNS = 2        # raw turns always kept
+SUMMARY_MAX_CHARS = 600  # ~150 tokens max for rolling summary
+BOT_STATE_FILE  = storage/data/bot_state.json
+CHAT_USAGE_FILE = storage/data/chat_usage.json
+SKILLS_DIR = ~/.claude/skills/
 
-## Cost tracking
-REMOVED. Claude Code CLI does not expose token counts.
-/api/chat/costs returns {"note": "...", "today_usd": null, "total_usd": null}
-Actual costs visible in Anthropic console.
+## chat(message, history) -> str
+1. _track_usage(message) — classify + log intent
+2. _build_prompt() — state snapshot + compressed history + message
+3. subprocess.run claude --print. timeout=180s.
+
+## compress_history(history) -> list[dict]
+Call from chat router after each response, before saving to chat_history.json.
+Keeps last MAX_RAW_TURNS pairs raw. Absorbs older into rolling text summary.
+History entry {"role": "summary"|"user"|"assistant", "content": str}
+Total history payload: capped ~650 tokens forever.
+
+## _build_prompt(message, history) -> str
+1. bot_state.json snapshot (~300 tokens) — eliminates 70% of file reads for status questions
+2. Compressed history (~350 tokens max)
+3. New message
+
+## _track_usage(message) -> None
+Intent classification via QUERY_PATTERNS keywords → chat_usage.json (by ISO week).
+Calls _maybe_draft_skill(intent, count) at 5/10/20 uses this week.
+
+## _maybe_draft_skill(intent, count) -> None
+Creates ~/.claude/skills/<intent>.md from template if not exists.
+Auto-drafted: trade_review | strategy_health | cost_report | deploy_check | prompt_audit
+
+## QUERY_PATTERNS
+trade_review | strategy_health | cost_report | deploy_check | prompt_audit | status | other
