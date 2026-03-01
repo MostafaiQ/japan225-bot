@@ -35,7 +35,7 @@ from config.settings import (
     AI_COOLDOWN_MINUTES, PRICE_DRIFT_ABORT_PTS, SAFETY_CONSECUTIVE_EMPTY,
     calculate_margin, calculate_profit, SPREAD_ESTIMATE,
     MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, BREAKEVEN_BUFFER,
-    ADVERSE_SEVERE_PTS, PAPER_TRADING_SESSION_GATE,
+    ADVERSE_SEVERE_PTS, PAPER_TRADING_SESSION_GATE, DAILY_EMA200_CANDLES,
 )
 from core.ig_client import IGClient, POSITIONS_API_ERROR
 from core.indicators import analyze_timeframe, detect_setup
@@ -384,7 +384,7 @@ class TradingMonitor:
                 None, lambda: self.ig.get_prices("MINUTE_15", 50)
             ),
             asyncio.get_event_loop().run_in_executor(
-                None, lambda: self.ig.get_prices("DAY", 100)
+                None, lambda: self.ig.get_prices("DAY", DAILY_EMA200_CANDLES)
             ),
         )
         if not candles_15m:

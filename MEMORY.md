@@ -67,7 +67,7 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 ```
 EPIC = "IX.D.NIKKEI.IFM.IP"   CONTRACT_SIZE = 1 ($1/pt)   MARGIN_FACTOR = 0.005 (0.5%)
 MIN_CONFIDENCE = 70            MIN_CONFIDENCE_SHORT = 75 (BOJ risk)
-DEFAULT_SL_DISTANCE = 200      DEFAULT_TP_DISTANCE = 400      MIN_RR_RATIO = 1.5
+DEFAULT_SL_DISTANCE = 150      DEFAULT_TP_DISTANCE = 400      MIN_RR_RATIO = 1.5
 BREAKEVEN_TRIGGER = 150        BREAKEVEN_BUFFER = 10          TRAILING_STOP_DISTANCE = 150
 SCAN_INTERVAL_SECONDS = 300    MONITOR_INTERVAL_SECONDS = 60  OFFHOURS_INTERVAL_SECONDS = 1800
 AI_COOLDOWN_MINUTES = 30       PRICE_DRIFT_ABORT_PTS = 20     SAFETY_CONSECUTIVE_EMPTY = 2
@@ -107,6 +107,32 @@ HC-prescribed 6-fix redesign applied 2026-02-28. All 233 tests pass.
 
 ---
 
+## Setup Types (detect_setup — updated this session)
+| Type | Direction | Trigger | RSI | Gate |
+|------|-----------|---------|-----|------|
+| bollinger_mid_bounce | LONG | price ±150pts from BB mid | 35-48 | above_ema50 + bounce_starting |
+| bollinger_lower_bounce | LONG | price ±80pts from BB lower | 20-40 | lower_wick ≥15pts (no EMA50 gate) |
+| bollinger_upper_rejection | SHORT | price ±150pts from BB upper | 55-75 | below_ema50 |
+| ema50_rejection | SHORT | price ≤ema50+2, dist ≤150 | 50-70 | daily bearish |
+SL=150 (WFO-validated), TP=400 for all types.
+
+## Backtest Status (2026-02-28, NKD=F, 42 days, all sessions)
+Data: NKD=F 15M + 1H, ^N225 daily. Sessions: Tokyo(00-06) + London(08-16) + NY(16-21 UTC).
+SESSION_HOURS_UTC added to settings.py — single source of truth for backtest + monitor.
+Results WITHOUT AI filter (worst case):
+  189 setups, 91 trades after dedup, 44% WR, PF=0.71
+  Setup frequency: 4.5/day ✓ (target was 1-3/day)
+  Tokyo: 48% WR | London: 38% WR | NY: 53% WR
+PF<1 is expected without AI — Sonnet/Opus are the quality gate.
+
+## Market Context Added to AI Prompt (this session)
+analyze_timeframe() now outputs:
+  volume_ratio, volume_signal (HIGH/NORMAL/LOW)
+  swing_high_20, swing_low_20, dist_to_swing_high, dist_to_swing_low
+detect_setup() indicators_snapshot includes all of the above.
+build_scan_prompt() has MARKET STRUCTURE section summarizing volume + key levels for Sonnet.
+build_system_prompt() updated: SL=150, bollinger_lower_bounce rules, volume guidance.
+
 ## Important Behavioral Notes (hard-won, never forget)
 - **POSITIONS_API_ERROR** is a sentinel in ig_client.py. Check with `is POSITIONS_API_ERROR`, not `not positions`. Empty list `[]` = no positions. Sentinel = API call failed.
 - **open_trade_atomic()** in storage.py: log_trade_open + set_position_open in one DB transaction. Always use this. Never call them separately.
@@ -115,12 +141,13 @@ HC-prescribed 6-fix redesign applied 2026-02-28. All 233 tests pass.
 - **MomentumTracker** is None when flat. Created at trade open, reset at close. Reinitiated in startup_sync if position recovered.
 - **Local confidence pre-gate**: only escalates to AI if local score >= 50%. AI cooldown 30min regardless of result.
 - **WebResearcher.research()** is synchronous/blocking. Called in executor: `run_in_executor(None, self.researcher.research)`.
-- **detect_setup()** is bidirectional: LONG (BB mid bounce) requires `daily_bullish=True`. SHORT (BB upper rejection, EMA50 rejection) requires `daily_bullish=False`.
-  RSI windows (recalibrated 2026-02-28): LONG BB mid: 35-48 (RSI_ENTRY_HIGH_BOUNCE). LONG EMA50: DISABLED. SHORT BB upper: 55-75. SHORT EMA50: rsi 50-70 + price<=ema50+5.
-  BB_MID_THRESHOLD=150pts, EMA50_THRESHOLD=150pts (both calibrated for Nikkei ~55k).
-  Bounce confirmation: bounce_starting = price > prev_close (current candle turning up, not still falling).
+- **detect_setup()** is bidirectional: LONG (BB mid bounce, BB lower bounce) requires `daily_bullish=True`. SHORT (BB upper rejection, EMA50 rejection) requires `daily_bullish=False`.
+  RSI windows: LONG BB mid: 35-48 (RSI_ENTRY_HIGH_BOUNCE). LONG BB lower: 20-40. SHORT BB upper: 55-75. SHORT EMA50: rsi 50-70 + price<=ema50+2.
+  BB_MID_THRESHOLD=150pts, BB_LOWER_THRESHOLD=80pts (tighter — lower band is harder to reach).
+  Bounce confirmation (mid bounce): bounce_starting = price > prev_close.
+  Lower band bounce: lower_wick >= 15pts (any rejection at extreme oversold counts).
   4H macro: LONG 35-75 (confidence.py), SHORT 30-60. ig.close_position() calls use run_in_executor in Telegram handlers.
-- **Session logic**: session.py uses UTC. SESSIONS dict in settings.py is Kuwait Time reference only. `get_current_session()` is authoritative.
+- **Session logic**: session.py uses UTC. SESSION_HOURS_UTC in settings.py is the UTC reference for backtest and monitor. `get_current_session()` is authoritative for live bot.
 - **SEVERE adverse move** at Phase.INITIAL → auto-moves SL to breakeven (entry + BREAKEVEN_BUFFER=10). Does NOT close.
 - **Dashboard ngrok header**: all fetch() calls must include `ngrok-skip-browser-warning: true` or the ngrok interstitial blocks the request.
 

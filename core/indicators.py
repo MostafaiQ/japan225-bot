@@ -9,7 +9,10 @@ Output: dicts with calculated values
 import logging
 import math
 from typing import Optional
-from config.settings import RSI_ENTRY_HIGH_BOUNCE, ENABLE_EMA50_BOUNCE_SETUP
+from config.settings import (
+    RSI_ENTRY_HIGH_BOUNCE, ENABLE_EMA50_BOUNCE_SETUP,
+    DEFAULT_SL_DISTANCE, DEFAULT_TP_DISTANCE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +165,7 @@ def analyze_timeframe(candles: list[dict]) -> dict:
     
     # Calculate all indicators
     bb = bollinger_bands(closes, 20, 2.0)
+    ema9 = ema(closes, 9)
     ema50 = ema(closes, 50)
     ema200 = ema(closes, 200)
     rsi_vals = rsi(closes, 14)
@@ -178,6 +182,7 @@ def analyze_timeframe(candles: list[dict]) -> dict:
         "bollinger_upper": _last(bb["upper"]),
         "bollinger_mid": _last(bb["mid"]),
         "bollinger_lower": _last(bb["lower"]),
+        "ema9": _last(ema9),
         "ema50": _last(ema50),
         "ema200": _last(ema200),
         "rsi": _last(rsi_vals),
@@ -185,6 +190,7 @@ def analyze_timeframe(candles: list[dict]) -> dict:
     }
     
     # Price position analysis
+    result["above_ema9"]  = current_price > result["ema9"]  if result["ema9"]  else None
     result["above_ema50"] = current_price > result["ema50"] if result["ema50"] else None
     result["above_ema200"] = current_price > result["ema200"] if result["ema200"] else None
     result["above_vwap"] = current_price > result["vwap"] if result["vwap"] else None
@@ -209,7 +215,31 @@ def analyze_timeframe(candles: list[dict]) -> dict:
             )
         else:
             result["bollinger_percentile"] = 0.5
-    
+
+    # Volume analysis — is this a high-conviction or thin signal?
+    if any(v > 0 for v in volumes):
+        recent_vols = [v for v in volumes[-20:] if v > 0]
+        avg_vol = sum(recent_vols) / len(recent_vols) if recent_vols else 0
+        vol_ratio = volumes[-1] / avg_vol if avg_vol > 0 else None
+        result["volume_ratio"] = round(vol_ratio, 2) if vol_ratio is not None else None
+        result["volume_signal"] = (
+            "HIGH"   if vol_ratio and vol_ratio > 1.5 else
+            "LOW"    if vol_ratio and vol_ratio < 0.7 else
+            "NORMAL"
+        ) if vol_ratio is not None else None
+    else:
+        result["volume_ratio"] = None
+        result["volume_signal"] = None
+
+    # Recent swing high/low (20-candle lookback) — nearest resistance and support
+    n_sw = min(20, len(highs))
+    swing_h = max(highs[-n_sw:])
+    swing_l = min(lows[-n_sw:])
+    result["swing_high_20"] = round(swing_h, 1)
+    result["swing_low_20"]  = round(swing_l, 1)
+    result["dist_to_swing_high"] = round(swing_h - current_price, 1)
+    result["dist_to_swing_low"]  = round(current_price - swing_l, 1)
+
     return result
 
 
@@ -248,6 +278,38 @@ def detect_higher_lows(prices: list[float], lookback: int = 5) -> bool:
     # Check last 2-3 swing lows are ascending
     recent_lows = lows[-3:]
     return all(recent_lows[i] > recent_lows[i - 1] for i in range(1, len(recent_lows)))
+
+
+def confirm_5m_entry(tf_5m: dict, direction: str) -> bool:
+    """
+    5M entry confirmation. Called AFTER 15M setup is detected.
+    Returns True if 5M chart confirms the entry direction.
+    If tf_5m is None or incomplete, returns True (pass-through — don't block).
+
+    LONG confirmation: price > EMA9, green candle body, RSI > 45
+    SHORT confirmation: price < EMA9, red candle body, RSI < 55
+    """
+    if not tf_5m:
+        return True  # no 5M data → don't block
+
+    price = tf_5m.get("price")
+    ema9 = tf_5m.get("ema9")
+    rsi_5m = tf_5m.get("rsi")
+    candle_open = tf_5m.get("open")
+
+    if not price or not ema9:
+        return True  # insufficient data → pass-through
+
+    if direction == "LONG":
+        price_above_ema9 = price > ema9
+        rsi_ok = rsi_5m is None or rsi_5m > 45
+        body_green = candle_open is None or price > candle_open
+        return price_above_ema9 and rsi_ok and body_green
+    else:  # SHORT
+        price_below_ema9 = price < ema9
+        rsi_ok = rsi_5m is None or rsi_5m < 55
+        body_red = candle_open is None or price < candle_open
+        return price_below_ema9 and rsi_ok and body_red
 
 
 def detect_setup(
@@ -300,6 +362,13 @@ def detect_setup(
         "ema50_15m": ema50_15m,
         "daily_bullish": daily_bullish,
         "rsi_4h": rsi_4h,
+        # Market structure context — fed directly to Sonnet/Opus
+        "volume_signal": tf_15m.get("volume_signal"),
+        "volume_ratio": tf_15m.get("volume_ratio"),
+        "swing_high_20": tf_15m.get("swing_high_20"),
+        "swing_low_20": tf_15m.get("swing_low_20"),
+        "dist_to_swing_high": tf_15m.get("dist_to_swing_high"),
+        "dist_to_swing_low": tf_15m.get("dist_to_swing_low"),
     }
 
     if not price:
@@ -325,10 +394,10 @@ def detect_setup(
 
             if near_mid_pts and rsi_ok_long and above_ema50 and bounce_starting:
                 entry = price
-                sl = entry - 200
+                sl = entry - DEFAULT_SL_DISTANCE
                 if ema50_15m:
                     sl = max(sl, ema50_15m - 20)
-                tp = entry + 400
+                tp = entry + DEFAULT_TP_DISTANCE
 
                 result.update({
                     "found": True,
@@ -338,19 +407,60 @@ def detect_setup(
                     "sl": round(sl, 1),
                     "tp": round(tp, 1),
                     "reasoning": (
-                        f"LONG: BB mid bounce on 15M. Price {abs(price - bb_mid):.0f}pts from mid ({bb_mid:.0f}). "
+                        f"LONG: BB mid bounce on 15M. "
+                        f"Price {abs(price - bb_mid):.0f}pts from mid ({bb_mid:.0f}). "
                         f"RSI {rsi_15m:.1f} in zone. Above EMA50. Daily bullish."
                     ),
                 })
                 return result
 
-        # --- LONG Setup 2: EMA50 Bounce (disabled until validated — see ENABLE_EMA50_BOUNCE_SETUP) ---
+        # --- LONG Setup 2: Bollinger Lower Band Bounce ---
+        # Deeply oversold within a bullish daily trend — strongest mean-reversion signal.
+        # No above_ema50 gate: price may be below EMA50 at the lower band (expected).
+        # AI evaluates EMA50 context from the reasoning string.
+        if bb_lower and rsi_15m:
+            near_lower_pts = abs(price - bb_lower) <= 80  # tighter: lower band is harder to reach
+            rsi_ok_lower = 20 <= rsi_15m <= 40            # deeply oversold zone
+            candle_open_l = tf_15m.get("open")
+            candle_low_l  = tf_15m.get("low")
+            if candle_open_l is not None and candle_low_l is not None:
+                lower_wick_l = min(candle_open_l, price) - candle_low_l
+                rejection_l = lower_wick_l >= 15  # any rejection wick counts at extreme oversold
+            else:
+                rejection_l = False
+
+            if near_lower_pts and rsi_ok_lower and rejection_l:
+                entry = price
+                sl = entry - DEFAULT_SL_DISTANCE
+                tp = entry + DEFAULT_TP_DISTANCE
+                macro_note = (
+                    f" 4H RSI {rsi_4h:.1f} — multi-TF oversold confluence."
+                    if rsi_4h and rsi_4h < 40 else ""
+                )
+                result.update({
+                    "found": True,
+                    "type": "bollinger_lower_bounce",
+                    "direction": "LONG",
+                    "entry": round(entry, 1),
+                    "sl": round(sl, 1),
+                    "tp": round(tp, 1),
+                    "reasoning": (
+                        f"LONG: BB lower band bounce on 15M. "
+                        f"Price {abs(price - bb_lower):.0f}pts from lower ({bb_lower:.0f}). "
+                        f"RSI {rsi_15m:.1f} deeply oversold. "
+                        f"Lower wick {lower_wick_l:.0f}pts rejection. "
+                        f"Daily bullish.{macro_note}"
+                    ),
+                })
+                return result
+
+        # --- LONG Setup 3: EMA50 Bounce (disabled until validated — see ENABLE_EMA50_BOUNCE_SETUP) ---
         if ENABLE_EMA50_BOUNCE_SETUP and ema50_15m and rsi_15m:
             dist_ema50 = abs(price - ema50_15m)
             if dist_ema50 <= 150 and rsi_15m < 55 and price >= ema50_15m - 10:
                 entry = price
-                sl = entry - 200
-                tp = entry + 400
+                sl = entry - DEFAULT_SL_DISTANCE
+                tp = entry + DEFAULT_TP_DISTANCE
 
                 result.update({
                     "found": True,
@@ -382,8 +492,8 @@ def detect_setup(
 
             if near_upper_pts and rsi_ok_short and below_ema50:
                 entry = price
-                sl = entry + 200
-                tp = entry - 400
+                sl = entry + DEFAULT_SL_DISTANCE
+                tp = entry - DEFAULT_TP_DISTANCE
 
                 result.update({
                     "found": True,
@@ -403,11 +513,11 @@ def detect_setup(
         if ema50_15m and rsi_15m:
             dist_ema50 = abs(price - ema50_15m)
             # Price must be at or just below EMA50 (came up to test it)
-            at_ema50_from_below = price <= ema50_15m + 5 and dist_ema50 <= 150
+            at_ema50_from_below = price <= ema50_15m + 2 and dist_ema50 <= 150
             if at_ema50_from_below and 50 <= rsi_15m <= 70:
                 entry = price
-                sl = entry + 200
-                tp = entry - 400
+                sl = entry + DEFAULT_SL_DISTANCE
+                tp = entry - DEFAULT_TP_DISTANCE
 
                 result.update({
                     "found": True,

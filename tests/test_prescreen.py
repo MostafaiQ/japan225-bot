@@ -21,10 +21,18 @@ def make_tf(
     above_ema200=True,
     above_ema200_fallback=None,
     prev_close=None,
+    candle_open=None,
+    candle_low=None,
 ):
     """Minimal fake analyze_timeframe() dict."""
+    # Default candle shape: green bounce candle with 25pt lower wick
+    # open slightly below close, low 40pts below open → lower_wick = 25
+    _open = candle_open if candle_open is not None else price - 15
+    _low  = candle_low  if candle_low  is not None else price - 40
     tf = {
         "price": price,
+        "open": _open,
+        "low": _low,
         "rsi": rsi,
         "bollinger_mid": bb_mid,
         "bollinger_upper": bb_upper,
@@ -119,6 +127,16 @@ class TestLongBollingerMidBounce:
         result = detect_setup(tf_daily, tf_4h, tf_15m)
         # Could find SHORT setup, but not a LONG
         assert result.get("direction") != "LONG" or result["found"] is False
+
+    def test_prev_close_higher_blocks(self):
+        """If prev_close >= current price, bounce has not started — should not fire."""
+        tf_daily, tf_4h, tf_15m = self._make_long_bb()
+        # Set prev_close higher than current price (candle moving down, not up)
+        price = tf_15m["price"]
+        tf_15m["prev_close"] = price + 20  # prev close was higher → no bounce
+        result = detect_setup(tf_daily, tf_4h, tf_15m)
+        if result["found"]:
+            assert result["type"] != "bollinger_mid_bounce"
 
 
 # ── LONG Setup 2: EMA50 Bounce ────────────────────────────────────────────────

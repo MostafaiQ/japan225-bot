@@ -35,37 +35,47 @@ def build_system_prompt() -> str:
 
 SUPPORTED DIRECTIONS: LONG and SHORT. Do not bias toward either direction.
 
-LONG RULES:
-- Entry at technical level: Bollinger midband or EMA50 (within 30 points)
-- RSI 15M: 35-55 (entry zone)
-- Daily trend bullish: price above EMA200 (or EMA50 if EMA200 unavailable)
-- 4H RSI not overbought (< 75)
+LONG SETUP TYPES:
+1. bollinger_mid_bounce: Price near BB midband (within 150pts), RSI 15M 35-48, above EMA50, bounce starting
+2. bollinger_lower_bounce: Price near BB lower band (within 80pts), RSI 15M 20-40 (deeply oversold), lower wick rejection >= 15pts
+   - At the lower band, price may be below EMA50 — this is expected. Evaluate 4H RSI for macro confluence.
+   - REJECT if: volume is LOW (thin bounce = no real buyers), 4H trend sharply down with no divergence.
+3. EMA50 bounce: Price near EMA50 within 150pts, RSI < 55 (DISABLED in code — do not approve)
+Daily trend must be BULLISH (price above EMA200 daily, or EMA50 if EMA200 unavailable).
 
-SHORT RULES:
-- Entry at technical level: Bollinger upper band or EMA50 rejection (within 30 points)
-- RSI 15M: 55-75 (showing weakness, not yet oversold)
-- Daily trend bearish: price below EMA200 (or EMA50 if EMA200 unavailable)
-- 4H RSI not oversold (> 25)
-- SHORT minimum confidence: 75% (higher bar — BOJ intervention risk)
+SHORT SETUP TYPES:
+1. bollinger_upper_rejection: Price near BB upper band (within 150pts), RSI 15M 55-75, below EMA50
+2. ema50_rejection: Price at EMA50 from below (testing resistance), RSI 50-70
+Daily trend must be BEARISH. SHORT minimum confidence: 75% (BOJ intervention risk).
 
-COMMON RULES (both directions):
-- Minimum R:R is 1:1.5 after spread (7pt spread costs both entry and exit)
+COMMON RULES:
+- Minimum R:R is 1:1.5 after spread (7pt spread costs both sides)
 - No trades if high-impact event within 60 minutes
-- Default SL: 200 points | Default TP: 400 points (1:2 R:R)
+- Default SL: 150 points | Default TP: 400 points (1:2.7 R:R)
+- Breakeven trigger: +150pts → move SL to entry + 10pts buffer
+
+MARKET STRUCTURE FIELDS (in indicators data):
+- volume_signal: "HIGH" (>1.5x avg) | "NORMAL" | "LOW" (<0.7x avg)
+  HIGH volume on bounce = genuine conviction. LOW volume = suspect, likely reject.
+- swing_high_20 / swing_low_20: Highest high and lowest low of last 20 candles.
+  Nearest resistance above = potential TP obstacle. Nearest support below = SL viability.
+- dist_to_swing_high / dist_to_swing_low: Points from current price to each level.
+  If dist_to_swing_high < 200pts → TP at 400pts faces resistance — reduce confidence.
+  If dist_to_swing_low < 100pts → SL has support nearby — this is GOOD for LONG setups.
 
 CONFIDENCE SCORING (8 criteria, 10pts each + 30 base, cap 100%):
 1. daily_trend: Daily trend aligned with direction
-2. entry_at_tech_level: Entry at Bollinger band / EMA50 (within 30 pts)
-3. rsi_15m_in_range: RSI 15M in correct zone for direction
-4. tp_viable: 100+ points of clear space to TP target
+2. entry_at_tech_level: Entry at BB band / EMA50 / BB lower band (within threshold)
+3. rsi_15m_in_range: RSI 15M in correct zone (20-40 for lower bounce, 35-48 for mid bounce)
+4. tp_viable: Price at/below BB mid for LONG (pullback confirmed)
 5. price_structure: Higher lows (LONG) or lower highs (SHORT) on 15M
-6. macro_aligned: News/sentiment/USD-JPY supports direction
+6. macro_aligned: News/sentiment/USD-JPY supports direction. 4H RSI confluence.
 7. no_event_1hr: No high-impact event within 1 hour
 8. no_friday_monthend: Not Friday data window or month-end
 
 EXIT STRATEGY:
-- At +150pts: move SL to breakeven (entry + spread buffer)
-- Default TP: +400pts (1:2 R:R on 200pt SL)
+- At +150pts: move SL to breakeven (entry + 10pt buffer)
+- Default TP: +400pts
 - If price reaches 75% of TP within 2 hours: activate trailing stop at 150pts
 
 RESPOND IN JSON ONLY. No markdown, no explanation outside the JSON."""
@@ -101,10 +111,39 @@ LOCAL CONFIDENCE SCORE: {local_confidence.get('score', 'N/A')}% ({local_confiden
 Local breakdown: {json.dumps(local_confidence.get('criteria', {}), default=str)}
 """
 
+    # Build human-readable market structure summary from 15M indicators
+    tf15m = {}
+    for k in ("15m", "tf_15m", "15min"):
+        if k in indicators and isinstance(indicators[k], dict):
+            tf15m = indicators[k]
+            break
+    market_struct_lines = []
+    if tf15m.get("volume_signal"):
+        market_struct_lines.append(
+            f"  Volume (15M): {tf15m['volume_signal']} "
+            f"({tf15m.get('volume_ratio', '?')}x 20-period avg) — "
+            + ("HIGH = genuine conviction" if tf15m['volume_signal'] == 'HIGH'
+               else "LOW = suspect, lean toward REJECT" if tf15m['volume_signal'] == 'LOW'
+               else "normal conditions")
+        )
+    if tf15m.get("swing_high_20") and tf15m.get("swing_low_20"):
+        p = tf15m.get("price", 0)
+        sh, sl_lvl = tf15m["swing_high_20"], tf15m["swing_low_20"]
+        market_struct_lines.append(
+            f"  Swing High (20-bar): {sh:.0f} (+{sh - p:.0f}pts above — potential resistance / TP obstacle)"
+        )
+        market_struct_lines.append(
+            f"  Swing Low  (20-bar): {sl_lvl:.0f} (-{p - sl_lvl:.0f}pts below — potential support / SL anchor)"
+        )
+    market_struct_block = (
+        "\nMARKET STRUCTURE (computed from 15M candles):\n" + "\n".join(market_struct_lines) + "\n"
+        if market_struct_lines else ""
+    )
+
     prompt = f"""Analyze the following Japan 225 Cash CFD data and determine if there is a valid trading setup.
 
 CURRENT TIMESTAMP: {datetime.now().isoformat()}
-{prescreen_block}{local_conf_block}
+{prescreen_block}{local_conf_block}{market_struct_block}
 INDICATOR DATA (available timeframes):
 {json.dumps(indicators, indent=2, default=str)}
 
@@ -135,7 +174,7 @@ Respond with ONLY this JSON structure:
         "no_event_1hr": true/false,
         "no_friday_monthend": true/false
     }},
-    "setup_type": "bollinger_mid_bounce" or "bollinger_upper_rejection" or "ema50_bounce" or "ema50_rejection" or null,
+    "setup_type": "bollinger_mid_bounce" or "bollinger_lower_bounce" or "bollinger_upper_rejection" or "ema50_rejection" or null,
     "reasoning": "Brief explanation of decision",
     "key_levels": {{
         "support": [list of support prices],

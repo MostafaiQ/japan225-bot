@@ -19,25 +19,39 @@ vwap(highs, lows, closes, volumes) -> list[float]
 
 analyze_timeframe(candles: list[dict]) -> dict
   # Input: candles with open/high/low/close/volume/timestamp
-  # Output keys: price, open, high, low, bollinger_upper/mid/lower, ema50, ema200,
-  #              rsi, vwap, above_ema50, above_ema200, above_vwap,
+  # Output keys: price, open, high, low, bollinger_upper/mid/lower,
+  #              ema9, ema50, ema200, rsi, vwap,
+  #              above_ema9, above_ema50, above_ema200, above_vwap,
   #              ema200_available, above_ema200_fallback, bollinger_percentile,
-  #              prev_close   ← NEW (2026-02-28): closes[-2] for bounce confirmation
-  # NOTE: needs 200 candles for EMA200; <200 logs warning and sets above_ema200_fallback=above_ema50
+  #              prev_close,
+  #              volume_ratio, volume_signal ("HIGH"|"NORMAL"|"LOW"),
+  #              swing_high_20, swing_low_20,
+  #              dist_to_swing_high, dist_to_swing_low
+  # NOTE: needs 200 candles for EMA200; <200 logs warning and uses EMA50 fallback
+
+confirm_5m_entry(tf_5m: dict, direction: str) -> bool
+  # 5M confirmation check. Returns True if tf_5m is None (pass-through).
+  # LONG: price > EMA9, green candle, RSI > 45
+  # SHORT: price < EMA9, red candle, RSI < 55
+  # Used for AI context / future confidence scoring — NOT a hard gate in detect_setup()
 
 detect_setup(tf_daily, tf_4h, tf_15m, tf_5m=None) -> dict
   # Bidirectional. Returns: found, type, direction, entry, sl, tp, reasoning, indicators_snapshot
-  # LONG paths (if daily_bullish=True):  bollinger_mid_bounce, ema50_bounce
-  # SHORT paths (if daily_bullish=False): bollinger_upper_rejection, ema50_rejection
+  # indicators_snapshot includes: price, rsi_15m, bb_mid/upper/lower, ema50_15m,
+  #   daily_bullish, rsi_4h, volume_signal, volume_ratio, swing_high/low_20, dist_to_swing_*
+  #
+  # LONG paths (if daily_bullish=True):
+  #   bollinger_mid_bounce:   near_mid ±150pts, RSI 35-48, above_ema50, bounce_starting (price>prev_close)
+  #   bollinger_lower_bounce: near_lower ±80pts, RSI 20-40, lower_wick >=15pts
+  #                           (NO above_ema50 gate — price expected below EMA50 at lower band)
+  #   ema50_bounce:           DISABLED (ENABLE_EMA50_BOUNCE_SETUP=False)
+  #
+  # SHORT paths (if daily_bullish=False):
+  #   bollinger_upper_rejection: near_upper ±150pts, RSI 55-75, below_ema50
+  #   ema50_rejection:           price <=ema50+2, dist ≤150, RSI 50-70
+  #
+  # SL/TP: DEFAULT_SL_DISTANCE=150, DEFAULT_TP_DISTANCE=400 (from settings.py)
   # CRITICAL: daily_bullish=None → both branches skip → found=False always
-  #   daily_bullish = tf_daily.get("above_ema200_fallback")
-  # LONG BB mid bounce: near_mid_pts ±150, rsi_ok_long 35-48 (RSI_ENTRY_HIGH_BOUNCE),
-  #                     above_ema50, bounce_starting (price > prev_close) ← NEW gate
-  # LONG EMA50 bounce:  DISABLED (ENABLE_EMA50_BOUNCE_SETUP=False in settings) — median dist=325pts
-  # SHORT BB upper:     near_upper_pts ±150, rsi_ok_short 55-75, below_ema50
-  # SHORT EMA50 reject: price <= ema50_15m + 5 (was +2), dist ≤150 (was ≤30), rsi 50-70
-  # LONG SL: entry - 200, capped at ema50_15m - 20. TP: entry + 400
-  # SHORT SL: entry + 200. TP: entry - 400
   # Updated 2026-02-28: all thresholds recalibrated for Nikkei ~55k level
 
 detect_higher_lows(prices, lookback=5) -> bool

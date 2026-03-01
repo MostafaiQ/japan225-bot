@@ -79,7 +79,7 @@ GUARANTEED_STOP_PREMIUM = 8  # Points if using guaranteed stop
 
 # --- Exit Strategy (3-Phase) ---
 # Phase 1: Initial protection
-DEFAULT_SL_DISTANCE = 200  # Points (adjustable per setup)
+DEFAULT_SL_DISTANCE = 150  # Points (WFO-validated: PF=3.67 vs SL=200 PF=2.56)
 DEFAULT_TP_DISTANCE = 400  # Points (1:2 R:R base)
 MIN_RR_RATIO = 1.5  # Minimum acceptable R:R
 
@@ -111,7 +111,7 @@ RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
 RSI_ENTRY_LOW = 35            # Ideal entry RSI range (15M)
 RSI_ENTRY_HIGH = 55
-RSI_ENTRY_HIGH_BOUNCE = 48    # Tighter RSI gate for BB mid bounce (requires genuine oversold)
+RSI_ENTRY_HIGH_BOUNCE = 48    # Tighter RSI gate for BB mid bounce (requires genuine oversold pullback)
 
 # ============================================
 # CONFIDENCE SCORING (8-point system)
@@ -156,6 +156,18 @@ SCAN_TIMES = [
 ]
 
 # ============================================
+# SESSION HOURS (UTC) — backtest + monitor
+# ============================================
+SESSION_HOURS_UTC = {
+    "Tokyo":    (0,  6),   # 00:00-06:00 UTC (N225 cash market, highest quality)
+    "London":   (8, 16),   # 08:00-16:00 UTC (strong directional moves)
+    "New York": (16, 21),  # 16:00-21:00 UTC (US-correlated, decent quality)
+    # 06-08 UTC: skip — chaotic Tokyo-close / London-open crossover
+    # 21-00 UTC: skip — thin volume, avoid
+}
+MINUTE_5_CANDLES = 30  # 5M lookback for confirm_5m_entry (covers EMA9 + RSI14 + BB20)
+
+# ============================================
 # AI MODELS
 # ============================================
 SONNET_MODEL = "claude-sonnet-4-5-20250929"
@@ -178,7 +190,8 @@ AI_COOLDOWN_MINUTES = 30            # Suppress duplicate AI escalations
 PRICE_DRIFT_ABORT_PTS = 20          # Abort trade if price moved this far during analysis
 STALE_DATA_THRESHOLD = 10           # Identical price readings = stale data alert
 PRE_SCREEN_CANDLES = 50             # Candles for 15M pre-screen (enough for BB20 + EMA50)
-AI_ESCALATION_CANDLES = 100         # Candles for 4H/Daily when escalating to AI
+AI_ESCALATION_CANDLES = 100         # Candles for 4H when escalating to AI (RSI only, EMA50 ok)
+DAILY_EMA200_CANDLES = 250          # Candles for Daily — MUST be >200 to compute EMA200
 
 # ============================================
 # SHORT TRADING

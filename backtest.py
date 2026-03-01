@@ -3,120 +3,112 @@ Japan 225 Bot — Full Strategy Backtest
 =======================================
 Simulates the complete pipeline on real historical Nikkei data:
 
-  1. Fetch historical data (yfinance: 15min + 4H + Daily)
-  2. For each 15min candle: run detect_setup() [same code as live bot]
-  3. If setup found: run compute_confidence() [same code as live bot]
-  4. If confidence passes threshold: simulate trade
-  5. Exit management: breakeven at +150pts, trailing stop 150pts, TP 400pts, SL 200pts
+  1. Fetch historical data (yfinance: NKD=F 15min + 1H, ^N225 Daily)
+  2. Pre-compute daily and 4H timeframe analysis ONCE per unique period
+  3. For each 15min candle: compute 15M tf, look up pre-computed daily/4H
+  4. Run detect_setup() + compute_confidence() [same code as live bot]
+  5. Record all qualifying setups with entry price and future candles
+  6. WFO: test different SL/TP combos against the SAME pre-computed setups
+     (no re-scanning needed — 10x faster WFO)
 
-Data source:  ^N225 (Nikkei 225 cash index, Yahoo Finance)
+Data sources:
+  NKD=F   (CME Nikkei 225 futures) — 15M + 1H, 23h/day multi-session coverage
+  ^N225   (Nikkei cash) — Daily only, for EMA200 daily trend direction
+  Sessions covered: Tokyo (00-06 UTC) + London (08-16 UTC) + New York (16-21 UTC)
+  Skipped: 06-08 UTC gap (Tokyo/London crossover), 21-00 UTC (thin volume)
+
 Instrument:   $1 per point, 1 contract (matches bot config)
 Spread:       10pts round-trip deducted from each trade entry
-Session:      Tokyo / London / New York only (same session logic as live bot)
+EMA200:       250 daily candles fetched — EMA200 always available
+              (matches live bot fix: DAILY_EMA200_CANDLES=250)
 
 Output:
-  - Trade log (every simulated trade)
-  - Summary stats by direction, session, confidence tier
-  - WFO parameter grid search (SL/TP combinations)
-  - Adjustment recommendations
-
-Thresholds: Live code now correctly calibrated at 150pts for Nikkei ~50k-60k.
-  BB_MID_THRESHOLD_PTS = 150 (was 30 — fixed 2026-02-28 via expert agent analysis)
-  EMA50_THRESHOLD_PTS  = 150 (was 30 — same fix)
-  C4 tp_viable: 350pts (was 100 — now a genuine filter vs. trivially passing 78% of candles)
+  - Signal funnel (candles scanned → setups → qualified → trades)
+  - Trade log and P&L summary
+  - By direction / session / exit reason / confidence tier
+  - WFO parameter grid search (SL/TP combinations, fast)
 """
 import sys
 import os
-from datetime import datetime, timezone, timedelta
+import logging
+from datetime import datetime, timezone
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(__file__))
+
+# Suppress EMA200-unavailable warnings — expected for 55-candle 15M/4H inputs
+logging.disable(logging.WARNING)
 
 import yfinance as yf
 import pandas as pd
 
 from core.indicators import analyze_timeframe, detect_setup
-from core.confidence import compute_confidence, format_confidence_breakdown
+from core.confidence import compute_confidence
+from config.settings import SESSION_HOURS_UTC, MINUTE_5_CANDLES
 
-
-# detect_setup() is now imported directly from core.indicators (thresholds corrected to 150pts)
+logging.disable(logging.NOTSET)  # re-enable after imports
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-SPREAD_PTS       = 10       # round-trip spread (5pts each side)
-CONTRACT_SIZE    = 1        # $1/pt
-SL_DISTANCE      = 200      # pts
-TP_DISTANCE      = 400      # pts
-BREAKEVEN_TRIGGER = 150     # move SL to entry+10 when profit hits this
-BREAKEVEN_BUFFER  = 10      # SL moves to entry + this
-TRAILING_DISTANCE = 150     # pts trailing stop (runner phase)
-MIN_CANDLES_15M   = 55      # need 50+ for EMA50 on 15M
-MIN_CANDLES_DAILY = 210     # need 200+ for EMA200 on daily
-MIN_CANDLES_4H    = 55      # need 50+ for EMA50 on 4H
+SPREAD_PTS        = 10       # round-trip spread (5pts each side)
+CONTRACT_SIZE     = 1        # $1/pt
+SL_DISTANCE       = 150      # pts (WFO-validated — matches DEFAULT_SL_DISTANCE in settings.py)
+TP_DISTANCE       = 400      # pts
+BREAKEVEN_TRIGGER = 150      # move SL to entry+10 when profit hits this
+BREAKEVEN_BUFFER  = 10       # SL moves to entry + this
+TRAILING_DISTANCE = 150      # pts trailing stop (runner phase)
+MIN_CANDLES_15M   = 55       # need 50+ for EMA50 on 15M
+MIN_CANDLES_DAILY = 250      # need 200+ for EMA200 on daily (matches DAILY_EMA200_CANDLES)
+MIN_CANDLES_4H    = 55       # need 50+ for EMA50 on 4H
 
-# API cost constants (per trade that escalates to AI)
-AI_COST_PER_SIGNAL_USD = 0.015   # ~$0.015 per Sonnet+Opus call (prompt caching)
+AI_COST_PER_SIGNAL_USD = 0.015   # ~$0.015 per Sonnet+Opus call
 
 # ── Session filter (UTC hours) ──────────────────────────────────────────────────
-SESSIONS = {
-    "Tokyo":   (0,  6),    # 00:00–06:00 UTC
-    "London":  (7,  16),   # 07:00–16:00 UTC
-    "New York": (13, 21),  # 13:00–21:00 UTC
-}
+# Single source of truth from settings.py — covers Tokyo + London + New York
+SESSIONS = SESSION_HOURS_UTC
 
 def get_session(dt: datetime) -> str | None:
-    """Return session name if active, else None. dt must be UTC-aware."""
     h = dt.hour
     for name, (start, end) in SESSIONS.items():
         if start <= h < end:
             return name
-    return None
+    return None  # 06-08 UTC gap and 21-00 UTC thin — skip
 
 # ── Data download ───────────────────────────────────────────────────────────────
 
 def download_data():
-    print("Downloading Nikkei 225 data from Yahoo Finance...")
-
-    # 15min data (max 60 days from yfinance)
-    df_15m = yf.download("^N225", interval="15m", period="60d", progress=False, auto_adjust=True)
-
-    # 1H data (used to build 4H candles, last 730d available)
-    df_1h = yf.download("^N225", interval="1h", period="730d", progress=False, auto_adjust=True)
-
-    # Daily data (for EMA200 trend, last 2 years)
-    df_1d = yf.download("^N225", interval="1d", period="2y", progress=False, auto_adjust=True)
-
-    # Flatten MultiIndex columns if present
-    for df in [df_15m, df_1h, df_1d]:
+    print("Downloading Nikkei data from Yahoo Finance...")
+    # NKD=F: CME Nikkei 225 futures — 23h/day, covers Tokyo + London + NY
+    df_5m  = yf.download("NKD=F", interval="5m",  period="60d",  progress=False, auto_adjust=True)
+    df_15m = yf.download("NKD=F", interval="15m", period="60d",  progress=False, auto_adjust=True)
+    df_1h  = yf.download("NKD=F", interval="1h",  period="730d", progress=False, auto_adjust=True)
+    # ^N225 daily: cash market closes, most reliable for EMA200 daily trend direction
+    df_1d  = yf.download("^N225", interval="1d",  period="2y",   progress=False, auto_adjust=True)
+    for df in [df_5m, df_15m, df_1h, df_1d]:
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-
-    print(f"  15min candles: {len(df_15m)} ({df_15m.index[0].date()} → {df_15m.index[-1].date()})")
-    print(f"  1H candles:    {len(df_1h)}")
-    print(f"  Daily candles: {len(df_1d)}")
-
-    return df_15m, df_1h, df_1d
-
+    if df_15m.empty:
+        raise RuntimeError("NKD=F 15M data empty — check Yahoo Finance ticker")
+    if not df_5m.empty:
+        print(f"  NKD=F 5min:  {len(df_5m)} ({df_5m.index[0].date()} -> {df_5m.index[-1].date()})")
+    else:
+        print("  NKD=F 5min:  empty (5M confirmation disabled)")
+    print(f"  NKD=F 15min: {len(df_15m)} ({df_15m.index[0].date()} -> {df_15m.index[-1].date()})")
+    print(f"  NKD=F 1H:    {len(df_1h)}")
+    print(f"  ^N225 Daily: {len(df_1d)}")
+    return df_15m, df_1h, df_5m, df_1d
 
 def resample_4h(df_1h: pd.DataFrame) -> pd.DataFrame:
-    """Resample 1H OHLCV into 4H candles."""
     df = df_1h.copy()
     df.index = pd.to_datetime(df.index)
-    df_4h = df.resample("4h").agg({
-        "Open":   "first",
-        "High":   "max",
-        "Low":    "min",
-        "Close":  "last",
-        "Volume": "sum",
+    return df.resample("4h").agg({
+        "Open": "first", "High": "max", "Low": "min",
+        "Close": "last", "Volume": "sum",
     }).dropna()
-    return df_4h
 
-
-def df_to_candles(df: pd.DataFrame, n: int) -> list[dict]:
-    """Convert last n rows of a DataFrame to the candle dict format."""
-    subset = df.iloc[-n:]
+def df_to_candles(df: pd.DataFrame) -> list[dict]:
     candles = []
-    for ts, row in subset.iterrows():
+    for ts, row in df.iterrows():
         candles.append({
             "timestamp": ts,
             "open":   float(row["Open"]),
@@ -127,164 +119,176 @@ def df_to_candles(df: pd.DataFrame, n: int) -> list[dict]:
         })
     return candles
 
+# ── Pre-compute timeframes once per unique period ───────────────────────────────
 
-# ── Trade simulation ────────────────────────────────────────────────────────────
+def precompute_daily(df_1d: pd.DataFrame) -> dict:
+    """
+    Pre-compute analyze_timeframe() for each unique trading date.
+    Returns dict: date -> tf_daily dict (or None if < MIN_CANDLES_DAILY).
+    Each entry uses all daily candles UP TO AND INCLUDING that date.
+    """
+    print(f"Pre-computing daily timeframes ({len(df_1d)} candles)...")
+    daily_tf = {}
+    dates = df_1d.index.normalize()
+    for i in range(len(df_1d)):
+        date = df_1d.index[i].date()
+        candles = df_to_candles(df_1d.iloc[:i+1])
+        if len(candles) < MIN_CANDLES_DAILY:
+            daily_tf[date] = None
+            continue
+        # use last 250 candles so EMA200 always computed
+        logging.disable(logging.WARNING)
+        try:
+            tf = analyze_timeframe(candles[-250:])
+        except Exception:
+            tf = None
+        logging.disable(logging.NOTSET)
+        daily_tf[date] = tf
+    valid = sum(1 for v in daily_tf.values() if v is not None)
+    print(f"  Daily cache: {valid}/{len(daily_tf)} dates have EMA200 available")
+    return daily_tf
 
-class TradeResult:
-    __slots__ = ("entry_time", "direction", "entry_price", "exit_price",
-                 "exit_reason", "pnl_pts", "pnl_usd", "confidence_score",
-                 "session", "setup_type", "duration_candles")
 
+def precompute_4h(df_4h: pd.DataFrame) -> dict:
+    """
+    Pre-compute analyze_timeframe() for each 4H bar.
+    Returns dict: 4H-bar-timestamp -> tf_4h dict.
+    Each entry uses all 4H candles UP TO AND INCLUDING that bar.
+    """
+    print(f"Pre-computing 4H timeframes ({len(df_4h)} candles)...")
+    h4_tf = {}
+    for i in range(len(df_4h)):
+        ts = df_4h.index[i]
+        if i < MIN_CANDLES_4H:
+            h4_tf[ts] = None
+            continue
+        candles = df_to_candles(df_4h.iloc[max(0, i-54):i+1])
+        logging.disable(logging.WARNING)
+        try:
+            tf = analyze_timeframe(candles)
+        except Exception:
+            tf = None
+        logging.disable(logging.NOTSET)
+        h4_tf[ts] = tf
+    valid = sum(1 for v in h4_tf.values() if v is not None)
+    print(f"  4H cache: {valid}/{len(h4_tf)} bars computed")
+    return h4_tf
+
+
+def precompute_5m(df_5m: pd.DataFrame) -> dict:
+    """
+    Pre-compute analyze_timeframe() for each 5M bar.
+    Uses MINUTE_5_CANDLES lookback (sufficient for EMA9 / RSI14 / BB20).
+    Returns dict: 5M-bar-timestamp -> tf_5m dict (or None if insufficient candles).
+    """
+    if df_5m.empty:
+        print("  5M cache: skipped (empty data)")
+        return {}
+    print(f"Pre-computing 5M timeframes ({len(df_5m)} candles, lookback={MINUTE_5_CANDLES})...")
+    h5m_tf = {}
+    for i in range(len(df_5m)):
+        ts = df_5m.index[i]
+        if i < MINUTE_5_CANDLES:
+            h5m_tf[ts] = None
+            continue
+        candles = df_to_candles(df_5m.iloc[max(0, i - MINUTE_5_CANDLES + 1):i + 1])
+        logging.disable(logging.WARNING)
+        try:
+            tf = analyze_timeframe(candles)
+        except Exception:
+            tf = None
+        logging.disable(logging.NOTSET)
+        h5m_tf[ts] = tf
+    valid = sum(1 for v in h5m_tf.values() if v is not None)
+    print(f"  5M cache: {valid}/{len(h5m_tf)} bars computed")
+    return h5m_tf
+
+# ── Setup detection loop ────────────────────────────────────────────────────────
+
+class SetupRecord:
+    """A qualifying setup ready for trade simulation."""
+    __slots__ = ("idx", "entry_time", "direction", "setup_type", "entry_price",
+                 "confidence_score", "session", "future_candles")
     def __init__(self, **kw):
         for k, v in kw.items():
             setattr(self, k, v)
 
 
-def simulate_trade(direction: str, entry_price: float, entry_time,
-                   future_candles: list[dict]) -> tuple[float, str, int]:
+def find_setups(df_15m: pd.DataFrame, df_4h: pd.DataFrame,
+                daily_tf: dict, h4_tf: dict,
+                df_5m: pd.DataFrame = None, h5m_tf: dict = None) -> tuple[list[SetupRecord], int, int]:
     """
-    Simulate trade exit using future 15min candles.
-    Returns: (exit_price, exit_reason, candles_held)
+    Scan all 15M candles and collect qualifying setups.
+    Returns: (setups, signals_raw_count, signals_qualified_count)
     """
-    sl = entry_price - SL_DISTANCE if direction == "LONG" else entry_price + SL_DISTANCE
-    tp = entry_price + TP_DISTANCE if direction == "LONG" else entry_price - TP_DISTANCE
-    be_triggered = False
-    trailing_active = False
-    peak_profit = 0.0
+    if h5m_tf is None:
+        h5m_tf = {}
 
-    for i, candle in enumerate(future_candles):
-        high = candle["high"]
-        low  = candle["low"]
-
-        if direction == "LONG":
-            # Check profit at high
-            profit_at_high = high - entry_price
-
-            # Breakeven trigger
-            if not be_triggered and profit_at_high >= BREAKEVEN_TRIGGER:
-                sl = entry_price + BREAKEVEN_BUFFER
-                be_triggered = True
-
-            # Trailing stop
-            if be_triggered:
-                if profit_at_high > peak_profit:
-                    peak_profit = profit_at_high
-                trailing_sl = peak_profit - TRAILING_DISTANCE + entry_price
-                if trailing_sl > sl:
-                    sl = trailing_sl
-                    trailing_active = True
-
-            # Check TP
-            if high >= tp:
-                return tp - entry_price - SPREAD_PTS, "TP_HIT", i + 1
-
-            # Check SL
-            if low <= sl:
-                exit = sl
-                reason = "TRAILING_STOP" if trailing_active else ("BREAKEVEN" if be_triggered else "SL_HIT")
-                return exit - entry_price - SPREAD_PTS, reason, i + 1
-
-        else:  # SHORT
-            profit_at_low = entry_price - low
-
-            if not be_triggered and profit_at_low >= BREAKEVEN_TRIGGER:
-                sl = entry_price - BREAKEVEN_BUFFER
-                be_triggered = True
-
-            if be_triggered:
-                if profit_at_low > peak_profit:
-                    peak_profit = profit_at_low
-                trailing_sl = entry_price - peak_profit + TRAILING_DISTANCE
-                if trailing_sl < sl:
-                    sl = trailing_sl
-                    trailing_active = True
-
-            if low <= tp:
-                return entry_price - tp - SPREAD_PTS, "TP_HIT", i + 1
-
-            if high >= sl:
-                exit = sl
-                reason = "TRAILING_STOP" if trailing_active else ("BREAKEVEN" if be_triggered else "SL_HIT")
-                return entry_price - exit - SPREAD_PTS, reason, i + 1
-
-    # End of data — close at last candle's close
-    last_close = future_candles[-1]["close"]
-    pnl = (last_close - entry_price) if direction == "LONG" else (entry_price - last_close)
-    return pnl - SPREAD_PTS, "END_OF_DATA", len(future_candles)
-
-
-# ── Main backtest loop ──────────────────────────────────────────────────────────
-
-def run_backtest(df_15m: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame):
-    df_15m = df_15m.copy()
-    df_4h  = df_4h.copy()
-    df_1d  = df_1d.copy()
-
-    # Ensure UTC-aware index
-    for df in [df_15m, df_4h, df_1d]:
+    # Ensure UTC index
+    dfs_to_tz = [df_15m, df_4h]
+    if df_5m is not None and not df_5m.empty:
+        dfs_to_tz.append(df_5m)
+    for df in dfs_to_tz:
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
         else:
             df.index = df.index.tz_convert("UTC")
 
-    trades: list[TradeResult] = []
-    signals_found = 0
-    signals_qualifying = 0
-    skip_until_idx = -1           # prevent overlapping trades
+    # Pre-sort 4H index for fast lookback
+    h4_sorted = sorted(h4_tf.keys())
 
-    total_candles = len(df_15m)
+    setups: list[SetupRecord] = []
+    signals_raw = 0
+    signals_qual = 0
+    total = len(df_15m)
 
-    for i in range(MIN_CANDLES_15M, total_candles - 30):
-        # Skip if we're inside an open trade
-        if i < skip_until_idx:
-            continue
-
+    for i in range(MIN_CANDLES_15M, total - 30):
         ts = df_15m.index[i]
         ts_utc = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
-        # Session filter
+        # Session + weekend filter
         session = get_session(ts_utc)
         if session is None:
             continue
-
-        # Skip weekends
         if ts_utc.weekday() >= 5:
             continue
 
-        # ── Build timeframe inputs ──────────────────────────────────────
-        candles_15m  = df_to_candles(df_15m, i + 1)[-55:]
-
-        # Daily: all daily candles up to this date
-        daily_mask = df_1d.index.date <= ts_utc.date()
-        df_daily_slice = df_1d[daily_mask]
-        if len(df_daily_slice) < MIN_CANDLES_DAILY:
+        # Look up pre-computed daily tf for this date
+        date_key = ts_utc.date()
+        tf_daily = daily_tf.get(date_key)
+        if tf_daily is None:
             continue
-        candles_daily = df_to_candles(df_daily_slice, len(df_daily_slice))[-210:]
 
-        # 4H: all 4H candles up to this timestamp
-        h4_mask = df_4h.index <= ts_utc
-        df_4h_slice = df_4h[h4_mask]
-        if len(df_4h_slice) < MIN_CANDLES_4H:
+        # Look up pre-computed 4H tf for the most recent 4H bar before this candle
+        tf_4h = None
+        for h4_ts in reversed(h4_sorted):
+            if h4_ts <= ts_utc:
+                tf_4h = h4_tf.get(h4_ts)
+                break
+        if tf_4h is None:
             continue
-        candles_4h = df_to_candles(df_4h_slice, len(df_4h_slice))[-55:]
 
-        # ── Analyze all timeframes ──────────────────────────────────────
+        # Compute 15M tf (only this one per candle)
+        candles_15m = df_to_candles(df_15m.iloc[max(0, i-54):i+1])
+        if len(candles_15m) < MIN_CANDLES_15M:
+            continue
+        logging.disable(logging.WARNING)
         try:
-            tf_15m   = analyze_timeframe(candles_15m)
-            tf_daily = analyze_timeframe(candles_daily)
-            tf_4h    = analyze_timeframe(candles_4h)
+            tf_15m = analyze_timeframe(candles_15m)
         except Exception:
+            logging.disable(logging.NOTSET)
             continue
+        logging.disable(logging.NOTSET)
 
-        # ── Pre-screen: detect_setup() (live code — thresholds now calibrated) ─
+        # Pre-screen (tf_5m not passed here — 5M is context for AI, not a code gate)
         setup = detect_setup(tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_15m)
         if not setup["found"]:
             continue
+        signals_raw += 1
 
-        signals_found += 1
-
-        # ── Confidence scoring ──────────────────────────────────────────
+        # Confidence gate
         try:
+            logging.disable(logging.WARNING)
             conf = compute_confidence(
                 direction=setup["direction"],
                 tf_daily=tf_daily,
@@ -293,89 +297,174 @@ def run_backtest(df_15m: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame)
                 upcoming_events=[],
                 web_research=None,
             )
+            logging.disable(logging.NOTSET)
         except Exception:
+            logging.disable(logging.NOTSET)
             continue
-
         if not conf["meets_threshold"]:
             continue
+        signals_qual += 1
 
-        signals_qualifying += 1
-        score = conf["score"]
-
-        # ── Simulate trade ──────────────────────────────────────────────
-        entry_price = tf_15m["price"]
-        direction   = setup["direction"]
-
-        # Future candles for exit simulation (up to 100 candles ahead = ~25 hours)
-        future_candles = df_to_candles(df_15m.iloc[i+1 : i+101], min(100, total_candles - i - 1))
+        # Collect future candles for exit simulation
+        future_df = df_15m.iloc[i+1 : i+101]
+        future_candles = df_to_candles(future_df)
         if len(future_candles) < 4:
             continue
 
-        pnl_pts, exit_reason, duration = simulate_trade(
-            direction, entry_price, ts_utc, future_candles
-        )
-
-        trades.append(TradeResult(
-            entry_time       = ts_utc,
-            direction        = direction,
-            entry_price      = round(entry_price, 1),
-            exit_price       = round(entry_price + (pnl_pts if direction == "LONG" else -pnl_pts), 1),
-            exit_reason      = exit_reason,
-            pnl_pts          = round(pnl_pts, 1),
-            pnl_usd          = round(pnl_pts * CONTRACT_SIZE, 2),
-            confidence_score = score,
-            session          = session,
-            setup_type       = setup["type"],
-            duration_candles = duration,
+        setups.append(SetupRecord(
+            idx            = i,
+            entry_time     = ts_utc,
+            direction      = setup["direction"],
+            setup_type     = setup["type"],
+            entry_price    = float(tf_15m["price"]),
+            confidence_score = conf["score"],
+            session        = session,
+            future_candles = future_candles,
         ))
 
-        # Skip ahead past this trade's duration to avoid overlapping signals
-        skip_until_idx = i + duration + 1
+        # Progress
+        if len(setups) % 5 == 0 and len(setups) > 0:
+            print(f"  ... scanned {i}/{total}, {signals_raw} signals, {len(setups)} setups so far")
 
-        if len(trades) % 10 == 0:
-            print(f"  ... {i}/{total_candles} candles scanned, {len(trades)} trades so far")
+    return setups, signals_raw, signals_qual
 
-    return trades, signals_found, signals_qualifying
+
+# ── Trade simulation ────────────────────────────────────────────────────────────
+
+def simulate_trade(direction: str, entry_price: float, future_candles: list[dict],
+                   sl_dist: int, tp_dist: int, be_trigger: int,
+                   trail_dist: int) -> tuple[float, str, int]:
+    sl = entry_price - sl_dist if direction == "LONG" else entry_price + sl_dist
+    tp = entry_price + tp_dist if direction == "LONG" else entry_price - tp_dist
+    be_triggered = False
+    trailing_active = False
+    peak_profit = 0.0
+
+    for i, candle in enumerate(future_candles):
+        high, low = candle["high"], candle["low"]
+
+        if direction == "LONG":
+            profit_at_high = high - entry_price
+            if not be_triggered and profit_at_high >= be_trigger:
+                sl = entry_price + BREAKEVEN_BUFFER
+                be_triggered = True
+            if be_triggered:
+                if profit_at_high > peak_profit:
+                    peak_profit = profit_at_high
+                trail_sl = peak_profit - trail_dist + entry_price
+                if trail_sl > sl:
+                    sl = trail_sl
+                    trailing_active = True
+            if high >= tp:
+                return tp - entry_price - SPREAD_PTS, "TP_HIT", i + 1
+            if low <= sl:
+                reason = "TRAILING_STOP" if trailing_active else ("BREAKEVEN" if be_triggered else "SL_HIT")
+                return sl - entry_price - SPREAD_PTS, reason, i + 1
+        else:
+            profit_at_low = entry_price - low
+            if not be_triggered and profit_at_low >= be_trigger:
+                sl = entry_price - BREAKEVEN_BUFFER
+                be_triggered = True
+            if be_triggered:
+                if profit_at_low > peak_profit:
+                    peak_profit = profit_at_low
+                trail_sl = entry_price - peak_profit + trail_dist
+                if trail_sl < sl:
+                    sl = trail_sl
+                    trailing_active = True
+            if low <= tp:
+                return entry_price - tp - SPREAD_PTS, "TP_HIT", i + 1
+            if high >= sl:
+                reason = "TRAILING_STOP" if trailing_active else ("BREAKEVEN" if be_triggered else "SL_HIT")
+                return entry_price - sl - SPREAD_PTS, reason, i + 1
+
+    last_close = future_candles[-1]["close"]
+    pnl = (last_close - entry_price) if direction == "LONG" else (entry_price - last_close)
+    return pnl - SPREAD_PTS, "END_OF_DATA", len(future_candles)
+
+
+class TradeResult:
+    __slots__ = ("entry_time", "direction", "entry_price", "exit_price",
+                 "exit_reason", "pnl_pts", "pnl_usd", "confidence_score",
+                 "session", "setup_type", "duration_candles")
+    def __init__(self, **kw):
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+
+def simulate_all_trades(setups: list[SetupRecord],
+                        sl_dist: int = SL_DISTANCE, tp_dist: int = TP_DISTANCE,
+                        be_trigger: int = BREAKEVEN_TRIGGER,
+                        trail_dist: int = TRAILING_DISTANCE) -> list[TradeResult]:
+    """Run trade simulation for all setups. No re-scanning needed."""
+    trades = []
+    skip_until_idx = -1
+
+    for s in sorted(setups, key=lambda x: x.idx):
+        if s.idx < skip_until_idx:
+            continue  # skip overlapping trades
+        pnl_pts, reason, duration = simulate_trade(
+            s.direction, s.entry_price, s.future_candles,
+            sl_dist, tp_dist, be_trigger, trail_dist
+        )
+        exit_price = s.entry_price + (pnl_pts if s.direction == "LONG" else -pnl_pts)
+        trades.append(TradeResult(
+            entry_time       = s.entry_time,
+            direction        = s.direction,
+            entry_price      = round(s.entry_price, 1),
+            exit_price       = round(exit_price, 1),
+            exit_reason      = reason,
+            pnl_pts          = round(pnl_pts, 1),
+            pnl_usd          = round(pnl_pts * CONTRACT_SIZE, 2),
+            confidence_score = s.confidence_score,
+            session          = s.session,
+            setup_type       = s.setup_type,
+            duration_candles = duration,
+        ))
+        skip_until_idx = s.idx + duration + 1
+
+    return trades
 
 
 # ── Reporting ───────────────────────────────────────────────────────────────────
 
-def print_report(trades: list[TradeResult], signals_found: int, signals_qualifying: int,
-                 df_15m: pd.DataFrame):
+def print_report(trades: list[TradeResult], signals_raw: int, signals_qual: int,
+                 df_15m: pd.DataFrame, sl_dist=SL_DISTANCE, tp_dist=TP_DISTANCE):
 
-    if not trades:
-        print("\n⚠️  NO TRADES GENERATED — strategy never triggered. See adjustment section below.")
-        print_adjustments(trades, signals_found, signals_qualifying)
+    n = len(trades)
+    print("\n" + "="*62)
+    print("  JAPAN 225 BOT — BACKTEST RESULTS")
+    print("="*62)
+    print(f"  Period:   {df_15m.index[0].date()} -> {df_15m.index[-1].date()}")
+    print(f"  Data:     ^N225, 15min | EMA200: 250 daily candles (guaranteed)")
+    print(f"  Spread:   {SPREAD_PTS}pts round-trip | SL: {sl_dist}pts | TP: {tp_dist}pts")
+    print("-"*62)
+    print(f"\n  SIGNAL FUNNEL")
+    print(f"  15M candles scanned:      {len(df_15m)}")
+    print(f"  Raw setups (pre-screen):  {signals_raw}")
+    if signals_raw:
+        print(f"  Passed confidence gate:   {signals_qual}  ({signals_qual/signals_raw*100:.0f}% of setups)")
+    print(f"  Trades executed:          {n}  (no AI filter — worst case)")
+    ai_cost = signals_qual * AI_COST_PER_SIGNAL_USD
+    print(f"  Est. AI cost (60d):       ${ai_cost:.2f}")
+
+    if n == 0:
+        print("\n  NO TRADES — strategy never triggered at current thresholds.")
+        _print_zero_trade_diagnosis(signals_raw, signals_qual)
         return
 
     wins   = [t for t in trades if t.pnl_usd > 0]
     losses = [t for t in trades if t.pnl_usd <= 0]
-    total_pnl  = sum(t.pnl_usd for t in trades)
-    total_risk = len(trades) * SL_DISTANCE * CONTRACT_SIZE  # max possible loss
+    total_pnl = sum(t.pnl_usd for t in trades)
+    breakeven_wr = 1 / (1 + tp_dist / sl_dist)
 
-    print("\n" + "═"*60)
-    print("  JAPAN 225 BOT — BACKTEST RESULTS")
-    print("═"*60)
-    print(f"  Period:         {df_15m.index[0].date()} → {df_15m.index[-1].date()}")
-    print(f"  Data:           ^N225, 15min candles")
-    print(f"  Contract:       $1/pt, 1 lot | Spread: {SPREAD_PTS}pts deducted")
-    print(f"  SL: {SL_DISTANCE}pts | TP: {TP_DISTANCE}pts | BE trigger: {BREAKEVEN_TRIGGER}pts")
-    print("─"*60)
-
-    print("\n📊  SIGNAL FUNNEL")
-    print(f"  15min candles scanned:    {len(df_15m)}")
-    print(f"  Setups found (pre-screen):{signals_found:>8}")
-    print(f"  Passed confidence gate:   {signals_qualifying:>8}  ({signals_qualifying/max(signals_found,1)*100:.0f}% of setups)")
-    print(f"  Trades simulated:         {len(trades):>8}  (no AI filter — all qualifying signals taken)")
-    est_ai_cost = signals_qualifying * AI_COST_PER_SIGNAL_USD
-    print(f"  Est. AI API cost:         ${est_ai_cost:.2f}  ({signals_qualifying} Sonnet+Opus calls @ ~$0.015 each)")
-
-    print("\n💰  P&L SUMMARY")
-    print(f"  Total trades:   {len(trades)}")
-    print(f"  Wins:           {len(wins)}  ({len(wins)/len(trades)*100:.1f}%)")
-    print(f"  Losses:         {len(losses)}  ({len(losses)/len(trades)*100:.1f}%)")
+    print(f"\n  P&L SUMMARY")
+    print(f"  Total trades:   {n}")
+    print(f"  Wins:           {len(wins)}  ({len(wins)/n*100:.1f}%)")
+    print(f"  Losses:         {len(losses)}  ({len(losses)/n*100:.1f}%)")
+    print(f"  Breakeven WR:   {breakeven_wr*100:.0f}%  (for {sl_dist}SL/{tp_dist}TP 1:{tp_dist/sl_dist:.1f}RR)")
     print(f"  Total P&L:      ${total_pnl:+.2f}")
-    print(f"  Avg P&L/trade:  ${total_pnl/len(trades):+.2f}")
+    print(f"  Avg P&L/trade:  ${total_pnl/n:+.2f}")
     if wins:
         print(f"  Avg win:        ${sum(t.pnl_usd for t in wins)/len(wins):+.2f}")
     if losses:
@@ -383,298 +472,168 @@ def print_report(trades: list[TradeResult], signals_found: int, signals_qualifyi
     print(f"  Best trade:     ${max(t.pnl_usd for t in trades):+.2f}")
     print(f"  Worst trade:    ${min(t.pnl_usd for t in trades):+.2f}")
 
+    avg_duration = sum(t.duration_candles for t in trades) / n
+    print(f"  Avg hold time:  {avg_duration:.0f} candles ({avg_duration*15/60:.1f} hours)")
+
     # Max drawdown
-    running = 0.0
-    peak = 0.0
-    max_dd = 0.0
+    running, peak, max_dd = 0.0, 0.0, 0.0
     for t in sorted(trades, key=lambda x: x.entry_time):
         running += t.pnl_usd
-        if running > peak:
-            peak = running
+        if running > peak: peak = running
         dd = peak - running
-        if dd > max_dd:
-            max_dd = dd
+        if dd > max_dd: max_dd = dd
     print(f"  Max drawdown:   ${max_dd:.2f}")
 
-    # Profit factor
-    gross_profit = sum(t.pnl_usd for t in wins) if wins else 0
-    gross_loss   = abs(sum(t.pnl_usd for t in losses)) if losses else 0.01
-    pf = gross_profit / gross_loss
-    print(f"  Profit factor:  {pf:.2f}  (>1.5 = healthy)")
+    gp = sum(t.pnl_usd for t in wins) if wins else 0
+    gl = abs(sum(t.pnl_usd for t in losses)) if losses else 0.01
+    pf = gp / gl
+    print(f"  Profit factor:  {pf:.2f}  (>1.5 = healthy, >1.0 = profitable)")
+    print(f"  Net (after AI): ${total_pnl - ai_cost:+.2f}")
 
-    # Net after AI cost
-    net = total_pnl - est_ai_cost
-    print(f"  Net (after AI): ${net:+.2f}")
-
-    print("\n📋  BY DIRECTION")
+    print(f"\n  BY DIRECTION")
     for d in ["LONG", "SHORT"]:
         dt = [t for t in trades if t.direction == d]
-        if not dt:
-            print(f"  {d}: 0 trades")
-            continue
+        if not dt: continue
         dw = [t for t in dt if t.pnl_usd > 0]
-        dpnl = sum(t.pnl_usd for t in dt)
-        print(f"  {d}: {len(dt)} trades | {len(dw)/len(dt)*100:.0f}% win | P&L: ${dpnl:+.2f}")
+        print(f"  {d}: {len(dt)} trades | {len(dw)/len(dt)*100:.0f}% win | P&L: ${sum(t.pnl_usd for t in dt):+.2f}")
 
-    print("\n📋  BY SESSION")
+    print(f"\n  BY SESSION")
     for sess in ["Tokyo", "London", "New York"]:
         st = [t for t in trades if t.session == sess]
-        if not st:
-            print(f"  {sess}: 0 trades")
-            continue
+        if not st: continue
         sw = [t for t in st if t.pnl_usd > 0]
-        spnl = sum(t.pnl_usd for t in st)
-        print(f"  {sess}: {len(st)} trades | {len(sw)/len(st)*100:.0f}% win | P&L: ${spnl:+.2f}")
+        print(f"  {sess}: {len(st)} trades | {len(sw)/len(st)*100:.0f}% win | P&L: ${sum(t.pnl_usd for t in st):+.2f}")
 
-    print("\n📋  BY EXIT REASON")
+    print(f"\n  BY EXIT REASON")
     reasons = defaultdict(list)
-    for t in trades:
-        reasons[t.exit_reason].append(t)
-    for reason, rt in sorted(reasons.items()):
-        rpnl = sum(t.pnl_usd for t in rt)
-        print(f"  {reason:<20} {len(rt):>3} trades | P&L: ${rpnl:+.2f}")
+    for t in trades: reasons[t.exit_reason].append(t)
+    for r, rt in sorted(reasons.items()):
+        print(f"  {r:<20} {len(rt):>3} trades | P&L: ${sum(t.pnl_usd for t in rt):+.2f}")
 
-    print("\n📋  BY SETUP TYPE")
-    setups = defaultdict(list)
-    for t in trades:
-        setups[t.setup_type].append(t)
-    for st_name, st_list in setups.items():
-        sw2 = [t for t in st_list if t.pnl_usd > 0]
-        spnl2 = sum(t.pnl_usd for t in st_list)
-        print(f"  {st_name:<30} {len(st_list):>3} trades | {len(sw2)/len(st_list)*100:.0f}% win | ${spnl2:+.2f}")
+    print(f"\n  BY SETUP TYPE")
+    setups_d = defaultdict(list)
+    for t in trades: setups_d[t.setup_type].append(t)
+    for st_name, sl in setups_d.items():
+        sw2 = [t for t in sl if t.pnl_usd > 0]
+        print(f"  {st_name:<30} {len(sl):>3} trades | {len(sw2)/len(sl)*100:.0f}% win | ${sum(t.pnl_usd for t in sl):+.2f}")
 
-    print("\n📋  CONFIDENCE DISTRIBUTION")
-    tiers = [(70, 80), (80, 90), (90, 101)]
-    for lo, hi in tiers:
-        ct = [t for t in trades if lo <= t.confidence_score < hi]
-        if not ct:
-            continue
-        cw = [t for t in ct if t.pnl_usd > 0]
-        cpnl = sum(t.pnl_usd for t in ct)
-        print(f"  Score {lo}-{hi-1}%: {len(ct):>3} trades | {len(cw)/len(ct)*100:.0f}% win | ${cpnl:+.2f}")
-
-    print("\n📋  TRADE LOG (last 20)")
-    print(f"  {'Date':>10}  {'Dir':>5}  {'Entry':>7}  {'Exit':>7}  {'P&L':>8}  {'Conf':>5}  {'Reason'}")
-    print("  " + "-"*75)
-    for t in sorted(trades, key=lambda x: x.entry_time)[-20:]:
-        print(
-            f"  {t.entry_time.strftime('%Y-%m-%d'):>10}  {t.direction:>5}  "
-            f"{t.entry_price:>7.0f}  {t.exit_price:>7.0f}  "
-            f"${t.pnl_usd:>+7.2f}  {t.confidence_score:>4}%  {t.exit_reason}"
-        )
-
-    print_adjustments(trades, signals_found, signals_qualifying)
-
-
-def print_adjustments(trades: list[TradeResult], signals_found: int, signals_qualifying: int):
-    print("\n" + "═"*60)
-    print("  ADJUSTMENT RECOMMENDATIONS")
-    print("═"*60)
-
-    total = len(trades)
-    wins = [t for t in trades if t.pnl_usd > 0]
-    win_rate = len(wins) / total if total > 0 else 0
-    total_pnl = sum(t.pnl_usd for t in trades)
-
-    # Signal frequency
-    if signals_found == 0:
-        print("""
-  ❌ CRITICAL: Zero setups found.
-     Root causes (check in order):
-     1. daily_bullish always None? → check EMA200 data (need 200 daily candles)
-     2. RSI never in zone? → current LONG: 35-60, SHORT: 55-75
-        Try widening to LONG: 30-65, SHORT: 50-80 to get more signals
-     3. Price never near BB mid / EMA50 (±30pts)?
-        Try widening thresholds: BB_MID_THRESHOLD_PTS=50, EMA50_THRESHOLD_PTS=50
-     4. TP not viable? (need 100pts to BB opposite band)
-        May be too tight in low-volatility periods — try reducing to 70pts
-""")
-        return
-
-    print(f"\n  Pipeline pass rate: {signals_found} setups → {signals_qualifying} passed confidence "
-          f"({signals_qualifying/signals_found*100:.0f}%) → {total} traded")
-
-    if signals_qualifying == 0:
-        print("""
-  ❌ CRITICAL: Setups found but NONE pass confidence gate.
-     Confidence needs ≥70% (LONG) / ≥75% (SHORT) = 4-5/8 criteria.
-     Most likely failing criteria:
-     1. daily_trend (C1)   — is price consistently above/below daily EMA200?
-     2. entry_level (C2)   — tighten entry: only trade when VERY close to BB/EMA50
-     3. tp_viable (C4)     — 100pts to opposite band may be too far in ranging market
-     4. macro/4H RSI (C6)  — 4H RSI range 35-75, may still be outside in choppy market
-     Suggested: Lower confidence thresholds to 60% (LONG) / 65% (SHORT) for testing
-""")
-        return
-
-    if signals_qualifying > 0 and total == 0:
-        print("  ❌ Signals qualified but no trades simulated — check backtest logic.")
-        return
-
-    # Win rate assessment
-    breakeven_wr = 1 / (1 + TP_DISTANCE / SL_DISTANCE)  # 33.3% with 1:2 RR
-    print(f"\n  Win rate: {win_rate*100:.1f}% (breakeven = {breakeven_wr*100:.0f}% with {SL_DISTANCE}SL/{TP_DISTANCE}TP)")
-
-    if win_rate < breakeven_wr:
-        deficit = breakeven_wr - win_rate
-        print(f"  ⚠️  Strategy is BELOW breakeven by {deficit*100:.1f} percentage points.")
-        print("""
-     Suggested fixes (try one at a time, re-backtest each):
-
-     A. Tighten entry conditions — only take the HIGHEST confidence signals:
-        • Raise MIN_CONFIDENCE from 70% to 80% (will reduce trades but improve quality)
-        • Add a 4th require: only trade if BOTH BB_mid AND EMA50 are aligned
-
-     B. Adjust SL/TP ratio to be more forgiving:
-        • SL 150pts instead of 200 (smaller initial risk)
-        • TP 300pts instead of 400 (easier to hit, lower RR but higher win rate)
-        • This requires ~38% win rate to break even — still achievable
-
-     C. Add a trend strength filter:
-        • Only LONG when daily RSI is above 50 (trending up)
-        • Only SHORT when daily RSI is below 50 (trending down)
-
-     D. Remove SHORT trades if SHORT win rate is dragging overall:
-        • Run LONG-only and check — Nikkei 225 has had an upward bias historically
-""")
-    elif win_rate < 0.50:
-        print(f"  ✅ Strategy is PROFITABLE (>{breakeven_wr*100:.0f}% required), win rate {win_rate*100:.0f}%.")
-        print("""
-     Suggested optimisations to push further:
-
-     A. Raise confidence threshold to 80%+ → filters weakest setups, likely improves win rate
-     B. Consider skipping SHORT trades during strong uptrends (Daily RSI > 60)
-     C. AI filter (Sonnet → Opus) will reject additional weak signals → expect real-world results better than this simulation
-""")
-    else:
-        print(f"  🟢 Strong win rate {win_rate*100:.0f}%. Strategy is working well.")
-        print("""
-     You're already profitable. Consider:
-     A. Increasing contract size when confidence ≥90%
-     B. Adding a second entry on retests (pyramiding with half size)
-""")
-
-    # Direction-specific advice
-    for d in ["LONG", "SHORT"]:
-        dt = [t for t in trades if t.direction == d]
-        if len(dt) < 3:
-            continue
-        dw = [t for t in dt if t.pnl_usd > 0]
-        dwr = len(dw) / len(dt)
-        if dwr < breakeven_wr:
-            print(f"  ⚠️  {d} trades losing (win rate {dwr*100:.0f}%) — consider disabling {d} direction")
-
-    # Session-specific advice
-    for sess in ["Tokyo", "London", "New York"]:
-        st = [t for t in trades if t.session == sess]
-        if len(st) < 3:
-            continue
-        sw = [t for t in st if t.pnl_usd > 0]
-        swr = len(sw) / len(st)
-        spnl = sum(t.pnl_usd for t in st)
-        if spnl < 0:
-            print(f"  ⚠️  {sess} session is net NEGATIVE (${spnl:+.2f}, {swr*100:.0f}% win) — consider blacklisting this session")
-
-    # Confidence tier advice
-    best_tier = None
-    best_wr = 0
+    print(f"\n  CONFIDENCE DISTRIBUTION")
     for lo, hi in [(70, 80), (80, 90), (90, 101)]:
         ct = [t for t in trades if lo <= t.confidence_score < hi]
-        if len(ct) < 2:
-            continue
-        cwr = len([t for t in ct if t.pnl_usd > 0]) / len(ct)
-        if cwr > best_wr:
-            best_wr = cwr
-            best_tier = (lo, hi)
-    if best_tier:
-        print(f"\n  ✨ Best confidence tier: {best_tier[0]}-{best_tier[1]-1}% with {best_wr*100:.0f}% win rate")
-        if best_tier[0] > 70:
-            print(f"     → Raise MIN_CONFIDENCE to {best_tier[0]}% for better signal quality")
+        if not ct: continue
+        cw = [t for t in ct if t.pnl_usd > 0]
+        print(f"  Score {lo}-{hi-1}%: {len(ct):>3} trades | {len(cw)/len(ct)*100:.0f}% win | ${sum(t.pnl_usd for t in ct):+.2f}")
 
-    print(f"""
-  PIPELINE FUNNEL SUMMARY:
-  Every signal costs ~$0.015 AI API. At {signals_qualifying} signals/60 days ≈ {signals_qualifying*6} signals/year.
-  Annual AI cost estimate: ~${signals_qualifying*6*0.015:.2f}
+    print(f"\n  TRADE LOG (all trades)")
+    print(f"  {'Date':>10}  {'Dir':>5}  {'Entry':>7}  {'P&L':>8}  {'Conf':>5}  {'Hold':>5}  Reason")
+    print("  " + "-"*70)
+    for t in sorted(trades, key=lambda x: x.entry_time):
+        print(
+            f"  {t.entry_time.strftime('%Y-%m-%d'):>10}  {t.direction:>5}  "
+            f"{t.entry_price:>7.0f}  ${t.pnl_usd:>+7.2f}  {t.confidence_score:>4}%  "
+            f"{t.duration_candles*15/60:>4.1f}h  {t.exit_reason}"
+        )
 
-  NEXT STEPS:
-  1. If win rate < 33%: the STRATEGY LOGIC needs fixing before live trading.
-  2. If win rate 33-50%: profitable but thin — raise confidence threshold first.
-  3. If win rate > 50%: strategy is sound. Go live with small size, monitor 2 weeks.
+    # Verdict
+    print("\n" + "="*62)
+    print("  VERDICT")
+    print("="*62)
+    win_rate = len(wins) / n
+    if n < 10:
+        print(f"  ⚠  Only {n} trades — statistically thin. More data needed.")
+    if win_rate > breakeven_wr and pf > 1.0:
+        print(f"  ✅ POSITIVE EDGE: WR {win_rate*100:.0f}% > breakeven {breakeven_wr*100:.0f}%, PF={pf:.2f}")
+        if pf >= 1.5:
+            print(f"  ✅ PF={pf:.2f} >= 1.5 — strategy is viable for live capital")
+        else:
+            print(f"  ⚠  PF={pf:.2f} < 1.5 — profitable but thin margin, keep monitoring")
+    else:
+        deficit = breakeven_wr - win_rate
+        print(f"  ❌ BELOW BREAKEVEN: WR {win_rate*100:.0f}% (need {breakeven_wr*100:.0f}%), PF={pf:.2f}")
+        print(f"     Win rate deficit: {deficit*100:.1f}pp. Do NOT go live.")
+
+
+def _print_zero_trade_diagnosis(signals_raw: int, signals_qual: int):
+    if signals_raw == 0:
+        print("""
+  Possible causes:
+  1. daily_bullish gate: above_ema200_fallback may be None for all daily candles
+     (check that 250 daily candles were fetched and EMA200 computes)
+  2. bounce_starting gate: price > prev_close never triggered in dataset
+  3. RSI zone 35-48 never hit during this 60-day window
+""")
+    elif signals_qual == 0:
+        print(f"""
+  {signals_raw} raw signals found but NONE passed confidence gate (>=70% LONG / >=75% SHORT).
+  Most likely failing criteria:
+  - daily_trend (C1): above/below EMA200 daily — verify EMA200 is computed
+  - entry_level (C2): within 150pts of BB mid or EMA50
+  - tp_viable  (C4): price <= bb_mid for LONG / price >= bb_mid for SHORT
 """)
 
 
-# ── WFO Parameter Grid Search ───────────────────────────────────────────────────
+# ── WFO Parameter Grid Search (fast — no re-scanning) ──────────────────────────
 
-def run_wfo_grid(df_15m: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame):
+def run_wfo_grid(setups: list[SetupRecord], df_15m: pd.DataFrame):
     """
-    Walk-Forward Optimization: grid search over SL/TP parameters.
-    Split: IS = first 45 days, OOS = last 15 days.
-    Reports best IS parameter set and its OOS performance.
+    Walk-Forward Optimization on pre-computed setups.
+    IS = first 75% of setups, OOS = last 25%.
+    Fast because no re-scanning — just re-simulates trade exits.
     """
-    global SL_DISTANCE, TP_DISTANCE, BREAKEVEN_TRIGGER, TRAILING_DISTANCE
+    if len(setups) < 5:
+        print(f"\n  WFO skipped — only {len(setups)} setups (need >= 5)")
+        return
 
-    # IS/OOS split by candle index
-    total = len(df_15m)
-    split = int(total * 0.75)  # 75% in-sample, 25% out-of-sample
-    df_is  = df_15m.iloc[:split].copy()
-    df_oos = df_15m.iloc[split:].copy()
+    total = len(setups)
+    split = int(total * 0.75)
+    is_setups  = sorted(setups, key=lambda x: x.idx)[:split]
+    oos_setups = sorted(setups, key=lambda x: x.idx)[split:]
 
     param_grid = [
         (sl, tp) for sl in [150, 200, 250, 300]
                  for tp in [300, 400, 500, 600]
-                 if tp / sl >= 1.5  # enforce minimum 1.5 RR
+                 if tp / sl >= 1.5
     ]
 
-    print("\n" + "═"*70)
-    print("  WALK-FORWARD OPTIMIZATION")
-    print(f"  IS: {df_is.index[0].date()} → {df_is.index[-1].date()} ({split} candles)")
-    print(f"  OOS: {df_oos.index[0].date()} → {df_oos.index[-1].date()} ({total-split} candles)")
-    print("═"*70)
-
-    is_results = []
-    print(f"\n  {'SL':>4}  {'TP':>4}  {'RR':>4}  {'Trades':>6}  {'WinRate':>8}  {'PF':>5}  {'P&L':>8}")
+    print("\n" + "="*62)
+    print("  WALK-FORWARD OPTIMIZATION (fast — no re-scanning)")
+    print(f"  IS:  {len(is_setups)} setups | OOS: {len(oos_setups)} setups")
+    print("="*62)
+    print(f"\n  {'SL':>4}  {'TP':>4}  {'RR':>4}  {'Trades':>6}  {'WR':>7}  {'PF':>5}  {'P&L':>8}")
     print("  " + "-"*55)
 
+    is_results = []
     for sl, tp in param_grid:
-        SL_DISTANCE = sl
-        TP_DISTANCE = tp
-        BREAKEVEN_TRIGGER = min(sl - 50, 100)   # BE trigger at ~SL-50, min 100pts
-        TRAILING_DISTANCE = max(sl - 50, 100)   # trailing = SL-50
-
-        trades_is, _, _ = run_backtest(df_is, df_4h, df_1d)
+        be = min(sl - 50, 100)
+        trail = max(sl - 50, 100)
+        trades_is = simulate_all_trades(is_setups, sl, tp, be, trail)
         if not trades_is:
-            print(f"  {sl:>4}  {tp:>4}  {tp/sl:.1f}     0      —       —          —")
+            print(f"  {sl:>4}  {tp:>4}  {tp/sl:.1f}     0     —      —         —")
             continue
-
         wins = [t for t in trades_is if t.pnl_usd > 0]
         wr = len(wins) / len(trades_is)
         gp = sum(t.pnl_usd for t in wins) if wins else 0
         gl = abs(sum(t.pnl_usd for t in trades_is if t.pnl_usd <= 0)) or 0.01
         pf = gp / gl
         pnl = sum(t.pnl_usd for t in trades_is)
-        is_results.append((pf, wr, pnl, sl, tp, trades_is))
-        print(f"  {sl:>4}  {tp:>4}  {tp/sl:.1f}  {len(trades_is):>6}  {wr*100:>7.1f}%  {pf:>5.2f}  ${pnl:>+7.2f}")
+        is_results.append((pf, wr, pnl, sl, tp, len(trades_is)))
+        print(f"  {sl:>4}  {tp:>4}  {tp/sl:.1f}  {len(trades_is):>6}  {wr*100:>6.1f}%  {pf:>5.2f}  ${pnl:>+7.2f}")
 
     if not is_results:
-        print("  No results generated — no trades in any IS window.")
+        print("  No IS results generated.")
         return
 
-    # Best IS by profit factor (with minimum 5 trades)
-    qualified = [(pf, wr, pnl, sl, tp, ts) for pf, wr, pnl, sl, tp, ts in is_results if len(ts) >= 5]
-    if not qualified:
-        qualified = is_results
-    best_pf, best_wr, best_pnl, best_sl, best_tp, _ = max(qualified, key=lambda x: x[0])
+    # Best IS by profit factor (min 3 trades)
+    qualified = [(pf, wr, pnl, sl, tp, n) for pf, wr, pnl, sl, tp, n in is_results if n >= 3]
+    if not qualified: qualified = is_results
+    best_pf, best_wr, best_pnl, best_sl, best_tp, best_n = max(qualified, key=lambda x: x[0])
+    be_best = min(best_sl - 50, 100)
+    trail_best = max(best_sl - 50, 100)
 
-    print(f"\n  Best IS params: SL={best_sl} TP={best_tp} (RR={best_tp/best_sl:.1f})")
-    print(f"  IS performance: {best_wr*100:.1f}% win, PF={best_pf:.2f}, P&L=${best_pnl:+.2f}")
+    print(f"\n  Best IS:  SL={best_sl} TP={best_tp} (RR={best_tp/best_sl:.1f})")
+    print(f"  IS:  {best_n} trades | {best_wr*100:.1f}% win | PF={best_pf:.2f} | P&L=${best_pnl:+.2f}")
 
-    # OOS validation
-    SL_DISTANCE = best_sl
-    TP_DISTANCE = best_tp
-    BREAKEVEN_TRIGGER = min(best_sl - 50, 100)
-    TRAILING_DISTANCE = max(best_sl - 50, 100)
-
-    trades_oos, _, _ = run_backtest(df_oos, df_4h, df_1d)
+    trades_oos = simulate_all_trades(oos_setups, best_sl, best_tp, be_best, trail_best)
     if trades_oos:
         wins_oos = [t for t in trades_oos if t.pnl_usd > 0]
         wr_oos = len(wins_oos) / len(trades_oos)
@@ -682,36 +641,56 @@ def run_wfo_grid(df_15m: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame)
         gl_oos = abs(sum(t.pnl_usd for t in trades_oos if t.pnl_usd <= 0)) or 0.01
         pf_oos = gp_oos / gl_oos
         pnl_oos = sum(t.pnl_usd for t in trades_oos)
-        print(f"\n  OOS validation:  {len(trades_oos)} trades | {wr_oos*100:.1f}% win | PF={pf_oos:.2f} | P&L=${pnl_oos:+.2f}")
-
-        degrad = (best_pf - pf_oos) / best_pf * 100
-        print(f"  PF degradation IS→OOS: {degrad:+.1f}%  (< 40% degradation = acceptable)")
-        if wr_oos > (1 / (1 + best_tp / best_sl)):
-            print(f"  ✅ OOS win rate {wr_oos*100:.1f}% exceeds breakeven {100/(1+best_tp/best_sl):.1f}% — strategy generalises")
+        breakeven_wr = 1 / (1 + best_tp / best_sl)
+        print(f"  OOS: {len(trades_oos)} trades | {wr_oos*100:.1f}% win | PF={pf_oos:.2f} | P&L=${pnl_oos:+.2f}")
+        degrad = (best_pf - pf_oos) / best_pf * 100 if best_pf > 0 else 0
+        print(f"  PF degradation IS→OOS: {degrad:+.1f}% (<40% = acceptable)")
+        if wr_oos >= breakeven_wr:
+            print(f"  ✅ OOS WR {wr_oos*100:.1f}% >= breakeven {breakeven_wr*100:.0f}% — strategy generalises")
         else:
-            print(f"  ⚠️  OOS win rate {wr_oos*100:.1f}% below breakeven — overfitting risk")
+            print(f"  ❌ OOS WR {wr_oos*100:.1f}% < breakeven {breakeven_wr*100:.0f}% — overfitting risk")
     else:
-        print("  OOS: 0 trades generated.")
+        print(f"  OOS: 0 trades.")
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import time
     from core.confidence import BB_MID_THRESHOLD_PTS, EMA50_THRESHOLD_PTS
-    print("Japan 225 Bot — Backtest + WFO")
-    print(f"Live code thresholds: BB_MID={BB_MID_THRESHOLD_PTS}pts, EMA50={EMA50_THRESHOLD_PTS}pts")
-    print(f"  (calibrated 2026-02-28 from 30pts to 150pts for Nikkei ~50k-60k)\n")
 
-    # Download
-    df_15m, df_1h, df_1d = download_data()
+    print("Japan 225 Bot — Backtest")
+    print(f"Thresholds: BB_MID={BB_MID_THRESHOLD_PTS}pts  EMA50={EMA50_THRESHOLD_PTS}pts")
+    print(f"Daily candles: {MIN_CANDLES_DAILY} (EMA200 guaranteed)\n")
+
+    t_start = time.time()
+
+    # 1. Download
+    df_15m, df_1h, df_5m, df_1d = download_data()
     df_4h = resample_4h(df_1h)
-    print(f"  4H candles:    {len(df_4h)} (resampled from 1H)")
+    print(f"  4H candles: {len(df_4h)} (resampled from 1H)")
 
-    # Run baseline backtest with default params
-    print(f"\nRunning baseline backtest on {len(df_15m)} 15min candles...")
-    trades, signals_found, signals_qualifying = run_backtest(df_15m, df_4h, df_1d)
-    print_report(trades, signals_found, signals_qualifying, df_15m)
+    # 2. Pre-compute daily and 4H (done ONCE each)
+    # Note: 5M precomputed via precompute_5m() — enable when 5M added to confidence scoring
+    for df in [df_15m, df_4h, df_1d]:
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        else:
+            df.index = df.index.tz_convert("UTC")
 
-    # WFO grid search
-    if len(df_15m) >= 200:
-        run_wfo_grid(df_15m, df_4h, df_1d)
+    daily_tf = precompute_daily(df_1d)
+    h4_tf    = precompute_4h(df_4h)
+
+    print(f"\nScanning {len(df_15m)} 15M candles for setups...")
+    setups, signals_raw, signals_qual = find_setups(df_15m, df_4h, daily_tf, h4_tf)
+    t_scan = time.time() - t_start
+    print(f"Scan complete: {len(setups)} qualifying setups found in {t_scan:.1f}s\n")
+
+    # 3. Simulate baseline trades
+    trades = simulate_all_trades(setups)
+    print_report(trades, signals_raw, signals_qual, df_15m)
+
+    # 4. WFO (fast — no re-scanning)
+    run_wfo_grid(setups, df_15m)
+
+    print(f"\nTotal runtime: {time.time()-t_start:.1f}s")

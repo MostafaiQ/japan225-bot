@@ -4,6 +4,133 @@
 
 ---
 
+## [2026-02-28 23:30] — STRATEGY: Signal Frequency Expansion Verdict + Phased Implementation Plan
+
+**Severity**: CRITICAL (live deployment blocked until frequency and SL gap resolved)
+**Module(s)**: `core/indicators.py`, `core/confidence.py`, `config/settings.py`, `backtest.py`
+**Specialist Input**: 4 expert agents reviewed (TA Strategy, Parameter Optimization, 5M Integration, Session/Data). All source code read directly to verify against expert claims.
+
+### Problem / Observation
+
+Post-HC-redesign backtest (60 days): 6 setups, 60% WR, PF=1.35, +$147.23 total P&L.
+Win rate and profit factor are sound. Signal frequency (0.1/day) is not.
+User requires minimum 1-3 trades/day for capital deployment.
+
+4 expert agents proposed 20+ changes. This log entry is the HC synthesis and verdict.
+
+### Open Gap: SL Discrepancy (most urgent, fix before any backtest runs)
+
+WFO validated DEFAULT_SL_DISTANCE=150 (PF=3.67) over DEFAULT_SL_DISTANCE=200 (PF=2.56).
+Live code: `DEFAULT_SL_DISTANCE=200` (settings.py).
+detect_setup() hardcodes `entry - 200` (line 329) instead of using the constant.
+Any backtest run before fixing this is validating the wrong SL. Fix first.
+
+**Fix in config/settings.py:**
+  DEFAULT_SL_DISTANCE = 200  →  DEFAULT_SL_DISTANCE = 150
+
+**Fix in core/indicators.py, detect_setup() (all 4 SL assignments):**
+  sl = entry - 200  →  sl = entry - DEFAULT_SL_DISTANCE
+  sl = entry + 200  →  sl = entry + DEFAULT_SL_DISTANCE
+  (also: tp = entry + 400 and entry - 400 → use DEFAULT_TP_DISTANCE constant)
+  Add to imports: from config.settings import DEFAULT_SL_DISTANCE, DEFAULT_TP_DISTANCE
+
+Also fix Finding 5 from previous HC session (still unresolved):
+  In detect_setup() SHORT EMA50 rejection (line ~406):
+  at_ema50_from_below = price <= ema50_15m + 5  →  price <= ema50_15m + 2
+
+### Expert Verdicts Summary
+
+ACCEPTED changes:
+- SL=150 (Phase 0 — immediate, WFO-validated)
+- RSI_ENTRY_HIGH_BOUNCE: relax from 48 to 55 ONLY after 29-second backtest confirms PF>=1.2, WR>=40%
+- Replace bounce_starting (price > prev_close) with lower_wick >= 20pts (stronger confirmation)
+  lower_wick = min(current_open, current_close) - current_low  — uses existing tf_15m output fields
+- Add bb_lower_bounce_long setup: abs(price - bb_lower) <= 100, RSI 20-40, lower_wick >= 10
+- NKD=F as backtest data source for London/NY sessions (^N225 stays for Tokyo)
+- Session expansion sequence: London/NY Overlap first (13:30-16:00 UTC), then London, then NY
+
+REJECTED changes:
+- Remove bounce_starting gate entirely — removes only real-time reversal confirmation
+- C4 loosening to price<=bb_mid+50 — reintroduces entering-mid-fall original flaw
+- PAPER_TRADING_SESSION_GATE=False without NKD=F backtest validation per session
+- VWAP setups (vwap_reclaim_long, vwap_rejection_short) before session-reset infrastructure built
+
+DEFERRED to Phase 3:
+- 5M confirmation layer (Expert 3) — doesn't increase frequency; win rate already 60%
+- VWAP setups — needs session-reset boundary in analyze_timeframe() first
+- EMA50 bounce/rejection — not yet validated
+
+### Implementation Order
+
+**Phase 0 — Immediate (no backtest needed)**
+1. DEFAULT_SL_DISTANCE = 150 in settings.py
+2. detect_setup(): all 4 SL/TP assignments use constants, not hardcoded 200/400
+3. SHORT EMA50 tolerance: +5 → +2
+4. Run: python -m pytest tests/ — must still show 233 passing
+
+**Phase 1 — Parameter tuning + new setup (each step: run backtest, accept if PF>=1.2 and WR>=40%)**
+1a. Run backtest at RSI_ENTRY_HIGH_BOUNCE=55 (one change, isolated)
+1b. Replace bounce_starting with lower_wick >= 20pts in detect_setup() (one change, isolated)
+1c. Add bb_lower_bounce_long to detect_setup() — new setup before existing LONG setups
+    Conditions: bb_lower is not None and abs(price-bb_lower)<=100
+                RSI 20-40
+                daily_bullish=True
+                lower_wick = min(open_15m, price) - tf_15m["low"] >= 10
+                SL = entry - DEFAULT_SL_DISTANCE, TP = entry + DEFAULT_TP_DISTANCE
+Target: ~0.4-0.6 signals/day in Tokyo session after Phase 1.
+
+**Phase 2 — Session expansion (NKD=F data required)**
+2a. Add NKD=F download to backtest data loader (yfinance ticker "NKD=F")
+2b. Merge strategy: ^N225 for Tokyo (00:00-06:00 UTC), NKD=F for other hours
+2c. Run backtest on all sessions — analyze per-session PF and WR
+2d. Enable London/NY Overlap (13:30-16:00 UTC) only if per-session PF>=1.2
+2e. Paper trade 15+ trades in new session before enabling next
+2f. Set PAPER_TRADING_SESSION_GATE=False after Tokyo + at least one other session validated
+Target: 1-2 signals/day.
+
+**Phase 3 — Quality improvement (after frequency target met)**
+3a. 5M confirmation layer
+3b. VWAP setups (after session-reset boundary built)
+3c. SL tightening for 5M-confirmed entries (120pts)
+
+### Red Flags — Dangerous Combinations
+
+- Removing bounce gate AND relaxing RSI in same backtest run: confounds causality
+- C4 loosening (price <= bb_mid+50): NEVER — reintroduces original zero-edge flaw
+- Enabling multiple sessions simultaneously: one at a time
+- VWAP setups before session-reset: wrong VWAP values across session boundaries
+- Any live deployment while live SL=200 but validation was done at SL=150
+
+### Updated HC NO-GO Conditions for Live Deployment
+
+Before enabling any new session:
+  - Per-session NKD=F backtest: PF >= 1.2, WR >= 40%
+  - Minimum 15 paper trades in that session
+  - No more than 3 consecutive losses in session before review
+
+Before declaring live-ready:
+  - Total paper trades: minimum 30 across all enabled sessions
+  - Overall WR >= 40%, PF >= 1.3, avg duration >= 30 minutes
+  - DEFAULT_SL_DISTANCE=150 in live config (MEMORY.md must reflect current value)
+  - All Phase 0 fixes applied and verified
+
+Hard NO-GO:
+  - VWAP setups without session-reset infrastructure
+  - 5M integration without complete 5M pipeline
+  - C4 loosened to price <= bb_mid + 50 for any reason
+
+### Verification Steps
+After Phase 0 fixes:
+  python -m pytest tests/ → must show 233 passing
+  grep "DEFAULT_SL_DISTANCE" config/settings.py → must show 150
+  grep "entry - DEFAULT_SL_DISTANCE" core/indicators.py → must appear in detect_setup()
+
+After Phase 1 each step:
+  python backtest.py → check total setups count, WR, PF vs baseline (6 setups, 60% WR, PF=1.35)
+  Acceptable: more setups with WR >= 40% and PF >= 1.2
+
+---
+
 ## [2026-02-28 22:00] — PASSIVE AUDIT: Session end review (pre-screen fix, telegram rewrite, dashboard cost/sync)
 
 **Severity**: HIGH (one item) / MEDIUM (three items) / LOW (six items)
@@ -343,5 +470,211 @@ are documented there.
 - After securing git remote: `git remote -v` should show no credentials in the URL.
 - After implementing position guard: attempt bot restart via dashboard with a simulated open
   position in the DB; confirm the warning response fires.
+
+---
+
+## [2026-02-28] — STRATEGY: New Setup Types Assessment — Signal Frequency Expansion Phase A
+
+**Severity**: HIGH (live deployment blocked; frequency 0.33/day vs target 1-3/day)
+**Module(s)**: `core/indicators.py`, `core/confidence.py`, `config/settings.py`
+**Specialist Input**: HC direct analysis of live code + backtest results. No sub-agents needed (full context available).
+**Backtest baseline**: 14 setups / 42 days = 0.33/day. 11 trades executed (dedup). OOS PF=1.54 (strategy generalises).
+
+### Problem / Observation
+
+Post-redesign backtest shows acceptable quality (OOS PF=1.54, WR=50%) but insufficient frequency.
+The system is SEMI-AUTOMATED: detect_setup() pre-screens, Sonnet+Opus are the real quality gate,
+human presses CONFIRM/REJECT. detect_setup() must generate 1-3 candidates/day for AI review.
+
+Currently: 1 enabled LONG setup type (bollinger_mid_bounce), 2 SHORT setup types (disabled by
+daily_bullish requirement in current market — ^N225 above EMA200 = daily_bullish=True at all times).
+RSI gate (35-48) and lower_wick >= 20pts (not yet implemented — still `price > prev_close`) are
+the primary frequency constraints.
+
+London 0% WR on 7 trades: statistically thin sample. AI filtering is the correct mechanism
+to reject bad-context London entries. Do NOT exclude London by code.
+
+### Root Cause Analysis
+
+Frequency cannot reach 1-3/day from one setup type in one session (Tokyo). Two levers are needed:
+1. More setup types / relaxed parameters in detect_setup() (Phase A)
+2. Session expansion to London + NY with NKD=F data (Phase B / Phase 2)
+
+Phase A alone reaches an estimated 0.48/day (Tokyo only). Phase B is required for 1-3/day target.
+
+### Phase 0 Status (verify before any code change)
+
+As of 2026-02-28, ALL Phase 0 items are COMPLETE:
+- DEFAULT_SL_DISTANCE=150 in settings.py (WFO-validated, PF=3.67)
+- detect_setup() uses DEFAULT_SL_DISTANCE constant — confirmed in live code (line 366)
+- SHORT EMA50 tolerance: price <= ema50_15m + 2 — confirmed in live code (line 445)
+- 233 tests passing
+
+### Recommended Fix — Phase A (implement in strict sequence, one backtest per step)
+
+**STEP A1 — Lower wick gate upgrade (quality, slight frequency reduction)**
+
+Replace `price > prev_close` bounce gate with `lower_wick >= 20pts` in the bollinger_mid_bounce block.
+In `core/indicators.py`, detect_setup(), LONG Setup 1 block:
+
+```python
+# REMOVE these lines:
+prev_close = tf_15m.get("prev_close")
+bounce_starting = prev_close is not None and price > prev_close
+
+# ADD these lines:
+candle_open = tf_15m.get("open")
+candle_low  = tf_15m.get("low")
+if candle_open is not None and candle_low is not None:
+    lower_wick = min(candle_open, price) - candle_low
+    bounce_confirmed = lower_wick >= 20  # genuine rejection of lower prices (pin bar / hammer)
+else:
+    bounce_confirmed = False
+
+# CHANGE the entry condition:
+# OLD: if near_mid_pts and rsi_ok_long and above_ema50 and bounce_starting:
+# NEW:
+if near_mid_pts and rsi_ok_long and above_ema50 and bounce_confirmed:
+```
+
+Acceptance criterion: frequency must stay >= 8 setups / 42 days (0.19/day). If it drops below,
+reduce wick threshold to 15pts and re-run backtest.
+
+Note: `open` and `low` are already output by analyze_timeframe() (lines 179, 181 in indicators.py).
+No changes to analyze_timeframe() needed.
+
+---
+
+**STEP A2 — RSI gate widening 35-48 → 35-55 (frequency increase, conditional on backtest)**
+
+Run backtest at RSI_ENTRY_HIGH_BOUNCE=55. Accept ONLY if PF >= 1.2 AND WR >= 40%.
+Do NOT run simultaneously with A1 — test each change independently.
+
+In `config/settings.py`:
+```python
+RSI_ENTRY_HIGH_BOUNCE = 55   # was 48. Only after backtest validation.
+```
+
+`core/indicators.py` line 359 already uses this constant: `35 <= rsi_15m <= RSI_ENTRY_HIGH_BOUNCE`.
+No change needed in indicators.py. Verify confidence.py also reads from settings.RSI_ENTRY_HIGH_BOUNCE
+(not a hardcoded 48).
+
+---
+
+**STEP A3 — Add bollinger_lower_bounce LONG setup (new setup type, high conviction)**
+
+After A1 and A2 are settled, add this new setup. Insert in `core/indicators.py`, detect_setup(),
+LONG SETUPS block, AFTER the `return result` of bollinger_mid_bounce and BEFORE the
+`if ENABLE_EMA50_BOUNCE_SETUP` block (line 387 area):
+
+```python
+# --- LONG Setup 3: Bollinger Lower Band Bounce ---
+# Deep oversold at 2-std-dev band. Higher conviction than BB mid.
+# No above_ema50 gate — at the lower band, price may be below EMA50 (expected and acceptable).
+# The AI will evaluate EMA50 position as part of its quality assessment.
+if bb_lower and rsi_15m:
+    near_lower_pts = abs(price - bb_lower) <= 80   # must actually be at the band
+    rsi_ok_lower = 20 <= rsi_15m <= 40             # deep oversold — tighter than BB mid
+    candle_open = tf_15m.get("open")
+    candle_low  = tf_15m.get("low")
+    if candle_open is not None and candle_low is not None:
+        lower_wick_pts = min(candle_open, price) - candle_low
+        rejection_confirmed = lower_wick_pts >= 15  # looser than BB mid (15 not 20 — band is harder to reach)
+    else:
+        rejection_confirmed = False
+
+    if near_lower_pts and rsi_ok_lower and rejection_confirmed:
+        entry = price
+        sl = entry - DEFAULT_SL_DISTANCE           # 150pts
+        tp = entry + DEFAULT_TP_DISTANCE           # 400pts → R:R = 2.67:1
+        macro_note = (
+            f" 4H RSI {rsi_4h:.1f} — MACRO OVERSOLD, multi-TF confluence."
+            if rsi_4h and rsi_4h < 40 else ""
+        )
+        result.update({
+            "found": True,
+            "type": "bollinger_lower_bounce",
+            "direction": "LONG",
+            "entry": round(entry, 1),
+            "sl": round(sl, 1),
+            "tp": round(tp, 1),
+            "reasoning": (
+                f"LONG: BB lower band bounce on 15M. "
+                f"Price {abs(price - bb_lower):.0f}pts from lower band ({bb_lower:.0f}). "
+                f"RSI {rsi_15m:.1f} deeply oversold. "
+                f"Lower wick {lower_wick_pts:.0f}pts rejection confirmed. "
+                f"Daily bullish.{macro_note}"
+            ),
+        })
+        return result
+```
+
+Acceptance criterion: any new signals generated with WR >= 40% in backtest.
+
+---
+
+**STEP A4 — Update confidence.py C2 and C3 for BB lower bounce**
+
+In `core/confidence.py`, LONG branch of compute_confidence():
+
+C2 (entry_level) — add near_lower as valid entry zone:
+```python
+bb_lower_15m = tf_15m.get("bollinger_lower")
+near_lower = abs(price - bb_lower_15m) <= 80 if bb_lower_15m else False
+c2 = near_mid or near_ema50 or near_lower  # add near_lower
+```
+
+C3 (rsi_15m LONG) — setup-aware gate to handle deep-oversold lower-band RSI (20-35):
+```python
+bb_lower_15m = tf_15m.get("bollinger_lower")
+near_lower_zone = abs(price - bb_lower_15m) <= 80 if bb_lower_15m else False
+if near_lower_zone:
+    c3 = rsi_15m is not None and 20 <= rsi_15m <= 40  # deep oversold for lower band
+else:
+    c3 = rsi_15m is not None and LONG_RSI_LOW <= rsi_15m <= LONG_RSI_HIGH  # standard gate
+```
+
+Rationale: Without this change, a BB lower bounce with RSI=22 (strongest possible oversold) would
+FAIL C3 (which requires RSI >= 35), reducing confidence score below the 50% AI escalation gate
+and causing the strongest signals to be silently dropped.
+
+Run all tests after this change: `python -m pytest tests/ -q`. All 233+ must pass.
+
+---
+
+### Impact if Phase A Not Implemented
+
+Bot continues generating 0.33 signals/day in Tokyo only. At this rate:
+- Paper trading target (30 trades) takes 90+ days to reach
+- Live capital deployment remains blocked
+- Session expansion cannot be validated without paper data
+- User requirement of 1-3/day unmet, no path to live trading
+
+### Verification Steps
+
+A1: After wick gate change, run backtest. Confirm >= 8 setups in 42 days. If below, reduce to 15pts.
+A2: After RSI_ENTRY_HIGH_BOUNCE=55, run backtest. Accept only if PF >= 1.2 AND WR >= 40%.
+A3: After bollinger_lower_bounce, run backtest. Confirm new setup fires at least 2x in 42 days.
+A4: After confidence.py changes, run `python -m pytest tests/ -q`. All 233+ tests must pass.
+     Also manually check: with rsi_15m=25 and price near bb_lower, confirm C3 passes (was failing before).
+
+### Setups to NEVER Add (hard rejections)
+
+1. BB Upper Breakout (LONG momentum) — SL=150pts calibrated for pullback entries. Breakouts have
+   different trade dynamics. Would require separate exit strategy. Do not implement.
+2. VWAP setups (any) — VWAP has no session reset. Wrong values across session boundaries guaranteed.
+   Build session-reset VWAP infrastructure first. This is a Phase 3 item.
+3. Removing bounce gate entirely — confirmed as the key fix that separated 0.8% WR from 60% WR.
+4. C4 loosened to price <= bb_mid + 50 — reintroduces "entering mid-fall" structural flaw.
+5. EMA9 × EMA50 golden cross — deferred (requires prev_ema9/prev_ema50 in analyze_timeframe output).
+
+### Session Expansion Reminder (Phase B, post Phase A)
+
+Path to 1-3/day requires Phase B (London + NY). Sequence:
+1. Download NKD=F 15M (90 days via yfinance "NKD=F")
+2. Modify backtest to use ^N225 for Tokyo (00:00-06:00 UTC), NKD=F for London + NY
+3. Run per-session backtest. Enable session only if PF >= 1.2 per session.
+4. Paper trade 15+ trades per session. Overall 30 before live.
+5. With all 3 sessions: estimated 0.48/day × 3 = 1.44/day — within target.
 
 ---

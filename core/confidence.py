@@ -33,8 +33,9 @@ MAX_SCORE = 100
 MIN_CONFIDENCE_LONG = 70
 MIN_CONFIDENCE_SHORT = 75
 
-# RSI ranges
-LONG_RSI_LOW, LONG_RSI_HIGH = 35, 48  # tightened: RSI>48 at BB mid = not genuinely oversold
+# RSI ranges — LONG upper gate uses RSI_ENTRY_HIGH_BOUNCE from settings (currently 55)
+LONG_RSI_LOW = 35
+LONG_RSI_HIGH = RSI_ENTRY_HIGH_BOUNCE  # imported from settings — single source of truth
 SHORT_RSI_LOW, SHORT_RSI_HIGH = 55, 75
 
 # Bollinger nearness threshold (points from midband)
@@ -117,15 +118,20 @@ def compute_confidence(
 
     # ---- Criterion 2: Entry at Technical Level ----
     if direction == "LONG":
-        # Near Bollinger midband (within BB_MID_THRESHOLD_PTS) OR near EMA50 (within EMA50_THRESHOLD_PTS)
+        # Near BB midband OR near EMA50 OR near BB lower band (deeply oversold bounce)
         near_bb_mid = (
             bb_mid is not None and abs(price - bb_mid) <= BB_MID_THRESHOLD_PTS
         )
         near_ema50 = (
             ema50_15m is not None and abs(price - ema50_15m) <= EMA50_THRESHOLD_PTS
         )
-        c2 = near_bb_mid or near_ema50
-        if near_bb_mid:
+        near_bb_lower = (
+            bb_lower is not None and abs(price - bb_lower) <= 80
+        )
+        c2 = near_bb_mid or near_ema50 or near_bb_lower
+        if near_bb_lower:
+            reasons["entry_level"] = f"Price {abs(price - bb_lower):.0f}pts from BB lower ({bb_lower:.0f})"
+        elif near_bb_mid:
             reasons["entry_level"] = f"Price {abs(price - bb_mid):.0f}pts from BB mid ({bb_mid:.0f})"
         elif near_ema50:
             reasons["entry_level"] = f"Price {abs(price - ema50_15m):.0f}pts from EMA50 ({ema50_15m:.0f})"
@@ -161,10 +167,16 @@ def compute_confidence(
     criteria["entry_level"] = c2
 
     # ---- Criterion 3: RSI 15M in Zone ----
+    # Setup-aware: BB lower bounce uses deeply oversold zone (20-40), not the standard 35-48
     if rsi_15m is not None:
         if direction == "LONG":
-            c3 = LONG_RSI_LOW <= rsi_15m <= LONG_RSI_HIGH
-            reasons["rsi_15m"] = f"RSI 15M: {rsi_15m:.1f} (zone {LONG_RSI_LOW}-{LONG_RSI_HIGH})"
+            at_bb_lower = bb_lower is not None and abs(price - bb_lower) <= 80
+            if at_bb_lower:
+                c3 = 20 <= rsi_15m <= 40
+                reasons["rsi_15m"] = f"RSI 15M: {rsi_15m:.1f} (BB lower zone 20-40)"
+            else:
+                c3 = LONG_RSI_LOW <= rsi_15m <= LONG_RSI_HIGH
+                reasons["rsi_15m"] = f"RSI 15M: {rsi_15m:.1f} (zone {LONG_RSI_LOW}-{LONG_RSI_HIGH})"
         else:
             c3 = SHORT_RSI_LOW <= rsi_15m <= SHORT_RSI_HIGH
             reasons["rsi_15m"] = f"RSI 15M: {rsi_15m:.1f} (zone {SHORT_RSI_LOW}-{SHORT_RSI_HIGH})"

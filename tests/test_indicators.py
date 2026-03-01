@@ -144,7 +144,9 @@ class TestDetectSetup:
         }
         tf_15m = {
             "price": 38500,
-            "prev_close": 38450,      # Previous candle lower → bounce_starting=True
+            "open": 38480,            # Opened below close → green candle
+            "low": 38455,             # lower_wick = min(38480,38500) - 38455 = 25pts >= 20 ✓
+            "prev_close": 38450,      # Previous candle lower → bounce confirmation
             "bollinger_mid": 38490,   # Price 10 pts from mid (within 150-pt threshold)
             "bollinger_upper": 38700,
             "bollinger_lower": 38300,
