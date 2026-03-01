@@ -229,11 +229,7 @@ else:
 
 # COSTS
 h("CHAT / AI COSTS")
-costs = chat_costs()
-if costs:
-    ok(f"Dashboard chat: ${costs['total']:.4f} over {costs['calls']} call(s)")
-else:
-    print("  No cost data yet")
+print("  Dashboard chat: Claude Code CLI (costs in Anthropic console, not tracked here)")
 
 # ERRORS
 h("RECENT ERRORS (last hour)")

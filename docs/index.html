@@ -996,9 +996,9 @@ async function _refreshChatCost() {
     const d = await req('GET', '/api/chat/costs');
     const badge = document.getElementById('chatCostBadge');
     if (!badge) return;
-    const today = d.today_usd != null ? '$' + d.today_usd.toFixed(4) : '—';
-    const total = d.total_usd != null ? '$' + d.total_usd.toFixed(4) : '—';
-    badge.textContent = `chat today: ${today} · total: ${total}`;
+    // Claude Code CLI — costs tracked in Anthropic console, not here
+    const note = d.note || 'Claude Code CLI';
+    badge.textContent = note;
   } catch(_) {}
 }
 

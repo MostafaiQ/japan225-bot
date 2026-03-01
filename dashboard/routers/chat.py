@@ -4,7 +4,6 @@ GET  /api/chat/history     — load shared chat history (cross-device sync)
 POST /api/chat/history     — save shared chat history
 """
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -52,19 +51,13 @@ async def save_chat_history(body: HistorySaveRequest):
 
 @router.get("/api/chat/costs")
 async def get_chat_costs():
-    """Returns dashboard chat API costs (today + all-time total)."""
-    costs_path = Path(__file__).parent.parent.parent / "storage" / "data" / "chat_costs.json"
-    try:
-        entries = json.loads(costs_path.read_text()) if costs_path.exists() else []
-        today   = datetime.now(timezone.utc).date().isoformat()
-        today_e = [e for e in entries if e.get("ts", "").startswith(today)]
-        return {
-            "today_usd": round(sum(e.get("cost_usd", 0) for e in today_e), 4),
-            "total_usd": round(sum(e.get("cost_usd", 0) for e in entries), 4),
-            "entries":   today_e[-20:],
-        }
-    except Exception as e:
-        return {"today_usd": 0.0, "total_usd": 0.0, "entries": [], "error": str(e)}
+    """Chat now uses Claude Code CLI — token costs are billed to the API key but not individually tracked."""
+    return {
+        "today_usd": None,
+        "total_usd": None,
+        "note": "Dashboard chat uses Claude Code CLI. Costs visible in Anthropic console.",
+        "entries": [],
+    }
 
 
 # ── Claude chat ───────────────────────────────────────────────────────────────
