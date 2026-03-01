@@ -262,7 +262,7 @@ Base confidence starts at 30%. Each criterion adds 10 points. Capped at 100%.
 |-------|---------|--------|
 | **1. Initial** | Trade opened | SL at 150pts, TP at 400pts. |
 | **2. Breakeven** | +150pts reached | Move SL to entry + 10pt buffer. TP unchanged. |
-| **3. Runner** | 75% of TP within 2 hours | Remove TP. Trailing stop at 150pts. Let it run. |
+| **3. Runner** | 75% of TP reached | Remove TP. Trailing stop at 150pts. Let it run. |
 
 The monitor checks every 2 seconds and auto-executes phase transitions.
 
