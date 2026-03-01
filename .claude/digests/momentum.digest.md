@@ -9,14 +9,14 @@ __init__(direction: str, entry_price: float)
   # direction = "LONG" or "SHORT". Keeps last 60 price readings.
 
 add_price(price: float)
-  # Call every monitoring cycle (30s). Keeps rolling window of 120 readings (1hr).
+  # Call every monitoring cycle (2s). Keeps rolling window of 300 readings (10 min).
 
 current_pnl_points() -> float
   # LONG: current - entry. SHORT: entry - current
 
 adverse_move_5min() -> float
   # How far price moved AGAINST position in last ADVERSE_LOOKBACK_READINGS readings
-  # = last 10 readings × 30s = 5-minute window. Positive = bad, negative = good.
+  # = last 150 readings × 2s = 5-minute window. Positive = bad, negative = good.
 
 get_adverse_tier() -> str
   # Based on adverse_move_5min(): NONE <60, MILD 60-120, MODERATE 120-175, SEVERE 175+

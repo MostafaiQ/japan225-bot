@@ -31,7 +31,8 @@ from pathlib import Path
 
 from config.settings import (
     LOG_FORMAT, LOG_LEVEL, TRADING_MODE, CONTRACT_SIZE,
-    MONITOR_INTERVAL_SECONDS, SCAN_INTERVAL_SECONDS, OFFHOURS_INTERVAL_SECONDS,
+    MONITOR_INTERVAL_SECONDS, POSITION_CHECK_EVERY_N_CYCLES,
+    SCAN_INTERVAL_SECONDS, OFFHOURS_INTERVAL_SECONDS,
     AI_COOLDOWN_MINUTES, PRICE_DRIFT_ABORT_PTS, SAFETY_CONSECUTIVE_EMPTY,
     calculate_margin, calculate_profit, SPREAD_ESTIMATE,
     MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, BREAKEVEN_BUFFER,
@@ -68,7 +69,8 @@ class TradingMonitor:
         self.running = False
         self.scanning_paused = False  # /pause command toggles this
         self.momentum_tracker: MomentumTracker = None
-        self._position_empty_count = 0  # Consecutive empty responses from IG
+        self._position_empty_count = 0   # Consecutive empty responses from IG
+        self._position_check_counter = 0  # Increments every 2s cycle; position existence checked every N cycles
         self._force_scan_event = asyncio.Event()
         self._started_at = datetime.now(timezone.utc)
         self._last_scan_time: datetime | None = None
@@ -596,48 +598,54 @@ class TradingMonitor:
     # ============================================================
 
     async def _monitoring_cycle(self, pos_state: dict):
-        """Position monitoring — runs every 60 seconds when a trade is open."""
+        """Position monitoring — runs every 2s when a trade is open.
+        Price check: every 2s (get_market_info only — 30 calls/min to market endpoint).
+        Position existence check: every 15 cycles = 30s (get_open_positions — 2 calls/min).
+        Total: 32 calls/min across 2 separate IG endpoints — within rate limits.
+        """
         deal_id = pos_state.get("deal_id")
         direction = (pos_state.get("direction") or "BUY").upper()
         logical_direction = "LONG" if direction in ("BUY", "LONG") else "SHORT"
         entry = float(pos_state.get("entry_price") or 0)
         phase = pos_state.get("phase", ExitPhase.INITIAL)
 
-        # --- Check if position still exists on IG ---
-        live_positions = await asyncio.get_event_loop().run_in_executor(
-            None, self.ig.get_open_positions
-        )
-
-        if live_positions is POSITIONS_API_ERROR:
-            # API failed — do NOT treat as position closed
-            logger.warning("IG API error checking positions. Skipping cycle.")
-            await self.telegram.send_alert(
-                "WARNING: IG API error while checking position. Will retry."
+        # --- Check if position still exists on IG (every N cycles = every 30s) ---
+        self._position_check_counter += 1
+        if self._position_check_counter >= POSITION_CHECK_EVERY_N_CYCLES:
+            self._position_check_counter = 0
+            live_positions = await asyncio.get_event_loop().run_in_executor(
+                None, self.ig.get_open_positions
             )
-            self._position_empty_count = 0  # Reset — this wasn't an empty response
-            return
 
-        position_exists = any(
-            p.get("deal_id") == deal_id for p in live_positions
-        )
-
-        if not position_exists:
-            self._position_empty_count += 1
-            if self._position_empty_count < SAFETY_CONSECUTIVE_EMPTY:
-                logger.warning(
-                    f"Position not found on IG ({self._position_empty_count}/{SAFETY_CONSECUTIVE_EMPTY}). "
-                    f"Waiting for {SAFETY_CONSECUTIVE_EMPTY - self._position_empty_count} more confirmation(s)."
+            if live_positions is POSITIONS_API_ERROR:
+                logger.warning("IG API error checking positions. Skipping cycle.")
+                await self.telegram.send_alert(
+                    "WARNING: IG API error while checking position. Will retry."
                 )
+                self._position_empty_count = 0
                 return
-            # Confirmed closed after N consecutive empties
+
+            position_exists = any(
+                p.get("deal_id") == deal_id for p in live_positions
+            )
+
+            if not position_exists:
+                self._position_empty_count += 1
+                if self._position_empty_count < SAFETY_CONSECUTIVE_EMPTY:
+                    logger.warning(
+                        f"Position not found on IG ({self._position_empty_count}/{SAFETY_CONSECUTIVE_EMPTY}). "
+                        f"Waiting for {SAFETY_CONSECUTIVE_EMPTY - self._position_empty_count} more confirmation(s)."
+                    )
+                    return
+                # Confirmed closed after N consecutive empties
+                self._position_empty_count = 0
+                await self._handle_position_closed(pos_state)
+                return
+
+            # Position confirmed open — reset counter
             self._position_empty_count = 0
-            await self._handle_position_closed(pos_state)
-            return
 
-        # Position confirmed open — reset counter
-        self._position_empty_count = 0
-
-        # --- Get current price ---
+        # --- Get current price (every 2s) ---
         market = await asyncio.get_event_loop().run_in_executor(
             None, self.ig.get_market_info
         )

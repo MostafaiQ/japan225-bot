@@ -178,7 +178,8 @@ AI_TEMPERATURE = 0.1  # Low temp for consistent analysis
 # ============================================
 # POSITION MONITOR
 # ============================================
-MONITOR_INTERVAL_SECONDS = 30       # Position check interval (seconds) — 2 API calls/cycle = 4/min, IG limit ~30/min
+MONITOR_INTERVAL_SECONDS = 2        # Price check interval (seconds) — get_market_info only, 30 calls/min
+POSITION_CHECK_EVERY_N_CYCLES = 15  # Check position existence every N cycles: 15 × 2s = 30s, 2 calls/min
 SCAN_INTERVAL_SECONDS = 300         # Entry scan interval when flat (5 min)
 OFFHOURS_INTERVAL_SECONDS = 1800    # Off-hours heartbeat (30 min)
 MONITOR_USE_STREAMING = False       # Start with REST polling, upgrade later
@@ -189,7 +190,7 @@ MONITOR_USE_STREAMING = False       # Start with REST polling, upgrade later
 AI_COOLDOWN_MINUTES = 30            # Suppress duplicate AI escalations
 PRICE_DRIFT_ABORT_PTS = 20          # Abort trade if price moved this far during analysis
 STALE_DATA_THRESHOLD = 10           # Identical price readings = stale data alert
-ADVERSE_LOOKBACK_READINGS = 10      # Readings to look back for adverse_move (5min window at 30s intervals)
+ADVERSE_LOOKBACK_READINGS = 150     # Readings to look back for adverse_move (150 × 2s = 5min window)
 PRE_SCREEN_CANDLES = 50             # Candles for 15M pre-screen (enough for BB20 + EMA50)
 AI_ESCALATION_CANDLES = 100         # Candles for 4H when escalating to AI (RSI only, EMA50 ok)
 DAILY_EMA200_CANDLES = 250          # Candles for Daily — MUST be >200 to compute EMA200

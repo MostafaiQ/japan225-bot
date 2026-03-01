@@ -53,8 +53,8 @@ class MomentumTracker:
             "price": price,
             "timestamp": datetime.now().isoformat(),
         })
-        # Keep last 120 readings (1 hour at 30s intervals)
-        if len(self._prices) > 120:
+        # Keep last 300 readings (10 min at 2s intervals)
+        if len(self._prices) > 300:
             self._prices.pop(0)
 
     def current_pnl_points(self) -> float:

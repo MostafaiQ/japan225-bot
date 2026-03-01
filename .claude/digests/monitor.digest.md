@@ -38,7 +38,7 @@ _scanning_cycle() -> int (sleep seconds):
   13. save_scan(), risk.validate_trade()
   14. set_pending_alert(), telegram.send_trade_alert()
 
-_monitoring_cycle(pos_state):
+_monitoring_cycle(pos_state):  # every 2s price check; position existence check every 15 cycles (30s)
   1. ig.get_open_positions() → check POSITIONS_API_ERROR sentinel
   2. consecutive empty check (SAFETY_CONSECUTIVE_EMPTY=2)
   3. ig.get_market_info() → current price
