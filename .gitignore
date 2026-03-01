@@ -25,3 +25,4 @@ logs/*.log
 storage/data/trading.db
 storage/data/*.db
 .env*
+storage/data/
