@@ -217,7 +217,8 @@ class TestExitManager:
         assert action["action"] == "activate_runner"
         assert action["trailing"] is True
 
-    def test_runner_not_triggered_if_slow(self):
+    def test_runner_triggered_regardless_of_time(self):
+        """Slow grind to 75% TP also earns runner — no time restriction."""
         em = ExitManager(ig_client=None, storage=MockStorage())
         position = {
             "deal_id": "TEST4",
@@ -231,7 +232,7 @@ class TestExitManager:
             "phase": ExitPhase.BREAKEVEN,
         }
         action = em.evaluate_position(position)
-        assert action["action"] == "none"
+        assert action["action"] == "activate_runner"
 
     def test_manual_trail_ratchets_up(self):
         em = ExitManager(ig_client=None, storage=MockStorage())

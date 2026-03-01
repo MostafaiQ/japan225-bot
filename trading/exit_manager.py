@@ -111,11 +111,10 @@ class ExitManager:
             tp_distance = abs(limit_level - entry)
             progress = pnl_points / tp_distance if tp_distance > 0 else 0
             
-            # Runner condition: reached 75% of TP within 2 hours (slow trades don't get runner)
+            # Runner condition: reached 75% of TP (no time restriction — slow grind earns runner too)
             is_near_tp = progress >= RUNNER_VELOCITY_THRESHOLD
-            is_fast_trade = time_open is None or time_open.total_seconds() < 7200
 
-            if is_near_tp and is_fast_trade:
+            if is_near_tp:
                 if direction == "BUY":
                     trail_stop = current - TRAILING_STOP_DISTANCE
                 else:
