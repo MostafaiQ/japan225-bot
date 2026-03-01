@@ -69,11 +69,12 @@ IG_API_KEY=your_key
 IG_USERNAME=your_username
 IG_PASSWORD=your_password
 IG_ACC_NUMBER=your_account
-IG_ENV=demo                    # Start with demo!
+IG_ENV=live
 ANTHROPIC_API_KEY=sk-ant-...
 TELEGRAM_BOT_TOKEN=your_token
 TELEGRAM_CHAT_ID=your_chat_id
-TRADING_MODE=paper             # Start with paper!
+TRADING_MODE=live
+DASHBOARD_TOKEN=choose_a_long_random_secret
 DEBUG=false
 ```
 
@@ -149,16 +150,13 @@ sudo journalctl -u japan225-bot -f
 
 The dashboard is a FastAPI app served via an ngrok tunnel, with a static frontend on GitHub Pages.
 
-### 7a — Add dashboard credentials to `.env`
+### 7a — Install Claude Code CLI (required for dashboard chat)
 
 ```bash
-nano .env
+npm install -g @anthropic-ai/claude-code
 ```
 
-Add:
-```
-DASHBOARD_TOKEN=choose_a_long_random_secret
-```
+Verify: `claude --version`
 
 ### 7b — Install ngrok
 
@@ -300,21 +298,15 @@ If Oracle Cloud's default security list blocks outbound traffic:
 
 ## Going Live Checklist
 
-Before switching from paper to live:
-
-- [ ] Ran successfully in paper mode for at least 1 week
 - [ ] All Telegram commands respond correctly (`/status`, `/balance`, `/close`, `/kill`)
 - [ ] Scanning runs on schedule (check logs — should see 5-min scan attempts during sessions)
-- [ ] Position monitoring works (tested with paper trades)
-- [ ] Exit strategy phases trigger correctly (breakeven at +150pts, runner at 75% TP)
+- [ ] Exit strategy phases trigger correctly (breakeven at +150pts, runner at 75% TP in <2hrs)
 - [ ] Alert expiry works (unconfirmed alerts auto-expire after 15 min)
 - [ ] System pause/resume works via `/stop` and `/resume`
 - [ ] Inline Close/Hold buttons work on position alerts
-
-When ready:
-1. Edit `.env` on the Oracle VM: change `TRADING_MODE=live` and `IG_ENV=live`
-2. Restart: `sudo systemctl restart japan225-bot`
-3. Start with minimum lot sizes (0.01–0.02)
+- [ ] `python3 healthcheck.py` shows all green (234 tests passing, all services active)
+- [ ] `IG_ENV=live` set in `.env`
+- [ ] Start with minimum lot sizes (0.01–0.02)
 
 ---
 
