@@ -599,9 +599,10 @@ class TradingMonitor:
 
     async def _monitoring_cycle(self, pos_state: dict):
         """Position monitoring — runs every 2s when a trade is open.
-        Price check: every 2s (get_market_info only — 30 calls/min to market endpoint).
-        Position existence check: every 15 cycles = 30s (get_open_positions — 2 calls/min).
-        Total: 32 calls/min across 2 separate IG endpoints — within rate limits.
+        15 cycles × 2s = 30s window:
+          - 14 cycles: get_market_info only (price check)
+          -  1 cycle : get_open_positions only (existence check, replaces price call)
+        Total: exactly 15 calls per 30s = 30 calls/min — within IG non-trading limit.
         """
         deal_id = pos_state.get("deal_id")
         direction = (pos_state.get("direction") or "BUY").upper()
@@ -642,10 +643,13 @@ class TradingMonitor:
                 await self._handle_position_closed(pos_state)
                 return
 
-            # Position confirmed open — reset counter
+            # Position confirmed open — reset counter.
+            # Return here: this cycle's 1 API call (get_open_positions) replaces
+            # the price call, keeping total at exactly 30 calls/min.
             self._position_empty_count = 0
+            return
 
-        # --- Get current price (every 2s) ---
+        # --- Get current price (every 2s, all non-position-check cycles) ---
         market = await asyncio.get_event_loop().run_in_executor(
             None, self.ig.get_market_info
         )
