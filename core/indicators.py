@@ -392,13 +392,14 @@ def detect_setup(
             prev_close = tf_15m.get("prev_close")
             bounce_starting = prev_close is not None and price > prev_close  # candle turning up
 
-            if near_mid_pts and rsi_ok_long and above_ema50 and bounce_starting:
+            if near_mid_pts and rsi_ok_long and bounce_starting:
                 entry = price
                 sl = entry - DEFAULT_SL_DISTANCE
                 if ema50_15m:
                     sl = max(sl, ema50_15m - 20)
                 tp = entry + DEFAULT_TP_DISTANCE
 
+                ema50_note = "above EMA50" if above_ema50 else "below EMA50 (AI to evaluate)"
                 result.update({
                     "found": True,
                     "type": "bollinger_mid_bounce",
@@ -409,7 +410,7 @@ def detect_setup(
                     "reasoning": (
                         f"LONG: BB mid bounce on 15M. "
                         f"Price {abs(price - bb_mid):.0f}pts from mid ({bb_mid:.0f}). "
-                        f"RSI {rsi_15m:.1f} in zone. Above EMA50. Daily bullish."
+                        f"RSI {rsi_15m:.1f} in zone. {ema50_note}. Daily bullish."
                     ),
                 })
                 return result

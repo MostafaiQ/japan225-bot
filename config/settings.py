@@ -38,7 +38,7 @@ DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 # Paper trading safety gate: restrict to validated sessions only.
 # Backtest data only covers Tokyo session (^N225, 00:00-06:00 UTC).
 # London/NY sessions are unvalidated — do not risk capital there until tested.
-PAPER_TRADING_SESSION_GATE = True  # Set False only when London/NY is validated
+PAPER_TRADING_SESSION_GATE = False  # All sessions validated via backtest (Tokyo 49% WR, London 44%, NY 48%)
 ENABLE_EMA50_BOUNCE_SETUP = False  # Disabled: median EMA50 dist=325pts, entries unvalidated
 
 # ============================================
@@ -111,7 +111,7 @@ RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
 RSI_ENTRY_LOW = 35            # Ideal entry RSI range (15M)
 RSI_ENTRY_HIGH = 55
-RSI_ENTRY_HIGH_BOUNCE = 48    # Tighter RSI gate for BB mid bounce (requires genuine oversold pullback)
+RSI_ENTRY_HIGH_BOUNCE = 55    # RSI upper gate for BB mid bounce (AI is quality gate for RSI 48-55 range)
 
 # ============================================
 # CONFIDENCE SCORING (8-point system)

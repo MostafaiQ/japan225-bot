@@ -31,7 +31,7 @@ _analyze(model, indicators, recent_scans, market_context, web_research,
   # Key levels: dist_to_swing_high < 200pts = TP obstacle; swing_low < 100pts below = good SL anchor
 
 ## build_scan_prompt(...) -> str
-  # Includes MARKET STRUCTURE section (extracted from indicators["15m"]):
+  # Includes MARKET STRUCTURE section (extracted from indicators["15m"/"tf_15m"/"15min"/"m15"]):
   #   - Volume signal + ratio
   #   - 20-bar swing high/low and distance from current price
   # Includes PRE-SCREEN DETECTED block if prescreen_direction given

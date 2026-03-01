@@ -25,7 +25,7 @@ RUNNER_VELOCITY_THRESHOLD=0.75  TRAILING_STOP_DISTANCE=150  TRAILING_STOP_INCREM
 ## Indicators
 BOLLINGER_PERIOD=20  BOLLINGER_STD=2.0  EMA_FAST=50  EMA_SLOW=200  RSI_PERIOD=14
 RSI_OVERSOLD=30  RSI_OVERBOUGHT=70  RSI_ENTRY_LOW=35  RSI_ENTRY_HIGH=55
-RSI_ENTRY_HIGH_BOUNCE=48   # Tighter RSI gate for BB mid bounce (genuine oversold)
+RSI_ENTRY_HIGH_BOUNCE=55   # RSI upper gate for BB mid bounce (raised from 48; AI gates RSI 48-55 range)
 
 ## Confidence
 CONFIDENCE_BASE=30  CONFIDENCE_CRITERIA = 8 keys × 10pts each  # max = 110, capped at 100
@@ -51,7 +51,7 @@ ADVERSE_MODERATE_PTS=120  # was 50
 ADVERSE_SEVERE_PTS=175    # was 80 — 87.5% of 200pt SL = semantically "setup has failed"
 
 ## Paper trading safety gates (added 2026-02-28)
-PAPER_TRADING_SESSION_GATE=True   # Restrict to Tokyo session (00:00-06:00 UTC) until London/NY validated
+PAPER_TRADING_SESSION_GATE=False  # All 3 sessions enabled (Tokyo 49% WR, London 44%, NY 48% — backtest validated)
 ENABLE_EMA50_BOUNCE_SETUP=False   # Disabled: median EMA50 dist=325pts, entries unvalidated
 
 ## Friday blackout

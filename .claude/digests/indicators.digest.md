@@ -41,7 +41,8 @@ detect_setup(tf_daily, tf_4h, tf_15m, tf_5m=None) -> dict
   #   daily_bullish, rsi_4h, volume_signal, volume_ratio, swing_high/low_20, dist_to_swing_*
   #
   # LONG paths (if daily_bullish=True):
-  #   bollinger_mid_bounce:   near_mid ±150pts, RSI 35-48, above_ema50, bounce_starting (price>prev_close)
+  #   bollinger_mid_bounce:   near_mid ±150pts, RSI 35-55 (RSI_ENTRY_HIGH_BOUNCE), bounce_starting (price>prev_close)
+  #                           above_ema50 gate REMOVED (2026-03-01). EMA50 status in reasoning string for AI.
   #   bollinger_lower_bounce: near_lower ±80pts, RSI 20-40, lower_wick >=15pts
   #                           (NO above_ema50 gate — price expected below EMA50 at lower band)
   #   ema50_bounce:           DISABLED (ENABLE_EMA50_BOUNCE_SETUP=False)
@@ -53,6 +54,7 @@ detect_setup(tf_daily, tf_4h, tf_15m, tf_5m=None) -> dict
   # SL/TP: DEFAULT_SL_DISTANCE=150, DEFAULT_TP_DISTANCE=400 (from settings.py)
   # CRITICAL: daily_bullish=None → both branches skip → found=False always
   # Updated 2026-02-28: all thresholds recalibrated for Nikkei ~55k level
+  # Updated 2026-03-01: above_ema50 gate removed from BB mid bounce; RSI upper limit 48→55
 
 detect_higher_lows(prices, lookback=5) -> bool
   # Returns True if last 2-3 swing lows are ascending

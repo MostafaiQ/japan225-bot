@@ -32,6 +32,7 @@ _scanning_cycle() -> int (sleep seconds):
   8. fetch 4H candles → 1 API call (daily already fetched in step 5, reused here)
   9. researcher.research() → web data
   10. compute_confidence() → if score < 50: skip
+  10b. market_context["prescreen_setup"] = {type, reasoning, session} — injected before Sonnet call
   11. set_ai_cooldown(), scan_with_sonnet()
   12. if Sonnet >=70%: confirm_with_opus()
   13. save_scan(), risk.validate_trade()

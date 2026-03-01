@@ -113,7 +113,7 @@ Local breakdown: {json.dumps(local_confidence.get('criteria', {}), default=str)}
 
     # Build human-readable market structure summary from 15M indicators
     tf15m = {}
-    for k in ("15m", "tf_15m", "15min"):
+    for k in ("15m", "tf_15m", "15min", "m15"):
         if k in indicators and isinstance(indicators[k], dict):
             tf15m = indicators[k]
             break

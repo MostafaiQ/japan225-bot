@@ -452,6 +452,12 @@ class TradingMonitor:
         indicators = {"m15": tf_15m, "h4": tf_4h, "daily": tf_daily}
         recent_scans = self.storage.get_recent_scans(5)
         market_context = self.storage.get_market_context()
+        # Add pre-screen setup details so Sonnet/Opus see the specific setup type and reasoning
+        market_context["prescreen_setup"] = {
+            "type": setup.get("type"),
+            "reasoning": setup.get("reasoning"),
+            "session": session.get("name"),
+        }
 
         sonnet_result = self.analyzer.scan_with_sonnet(
             indicators=indicators,

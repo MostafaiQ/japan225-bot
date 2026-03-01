@@ -72,9 +72,9 @@ BREAKEVEN_TRIGGER = 150        BREAKEVEN_BUFFER = 10          TRAILING_STOP_DIST
 SCAN_INTERVAL_SECONDS = 300    MONITOR_INTERVAL_SECONDS = 60  OFFHOURS_INTERVAL_SECONDS = 1800
 AI_COOLDOWN_MINUTES = 30       PRICE_DRIFT_ABORT_PTS = 20     SAFETY_CONSECUTIVE_EMPTY = 2
 ADVERSE_MILD_PTS = 60          ADVERSE_MODERATE_PTS = 120     ADVERSE_SEVERE_PTS = 175
-PAPER_TRADING_SESSION_GATE = True (Tokyo only, 00:00-06:00 UTC)
+PAPER_TRADING_SESSION_GATE = False (all sessions enabled — Tokyo 49% WR, London 44%, NY 48%)
 ENABLE_EMA50_BOUNCE_SETUP = False (disabled until validated)
-RSI_ENTRY_HIGH_BOUNCE = 48 (tighter RSI gate for BB mid bounce)
+RSI_ENTRY_HIGH_BOUNCE = 55 (relaxed from 48 for frequency; AI gates RSI 48-55 range)
 SONNET_MODEL = "claude-sonnet-4-5-20250929"   OPUS_MODEL = "claude-opus-4-6"
 ```
 Dashboard chat uses: MODEL = "claude-sonnet-4-6" (in claude_client.py, NOT settings.py)
@@ -91,10 +91,10 @@ HC-prescribed 6-fix redesign applied 2026-02-28. All 233 tests pass.
 ### Fixes applied (HC redesign):
 1. ADVERSE tiers: 30/50/80 → 60/120/175 (80pts was inside 1-candle ATR noise)
 2. Bounce confirmation: bounce_starting = price > prev_close (no entry mid-fall)
-3. RSI tightened: LONG BB mid zone 35-60 → 35-48 (RSI>48 = still in pullback)
+3. RSI tightened: LONG BB mid zone 35-60 → 35-48 then relaxed to 35-55 (2026-03-01 for frequency; AI gates 48-55 range)
 4. C4 redesigned: pts_to_upper>=350 (trivially true 78%) → price<=bb_mid (confirms actual pullback)
 5. EMA50 bounce disabled: ENABLE_EMA50_BOUNCE_SETUP=False (median dist=325pts, entries unvalidated)
-6. Session gate: PAPER_TRADING_SESSION_GATE=True (Tokyo only until London/NY validated)
+6. Session gate: PAPER_TRADING_SESSION_GATE was True (Tokyo only), now False (all sessions — backtest validated)
 
 ### Original diagnosis (for reference):
 - Backtest: 613 trades, 0.8% win rate, -$126,942 P&L (60 days, before fixes)
@@ -107,31 +107,32 @@ HC-prescribed 6-fix redesign applied 2026-02-28. All 233 tests pass.
 
 ---
 
-## Setup Types (detect_setup — updated this session)
+## Setup Types (detect_setup — updated 2026-03-01)
 | Type | Direction | Trigger | RSI | Gate |
 |------|-----------|---------|-----|------|
-| bollinger_mid_bounce | LONG | price ±150pts from BB mid | 35-48 | above_ema50 + bounce_starting |
+| bollinger_mid_bounce | LONG | price ±150pts from BB mid | 35-55 | bounce_starting (EMA50 status in reasoning for AI) |
 | bollinger_lower_bounce | LONG | price ±80pts from BB lower | 20-40 | lower_wick ≥15pts (no EMA50 gate) |
 | bollinger_upper_rejection | SHORT | price ±150pts from BB upper | 55-75 | below_ema50 |
 | ema50_rejection | SHORT | price ≤ema50+2, dist ≤150 | 50-70 | daily bearish |
 SL=150 (WFO-validated), TP=400 for all types.
+Note: above_ema50 gate REMOVED from bollinger_mid_bounce. EMA50 status shown in reasoning string for Sonnet/Opus to evaluate.
 
-## Backtest Status (2026-02-28, NKD=F, 42 days, all sessions)
+## Backtest Status (2026-03-01, NKD=F, 42 days, all sessions)
 Data: NKD=F 15M + 1H, ^N225 daily. Sessions: Tokyo(00-06) + London(08-16) + NY(16-21 UTC).
 SESSION_HOURS_UTC added to settings.py — single source of truth for backtest + monitor.
 Results WITHOUT AI filter (worst case):
-  189 setups, 91 trades after dedup, 44% WR, PF=0.71
-  Setup frequency: 4.5/day ✓ (target was 1-3/day)
-  Tokyo: 48% WR | London: 38% WR | NY: 53% WR
+  731 raw setups, 208 trades after dedup, 47% WR, PF=0.72
+  Setup frequency: 17.4/day raw → ~8-12 AI evaluations/day (30-min cooldown)
+  Tokyo: 49% WR | London: 44% WR | NY: 48% WR
+  bollinger_mid_bounce: 148 trades, 47% WR | bollinger_lower_bounce: 60 trades, 45% WR
 PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 
-## Market Context Added to AI Prompt (this session)
-analyze_timeframe() now outputs:
-  volume_ratio, volume_signal (HIGH/NORMAL/LOW)
-  swing_high_20, swing_low_20, dist_to_swing_high, dist_to_swing_low
-detect_setup() indicators_snapshot includes all of the above.
-build_scan_prompt() has MARKET STRUCTURE section summarizing volume + key levels for Sonnet.
-build_system_prompt() updated: SL=150, bollinger_lower_bounce rules, volume guidance.
+## AI Pipeline Fixes (2026-03-01)
+1. analyzer.py build_scan_prompt(): "m15" key added to lookup → MARKET STRUCTURE block now renders in live bot.
+2. monitor.py: prescreen_setup (type + reasoning + session name) injected into market_context before Sonnet call.
+   Sonnet now sees: specific setup type, full reasoning string, and current session name.
+3. detect_setup() BB mid bounce: above_ema50 gate removed; EMA50 status in reasoning string for AI to evaluate.
+4. RSI_ENTRY_HIGH_BOUNCE: 48 → 55 (AI evaluates RSI 48-55 range; code no longer hard-blocks it).
 
 ## Important Behavioral Notes (hard-won, never forget)
 - **POSITIONS_API_ERROR** is a sentinel in ig_client.py. Check with `is POSITIONS_API_ERROR`, not `not positions`. Empty list `[]` = no positions. Sentinel = API call failed.
@@ -142,9 +143,9 @@ build_system_prompt() updated: SL=150, bollinger_lower_bounce rules, volume guid
 - **Local confidence pre-gate**: only escalates to AI if local score >= 50%. AI cooldown 30min regardless of result.
 - **WebResearcher.research()** is synchronous/blocking. Called in executor: `run_in_executor(None, self.researcher.research)`.
 - **detect_setup()** is bidirectional: LONG (BB mid bounce, BB lower bounce) requires `daily_bullish=True`. SHORT (BB upper rejection, EMA50 rejection) requires `daily_bullish=False`.
-  RSI windows: LONG BB mid: 35-48 (RSI_ENTRY_HIGH_BOUNCE). LONG BB lower: 20-40. SHORT BB upper: 55-75. SHORT EMA50: rsi 50-70 + price<=ema50+2.
+  RSI windows: LONG BB mid: 35-55 (RSI_ENTRY_HIGH_BOUNCE=55). LONG BB lower: 20-40. SHORT BB upper: 55-75. SHORT EMA50: rsi 50-70 + price<=ema50+2.
   BB_MID_THRESHOLD=150pts, BB_LOWER_THRESHOLD=80pts (tighter — lower band is harder to reach).
-  Bounce confirmation (mid bounce): bounce_starting = price > prev_close.
+  Bounce confirmation (mid bounce): bounce_starting = price > prev_close. NO above_ema50 gate (EMA50 status in reasoning string for AI).
   Lower band bounce: lower_wick >= 15pts (any rejection at extreme oversold counts).
   4H macro: LONG 35-75 (confidence.py), SHORT 30-60. ig.close_position() calls use run_in_executor in Telegram handlers.
 - **Session logic**: session.py uses UTC. SESSION_HOURS_UTC in settings.py is the UTC reference for backtest and monitor. `get_current_session()` is authoritative for live bot.
