@@ -681,7 +681,7 @@ async function loadOverview() {
     const d = await req('GET', '/api/status');
     setConn('ok', 'Connected');
     touchUpdate();
-    _seedCountdown(d.next_scan_in);
+    _seedCountdown(d.next_scan_in, d.last_scan);
     renderStatus(d);
     renderPos(d.position);
     renderScans(d.recent_scans || []);
@@ -722,7 +722,7 @@ function renderStatus(d) {
     ['Scanning',       d.scanning_paused
       ? '<span class="badge b-warn">PAUSED</span>'
       : '<span class="badge b-long">ACTIVE</span>'],
-    ['Last Scan',      d.last_scan    ? ago(d.last_scan) : '—'],
+    ['Last Scan',      `<span id="lastScanVal">${d.last_scan ? ago(d.last_scan) : '—'}</span>`],
     ['Last Result',    lastScanHtml],
     ['Next Scan In',   `<span id="nextScanVal">${fmtCountdown(d.next_scan_in)}</span>`],
     ['AI Calls Today', d.ai_calls_today ?? '—'],
@@ -1289,17 +1289,23 @@ function fmtCountdown(secs) {
 }
 
 // Live countdown ticker — updated every second, seeded by API value
-let _cdSecs = null, _cdAt = null;
-function _seedCountdown(secs) {
-  _cdSecs = secs != null ? secs : null;
-  _cdAt   = secs != null ? Date.now() : null;
+let _cdSecs = null, _cdAt = null, _lastScanIso = null;
+function _seedCountdown(secs, lastScanIso) {
+  _cdSecs      = secs != null ? secs : null;
+  _cdAt        = secs != null ? Date.now() : null;
+  _lastScanIso = lastScanIso || null;
 }
 function _tickCountdown() {
-  const el = document.getElementById('nextScanVal');
-  if (!el || _cdSecs == null) return;
-  const elapsed  = (Date.now() - _cdAt) / 1000;
-  const remaining = Math.max(0, _cdSecs - elapsed);
-  el.textContent = fmtCountdown(remaining);
+  const nextEl = document.getElementById('nextScanVal');
+  if (nextEl && _cdSecs != null) {
+    const elapsed   = (Date.now() - _cdAt) / 1000;
+    const remaining = Math.max(0, _cdSecs - elapsed);
+    nextEl.textContent = fmtCountdown(remaining);
+  }
+  const lastEl = document.getElementById('lastScanVal');
+  if (lastEl && _lastScanIso) {
+    lastEl.textContent = ago(_lastScanIso);
+  }
 }
 function fmtDt(iso) {
   if (!iso) return '—';
