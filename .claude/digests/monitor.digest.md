@@ -7,9 +7,9 @@ __init__(): creates Storage, IGClient, RiskManager, TelegramBot, ExitManager, AI
             _position_empty_count=0, _force_scan_event=asyncio.Event()
             NOTE: telegram.on_trade_confirm and on_force_scan callbacks set AFTER initialize()
 
-start(): initializes Telegram FIRST (always available), then connects IG (3 fast retries).
-  If IG fails → sends Telegram alert, retries IG every 5 min until recovered (never exits).
-  Once IG connected → startup_sync() → main loop.
+start(): initializes Telegram FIRST (always available), then writes bot_state.json(phase=STARTING),
+  then connects IG (3 fast retries). If IG fails → writes phase=IG_DISCONNECTED, sends Telegram alert,
+  retries IG every 1 min until recovered (never exits). Once IG connected → startup_sync() → main loop.
 
 startup_sync(): reconciles DB ↔ IG on every restart. 4 cases:
   - IG has / DB none → write DB, init MomentumTracker, alert
