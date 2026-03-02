@@ -99,19 +99,33 @@ class IGClient:
             logger.error(f"Failed to get market info: {e}")
             return None
     
-    def get_prices(self, resolution: str = "HOUR4", num_points: int = 200) -> list[dict]:
+    # trading_ig conv_resol() expects Pandas-compatible offset strings (e.g. "15min", "4h", "D").
+    # Passing IG-style strings ("MINUTE_15", "DAY") causes ValueError in Pandas 2.x.
+    _PANDAS_RESOLUTIONS = {
+        "MINUTE_5":  "5min",
+        "MINUTE_15": "15min",
+        "MINUTE_30": "30min",
+        "HOUR_2":    "2h",
+        "HOUR_3":    "3h",
+        "HOUR_4":    "4h",
+        "DAY":       "D",
+        "WEEK":      "W",
+    }
+
+    def get_prices(self, resolution: str = "HOUR_4", num_points: int = 200) -> list[dict]:
         """
         Fetch historical price data.
-        
-        Resolutions: SECOND, MINUTE, MINUTE_2, MINUTE_3, MINUTE_5, MINUTE_10,
-                     MINUTE_15, MINUTE_30, HOUR, HOUR_2, HOUR_3, HOUR_4, DAY, WEEK, MONTH
+
+        Pass IG-style resolution strings: MINUTE_5, MINUTE_15, HOUR_4, DAY, etc.
+        They are automatically converted to Pandas-compatible strings before the API call.
         """
         if not self.ensure_connected():
             return []
         try:
+            pandas_res = self._PANDAS_RESOLUTIONS.get(resolution, resolution)
             result = self.ig.fetch_historical_prices_by_epic(
                 epic=EPIC,
-                resolution=resolution,
+                resolution=pandas_res,
                 numpoints=num_points,
             )
             

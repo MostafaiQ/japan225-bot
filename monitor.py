@@ -53,6 +53,19 @@ logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
 logger = logging.getLogger("monitor")
 
 
+def _secs_to_next_session() -> int:
+    """Return seconds until the next trading session opens (UTC). Min 30s."""
+    from config.settings import SESSION_HOURS_UTC
+    now = datetime.now(timezone.utc)
+    frac = now.hour + now.minute / 60.0 + now.second / 3600.0
+    starts = sorted(v[0] for v in SESSION_HOURS_UTC.values())  # e.g. [0, 8, 16]
+    for s in starts:
+        if s > frac:
+            return max(30, int((s - frac) * 3600))
+    # All starts are earlier today — next is first session tomorrow
+    return max(30, int((24 - frac + min(starts)) * 3600))
+
+
 class TradingMonitor:
     """
     Main VM process. Runs the full scan + monitoring loop.
@@ -362,8 +375,10 @@ class TradingMonitor:
 
         # --- Off-hours: heartbeat only (unless force scan requested) ---
         if not session["active"] and not force_scan:
-            logger.debug("Off-hours — heartbeat only")
-            return OFFHOURS_INTERVAL_SECONDS
+            secs = _secs_to_next_session()
+            sleep_for = max(30, min(secs, OFFHOURS_INTERVAL_SECONDS))
+            logger.debug(f"Off-hours — next session in {secs//60}m {secs%60}s. Sleeping {sleep_for}s.")
+            return sleep_for
 
         # --- System paused (force scan overrides pause too) ---
         account = self.storage.get_account_state()
