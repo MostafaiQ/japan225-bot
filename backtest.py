@@ -1,38 +1,44 @@
 """
-Japan 225 Bot — Full Strategy Backtest
-=======================================
+Japan 225 Bot — Full Strategy Backtest (v2)
+============================================
 Simulates the complete pipeline on real historical Nikkei data:
 
   1. Fetch historical data (yfinance: NKD=F 15min + 1H, ^N225 Daily)
   2. Pre-compute daily and 4H timeframe analysis ONCE per unique period
-  3. For each 15min candle: compute 15M tf, look up pre-computed daily/4H
+  3. For each candle (1H for first ~30d, 15M for last 60d):
+     compute entry-TF tf, look up pre-computed daily/4H
   4. Run detect_setup() + compute_confidence() [same code as live bot]
   5. Record all qualifying setups with entry price and future candles
-  6. WFO: test different SL/TP combos against the SAME pre-computed setups
-     (no re-scanning needed — 10x faster WFO)
+  6. WFO: test different SL/TP combos (swing + scalp) against pre-computed setups
+  7. Optional AI evaluation (--ai flag): Sonnet + Opus on last 10 trading days
 
 Data sources:
-  NKD=F   (CME Nikkei 225 futures) — 15M + 1H, 23h/day multi-session coverage
+  NKD=F   (CME Nikkei 225 futures) — 15M (60d) + 1H (730d), 23h/day multi-session
   ^N225   (Nikkei cash) — Daily only, for EMA200 daily trend direction
-  Sessions covered: Tokyo (00-06 UTC) + London (08-16 UTC) + New York (16-21 UTC)
+  Sessions: Tokyo (00-06 UTC) + London (08-16 UTC) + New York (16-21 UTC)
   Skipped: 06-08 UTC gap (Tokyo/London crossover), 21-00 UTC (thin volume)
+
+Coverage: ~90 days (1H days 1-30 + 15M days 31-90)
+  Days 1-30: 1H candles (lower resolution, wider candle = less precise entries)
+  Days 31-90: 15M candles (full precision, matches live bot)
 
 Instrument:   $1 per point, 1 contract (matches bot config)
 Spread:       10pts round-trip deducted from each trade entry
 EMA200:       250 daily candles fetched — EMA200 always available
-              (matches live bot fix: DAILY_EMA200_CANDLES=250)
 
-Output:
-  - Signal funnel (candles scanned → setups → qualified → trades)
-  - Trade log and P&L summary
-  - By direction / session / exit reason / confidence tier
-  - WFO parameter grid search (SL/TP combinations, fast)
+Usage:
+  python3 backtest.py           # Pure local, no AI, <2 min
+  python3 backtest.py --ai      # AI evaluation on last 10 days, ~45 min
 """
 import sys
 import os
+import argparse
+import json
 import logging
-from datetime import datetime, timezone
+import subprocess
+from datetime import datetime, timezone, timedelta
 from collections import defaultdict
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -58,10 +64,16 @@ BREAKEVEN_TRIGGER = 150      # move SL to entry+10 when profit hits this
 BREAKEVEN_BUFFER  = 10       # SL moves to entry + this
 TRAILING_DISTANCE = 150      # pts trailing stop (runner phase)
 MIN_CANDLES_15M   = 55       # need 50+ for EMA50 on 15M
+MIN_CANDLES_1H    = 55       # need 50+ for EMA50 on 1H entry timeframe
 MIN_CANDLES_DAILY = 250      # need 200+ for EMA200 on daily (matches DAILY_EMA200_CANDLES)
 MIN_CANDLES_4H    = 55       # need 50+ for EMA50 on 4H
 
 AI_COST_PER_SIGNAL_USD = 0.015   # ~$0.015 per Sonnet+Opus call
+CLAUDE_BIN = "/home/ubuntu/.local/bin/claude"
+AI_CACHE_PATH = Path(__file__).parent / "storage" / "data" / "backtest_ai_cache.json"
+
+# Candle duration in minutes by timeframe
+CANDLE_MINUTES = {"15M": 15, "1H": 60}
 
 # ── Session filter (UTC hours) ──────────────────────────────────────────────────
 # Single source of truth from settings.py — covers Tokyo + London + New York
@@ -94,8 +106,19 @@ def download_data():
     else:
         print("  NKD=F 5min:  empty (5M confirmation disabled)")
     print(f"  NKD=F 15min: {len(df_15m)} ({df_15m.index[0].date()} -> {df_15m.index[-1].date()})")
-    print(f"  NKD=F 1H:    {len(df_1h)}")
+    print(f"  NKD=F 1H:    {len(df_1h)} ({df_1h.index[0].date()} -> {df_1h.index[-1].date()})")
     print(f"  ^N225 Daily: {len(df_1d)}")
+
+    # Identify 1H-only date range (dates covered by 1H but NOT by 15M)
+    start_15m = df_15m.index[0]
+    start_1h = df_1h.index[0]
+    if start_1h < start_15m:
+        gap_days = (start_15m - start_1h).days
+        print(f"  1H extends {gap_days}d before 15M start ({start_1h.date()} -> {start_15m.date()})")
+        print(f"  Combined coverage: ~{(df_15m.index[-1] - start_1h).days}d")
+    else:
+        print(f"  1H does not extend before 15M — using 15M only ({(df_15m.index[-1] - df_15m.index[0]).days}d)")
+
     return df_15m, df_1h, df_5m, df_1d
 
 def resample_4h(df_1h: pd.DataFrame) -> pd.DataFrame:
@@ -129,7 +152,6 @@ def precompute_daily(df_1d: pd.DataFrame) -> dict:
     """
     print(f"Pre-computing daily timeframes ({len(df_1d)} candles)...")
     daily_tf = {}
-    dates = df_1d.index.normalize()
     for i in range(len(df_1d)):
         date = df_1d.index[i].date()
         candles = df_to_candles(df_1d.iloc[:i+1])
@@ -208,10 +230,26 @@ def precompute_5m(df_5m: pd.DataFrame) -> dict:
 class SetupRecord:
     """A qualifying setup ready for trade simulation."""
     __slots__ = ("idx", "entry_time", "direction", "setup_type", "entry_price",
-                 "confidence_score", "session", "future_candles")
+                 "confidence_score", "session", "future_candles", "timeframe",
+                 "indicator_summary")
     def __init__(self, **kw):
         for k, v in kw.items():
             setattr(self, k, v)
+
+
+def _build_indicator_summary(tf_entry: dict, tf_daily: dict, tf_4h: dict) -> dict:
+    """Extract key indicator values for AI evaluation context."""
+    return {
+        "rsi": round(tf_entry.get("rsi", 0)),
+        "bb_upper": round(tf_entry.get("bb_upper", 0)),
+        "bb_mid": round(tf_entry.get("bb_mid", 0)),
+        "bb_lower": round(tf_entry.get("bb_lower", 0)),
+        "ema50": round(tf_entry.get("ema50", 0)),
+        "price": round(tf_entry.get("price", 0)),
+        "daily_bullish": bool(tf_daily.get("above_ema200")),
+        "h4_rsi": round(tf_4h.get("rsi", 0)) if tf_4h else 0,
+        "ha_bullish": tf_entry.get("ha_bullish"),
+    }
 
 
 def find_setups(df_15m: pd.DataFrame, df_4h: pd.DataFrame,
@@ -313,19 +351,139 @@ def find_setups(df_15m: pd.DataFrame, df_4h: pd.DataFrame,
             continue
 
         setups.append(SetupRecord(
-            idx            = i,
-            entry_time     = ts_utc,
-            direction      = setup["direction"],
-            setup_type     = setup["type"],
-            entry_price    = float(tf_15m["price"]),
+            idx              = i,
+            entry_time       = ts_utc,
+            direction        = setup["direction"],
+            setup_type       = setup["type"],
+            entry_price      = float(tf_15m["price"]),
             confidence_score = conf["score"],
-            session        = session,
-            future_candles = future_candles,
+            session          = session,
+            future_candles   = future_candles,
+            timeframe        = "15M",
+            indicator_summary = _build_indicator_summary(tf_15m, tf_daily, tf_4h),
         ))
 
         # Progress
         if len(setups) % 5 == 0 and len(setups) > 0:
             print(f"  ... scanned {i}/{total}, {signals_raw} signals, {len(setups)} setups so far")
+
+    return setups, signals_raw, signals_qual
+
+
+def find_setups_1h(df_1h: pd.DataFrame, df_4h: pd.DataFrame,
+                   daily_tf: dict, h4_tf: dict,
+                   cutoff_time) -> tuple[list[SetupRecord], int, int]:
+    """
+    Scan 1H candles for the period BEFORE 15M data starts.
+    Same logic as find_setups() but uses 1H candles as entry timeframe.
+    Future candles for exit sim are also 1H (each = 1 hour).
+    Returns: (setups, signals_raw_count, signals_qualified_count)
+    """
+    # Ensure UTC index
+    for df in [df_1h, df_4h]:
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        else:
+            df.index = df.index.tz_convert("UTC")
+
+    # Pre-sort 4H index for fast lookback
+    h4_sorted = sorted(h4_tf.keys())
+
+    setups: list[SetupRecord] = []
+    signals_raw = 0
+    signals_qual = 0
+    total = len(df_1h)
+
+    for i in range(MIN_CANDLES_1H, total - 30):
+        ts = df_1h.index[i]
+        ts_utc = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+        # Only scan candles BEFORE 15M data starts
+        if ts_utc >= cutoff_time:
+            break
+
+        # Session + weekend filter
+        session = get_session(ts_utc)
+        if session is None:
+            continue
+        if ts_utc.weekday() >= 5:
+            continue
+
+        # Look up pre-computed daily tf for this date
+        date_key = ts_utc.date()
+        tf_daily = daily_tf.get(date_key)
+        if tf_daily is None:
+            continue
+
+        # Look up pre-computed 4H tf for the most recent 4H bar before this candle
+        tf_4h = None
+        for h4_ts in reversed(h4_sorted):
+            if h4_ts <= ts_utc:
+                tf_4h = h4_tf.get(h4_ts)
+                break
+        if tf_4h is None:
+            continue
+
+        # Compute 1H tf (rolling 55-candle window)
+        candles_1h = df_to_candles(df_1h.iloc[max(0, i-54):i+1])
+        if len(candles_1h) < MIN_CANDLES_1H:
+            continue
+        logging.disable(logging.WARNING)
+        try:
+            tf_1h = analyze_timeframe(candles_1h)
+        except Exception:
+            logging.disable(logging.NOTSET)
+            continue
+        logging.disable(logging.NOTSET)
+
+        # detect_setup uses tf_15m param — we pass tf_1h as the entry timeframe
+        setup = detect_setup(tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_1h)
+        if not setup["found"]:
+            continue
+        signals_raw += 1
+
+        # Confidence gate
+        try:
+            logging.disable(logging.WARNING)
+            conf = compute_confidence(
+                direction=setup["direction"],
+                tf_daily=tf_daily,
+                tf_4h=tf_4h,
+                tf_15m=tf_1h,
+                upcoming_events=[],
+                web_research=None,
+                setup_type=setup.get("type"),
+            )
+            logging.disable(logging.NOTSET)
+        except Exception:
+            logging.disable(logging.NOTSET)
+            continue
+        if not conf["meets_threshold"]:
+            continue
+        signals_qual += 1
+
+        # Future candles for exit sim (1H candles — each = 1 hour)
+        future_df = df_1h.iloc[i+1 : i+101]
+        future_candles = df_to_candles(future_df)
+        if len(future_candles) < 4:
+            continue
+
+        setups.append(SetupRecord(
+            idx              = i,
+            entry_time       = ts_utc,
+            direction        = setup["direction"],
+            setup_type       = setup["type"],
+            entry_price      = float(tf_1h["price"]),
+            confidence_score = conf["score"],
+            session          = session,
+            future_candles   = future_candles,
+            timeframe        = "1H",
+            indicator_summary = _build_indicator_summary(tf_1h, tf_daily, tf_4h),
+        ))
+
+        # Progress
+        if len(setups) % 5 == 0 and len(setups) > 0:
+            print(f"  ... scanned {i}/{total} (1H), {signals_raw} signals, {len(setups)} setups so far")
 
     return setups, signals_raw, signals_qual
 
@@ -387,7 +545,7 @@ def simulate_trade(direction: str, entry_price: float, future_candles: list[dict
 class TradeResult:
     __slots__ = ("entry_time", "direction", "entry_price", "exit_price",
                  "exit_reason", "pnl_pts", "pnl_usd", "confidence_score",
-                 "session", "setup_type", "duration_candles")
+                 "session", "setup_type", "duration_candles", "timeframe")
     def __init__(self, **kw):
         for k, v in kw.items():
             setattr(self, k, v)
@@ -397,18 +555,20 @@ def simulate_all_trades(setups: list[SetupRecord],
                         sl_dist: int = SL_DISTANCE, tp_dist: int = TP_DISTANCE,
                         be_trigger: int = BREAKEVEN_TRIGGER,
                         trail_dist: int = TRAILING_DISTANCE) -> list[TradeResult]:
-    """Run trade simulation for all setups. No re-scanning needed."""
+    """Run trade simulation for all setups. Time-based overlap detection for mixed timeframes."""
     trades = []
-    skip_until_idx = -1
+    skip_until_time = datetime.min.replace(tzinfo=timezone.utc)
 
-    for s in sorted(setups, key=lambda x: x.idx):
-        if s.idx < skip_until_idx:
+    for s in sorted(setups, key=lambda x: x.entry_time):
+        if s.entry_time < skip_until_time:
             continue  # skip overlapping trades
         pnl_pts, reason, duration = simulate_trade(
             s.direction, s.entry_price, s.future_candles,
             sl_dist, tp_dist, be_trigger, trail_dist
         )
         exit_price = s.entry_price + (pnl_pts if s.direction == "LONG" else -pnl_pts)
+        tf = getattr(s, "timeframe", "15M")
+        candle_min = CANDLE_MINUTES.get(tf, 15)
         trades.append(TradeResult(
             entry_time       = s.entry_time,
             direction        = s.direction,
@@ -421,33 +581,67 @@ def simulate_all_trades(setups: list[SetupRecord],
             session          = s.session,
             setup_type       = s.setup_type,
             duration_candles = duration,
+            timeframe        = tf,
         ))
-        skip_until_idx = s.idx + duration + 1
+        skip_until_time = s.entry_time + timedelta(minutes=duration * candle_min)
 
     return trades
 
 
 # ── Reporting ───────────────────────────────────────────────────────────────────
 
+def _hold_hours(t: TradeResult) -> float:
+    """Compute hold time in hours using the correct candle duration for the timeframe."""
+    return t.duration_candles * CANDLE_MINUTES.get(getattr(t, "timeframe", "15M"), 15) / 60
+
+
+def _calc_stats(trades: list[TradeResult]) -> dict:
+    """Compute WR, PF, P&L for a list of trades."""
+    if not trades:
+        return {"n": 0, "wr": 0, "pf": 0, "pnl": 0}
+    wins = [t for t in trades if t.pnl_usd > 0]
+    losses = [t for t in trades if t.pnl_usd <= 0]
+    gp = sum(t.pnl_usd for t in wins) if wins else 0
+    gl = abs(sum(t.pnl_usd for t in losses)) or 0.01
+    return {
+        "n": len(trades),
+        "wr": len(wins) / len(trades),
+        "pf": gp / gl,
+        "pnl": sum(t.pnl_usd for t in trades),
+    }
+
+
 def print_report(trades: list[TradeResult], signals_raw: int, signals_qual: int,
-                 df_15m: pd.DataFrame, sl_dist=SL_DISTANCE, tp_dist=TP_DISTANCE):
+                 df_15m: pd.DataFrame, sl_dist=SL_DISTANCE, tp_dist=TP_DISTANCE,
+                 setups_1h_count: int = 0, setups_15m_count: int = 0,
+                 earliest_date=None):
 
     n = len(trades)
-    print("\n" + "="*62)
+    start_date = earliest_date or df_15m.index[0].date()
+    end_date = df_15m.index[-1].date()
+
+    print("\n" + "="*70)
     print("  JAPAN 225 BOT — BACKTEST RESULTS")
-    print("="*62)
-    print(f"  Period:   {df_15m.index[0].date()} -> {df_15m.index[-1].date()}")
-    print(f"  Data:     ^N225, 15min | EMA200: 250 daily candles (guaranteed)")
+    print("="*70)
+    print(f"  Period:   {start_date} -> {end_date}")
+    if setups_1h_count > 0:
+        print(f"  NOTE:     Older data uses 1H candles (lower precision). Recent 60d use 15M.")
+    print(f"  Data:     NKD=F, 1H+15M | EMA200: 250 daily candles (guaranteed)")
     print(f"  Spread:   {SPREAD_PTS}pts round-trip | SL: {sl_dist}pts | TP: {tp_dist}pts")
-    print("-"*62)
+    print("-"*70)
     print(f"\n  SIGNAL FUNNEL")
-    print(f"  15M candles scanned:      {len(df_15m)}")
+    total_candles = len(df_15m)
+    print(f"  Candles scanned:          15M: {total_candles}" + (f" + 1H gap period" if setups_1h_count > 0 else ""))
     print(f"  Raw setups (pre-screen):  {signals_raw}")
     if signals_raw:
         print(f"  Passed confidence gate:   {signals_qual}  ({signals_qual/signals_raw*100:.0f}% of setups)")
     print(f"  Trades executed:          {n}  (no AI filter — worst case)")
+    if setups_1h_count > 0 or setups_15m_count > 0:
+        trades_1h = [t for t in trades if getattr(t, "timeframe", "15M") == "1H"]
+        trades_15m = [t for t in trades if getattr(t, "timeframe", "15M") == "15M"]
+        print(f"  By source:                1H: {len(trades_1h)} trades | 15M: {len(trades_15m)} trades")
     ai_cost = signals_qual * AI_COST_PER_SIGNAL_USD
-    print(f"  Est. AI cost (60d):       ${ai_cost:.2f}")
+    print(f"  Est. AI cost (full):      ${ai_cost:.2f}")
 
     if n == 0:
         print("\n  NO TRADES — strategy never triggered at current thresholds.")
@@ -473,8 +667,8 @@ def print_report(trades: list[TradeResult], signals_raw: int, signals_qual: int,
     print(f"  Best trade:     ${max(t.pnl_usd for t in trades):+.2f}")
     print(f"  Worst trade:    ${min(t.pnl_usd for t in trades):+.2f}")
 
-    avg_duration = sum(t.duration_candles for t in trades) / n
-    print(f"  Avg hold time:  {avg_duration:.0f} candles ({avg_duration*15/60:.1f} hours)")
+    avg_hold = sum(_hold_hours(t) for t in trades) / n
+    print(f"  Avg hold time:  {avg_hold:.1f} hours")
 
     # Max drawdown
     running, peak, max_dd = 0.0, 0.0, 0.0
@@ -518,6 +712,14 @@ def print_report(trades: list[TradeResult], signals_raw: int, signals_qual: int,
         sw2 = [t for t in sl if t.pnl_usd > 0]
         print(f"  {st_name:<30} {len(sl):>3} trades | {len(sw2)/len(sl)*100:.0f}% win | ${sum(t.pnl_usd for t in sl):+.2f}")
 
+    if setups_1h_count > 0:
+        print(f"\n  BY TIMEFRAME SOURCE")
+        for tf_label in ["1H", "15M"]:
+            tf_trades = [t for t in trades if getattr(t, "timeframe", "15M") == tf_label]
+            if not tf_trades: continue
+            tf_wins = [t for t in tf_trades if t.pnl_usd > 0]
+            print(f"  {tf_label}: {len(tf_trades)} trades | {len(tf_wins)/len(tf_trades)*100:.0f}% win | P&L: ${sum(t.pnl_usd for t in tf_trades):+.2f}")
+
     print(f"\n  CONFIDENCE DISTRIBUTION")
     for lo, hi in [(70, 80), (80, 90), (90, 101)]:
         ct = [t for t in trades if lo <= t.confidence_score < hi]
@@ -526,31 +728,32 @@ def print_report(trades: list[TradeResult], signals_raw: int, signals_qual: int,
         print(f"  Score {lo}-{hi-1}%: {len(ct):>3} trades | {len(cw)/len(ct)*100:.0f}% win | ${sum(t.pnl_usd for t in ct):+.2f}")
 
     print(f"\n  TRADE LOG (all trades)")
-    print(f"  {'Date':>10}  {'Dir':>5}  {'Entry':>7}  {'P&L':>8}  {'Conf':>5}  {'Hold':>5}  Reason")
-    print("  " + "-"*70)
+    print(f"  {'Date':>10}  {'TF':>3}  {'Dir':>5}  {'Entry':>7}  {'P&L':>8}  {'Conf':>5}  {'Hold':>5}  Reason")
+    print("  " + "-"*75)
     for t in sorted(trades, key=lambda x: x.entry_time):
+        tf = getattr(t, "timeframe", "15M")
         print(
-            f"  {t.entry_time.strftime('%Y-%m-%d'):>10}  {t.direction:>5}  "
+            f"  {t.entry_time.strftime('%Y-%m-%d'):>10}  {tf:>3}  {t.direction:>5}  "
             f"{t.entry_price:>7.0f}  ${t.pnl_usd:>+7.2f}  {t.confidence_score:>4}%  "
-            f"{t.duration_candles*15/60:>4.1f}h  {t.exit_reason}"
+            f"{_hold_hours(t):>4.1f}h  {t.exit_reason}"
         )
 
     # Verdict
-    print("\n" + "="*62)
+    print("\n" + "="*70)
     print("  VERDICT")
-    print("="*62)
+    print("="*70)
     win_rate = len(wins) / n
     if n < 10:
-        print(f"  ⚠  Only {n} trades — statistically thin. More data needed.")
+        print(f"  !!  Only {n} trades — statistically thin. More data needed.")
     if win_rate > breakeven_wr and pf > 1.0:
-        print(f"  ✅ POSITIVE EDGE: WR {win_rate*100:.0f}% > breakeven {breakeven_wr*100:.0f}%, PF={pf:.2f}")
+        print(f"  POSITIVE EDGE: WR {win_rate*100:.0f}% > breakeven {breakeven_wr*100:.0f}%, PF={pf:.2f}")
         if pf >= 1.5:
-            print(f"  ✅ PF={pf:.2f} >= 1.5 — strategy is viable for live capital")
+            print(f"  PF={pf:.2f} >= 1.5 — strategy is viable for live capital")
         else:
-            print(f"  ⚠  PF={pf:.2f} < 1.5 — profitable but thin margin, keep monitoring")
+            print(f"  !!  PF={pf:.2f} < 1.5 — profitable but thin margin, keep monitoring")
     else:
         deficit = breakeven_wr - win_rate
-        print(f"  ❌ BELOW BREAKEVEN: WR {win_rate*100:.0f}% (need {breakeven_wr*100:.0f}%), PF={pf:.2f}")
+        print(f"  BELOW BREAKEVEN: WR {win_rate*100:.0f}% (need {breakeven_wr*100:.0f}%), PF={pf:.2f}")
         print(f"     Win rate deficit: {deficit*100:.1f}pp. Do NOT go live.")
 
 
@@ -580,36 +783,49 @@ def run_wfo_grid(setups: list[SetupRecord], df_15m: pd.DataFrame):
     Walk-Forward Optimization on pre-computed setups.
     IS = first 75% of setups, OOS = last 25%.
     Fast because no re-scanning — just re-simulates trade exits.
+    Includes both SWING and SCALP parameter grids.
     """
     if len(setups) < 5:
         print(f"\n  WFO skipped — only {len(setups)} setups (need >= 5)")
         return
 
     total = len(setups)
+    sorted_setups = sorted(setups, key=lambda x: x.entry_time)
     split = int(total * 0.75)
-    is_setups  = sorted(setups, key=lambda x: x.idx)[:split]
-    oos_setups = sorted(setups, key=lambda x: x.idx)[split:]
+    is_setups  = sorted_setups[:split]
+    oos_setups = sorted_setups[split:]
 
-    param_grid = [
-        (sl, tp) for sl in [150, 200, 250, 300]
-                 for tp in [300, 400, 500, 600]
-                 if tp / sl >= 1.5
-    ]
+    # Swing params — standard SL/TP
+    swing_grid = [("SWING", sl, tp) for sl in [150, 200, 250, 300]
+                  for tp in [300, 400, 500, 600]
+                  if tp / sl >= 1.5]
 
-    print("\n" + "="*62)
+    # Scalp params — effective R:R >= 1.5 after 7pt spread
+    scalp_grid = [("SCALP", sl, tp) for sl in [60, 80, 100, 120]
+                  for tp in [150, 200, 250, 300]
+                  if (tp - 7) / (sl + 7) >= 1.5]
+
+    param_grid = swing_grid + scalp_grid
+
+    print("\n" + "="*70)
     print("  WALK-FORWARD OPTIMIZATION (fast — no re-scanning)")
     print(f"  IS:  {len(is_setups)} setups | OOS: {len(oos_setups)} setups")
-    print("="*62)
-    print(f"\n  {'SL':>4}  {'TP':>4}  {'RR':>4}  {'Trades':>6}  {'WR':>7}  {'PF':>5}  {'P&L':>8}")
-    print("  " + "-"*55)
+    print(f"  Swing combos: {len(swing_grid)} | Scalp combos: {len(scalp_grid)}")
+    print("="*70)
+    print(f"\n  {'TYPE':>5}  {'SL':>4}  {'TP':>4}  {'RR':>4}  {'Trades':>6}  {'WR':>7}  {'PF':>5}  {'P&L':>8}")
+    print("  " + "-"*60)
 
     is_results = []
-    for sl, tp in param_grid:
-        be = min(sl - 50, 100)
-        trail = max(sl - 50, 100)
+    for ptype, sl, tp in param_grid:
+        if ptype == "SCALP":
+            be = sl        # breakeven when profit = SL distance
+            trail = sl     # trail at SL distance (tight for scalps)
+        else:
+            be = min(sl - 50, 100)
+            trail = max(sl - 50, 100)
         trades_is = simulate_all_trades(is_setups, sl, tp, be, trail)
         if not trades_is:
-            print(f"  {sl:>4}  {tp:>4}  {tp/sl:.1f}     0     —      —         —")
+            print(f"  {ptype:>5}  {sl:>4}  {tp:>4}  {tp/sl:.1f}     0     —      —         —")
             continue
         wins = [t for t in trades_is if t.pnl_usd > 0]
         wr = len(wins) / len(trades_is)
@@ -617,41 +833,556 @@ def run_wfo_grid(setups: list[SetupRecord], df_15m: pd.DataFrame):
         gl = abs(sum(t.pnl_usd for t in trades_is if t.pnl_usd <= 0)) or 0.01
         pf = gp / gl
         pnl = sum(t.pnl_usd for t in trades_is)
-        is_results.append((pf, wr, pnl, sl, tp, len(trades_is)))
-        print(f"  {sl:>4}  {tp:>4}  {tp/sl:.1f}  {len(trades_is):>6}  {wr*100:>6.1f}%  {pf:>5.2f}  ${pnl:>+7.2f}")
+        is_results.append((ptype, pf, wr, pnl, sl, tp, len(trades_is), be, trail))
+        print(f"  {ptype:>5}  {sl:>4}  {tp:>4}  {tp/sl:.1f}  {len(trades_is):>6}  {wr*100:>6.1f}%  {pf:>5.2f}  ${pnl:>+7.2f}")
 
     if not is_results:
         print("  No IS results generated.")
         return
 
-    # Best IS by profit factor (min 3 trades)
-    qualified = [(pf, wr, pnl, sl, tp, n) for pf, wr, pnl, sl, tp, n in is_results if n >= 3]
-    if not qualified: qualified = is_results
-    best_pf, best_wr, best_pnl, best_sl, best_tp, best_n = max(qualified, key=lambda x: x[0])
-    be_best = min(best_sl - 50, 100)
-    trail_best = max(best_sl - 50, 100)
+    # ── Best IS for swing ────
+    swing_results = [r for r in is_results if r[0] == "SWING"]
+    scalp_results = [r for r in is_results if r[0] == "SCALP"]
 
-    print(f"\n  Best IS:  SL={best_sl} TP={best_tp} (RR={best_tp/best_sl:.1f})")
-    print(f"  IS:  {best_n} trades | {best_wr*100:.1f}% win | PF={best_pf:.2f} | P&L=${best_pnl:+.2f}")
+    for label, results in [("SWING", swing_results), ("SCALP", scalp_results)]:
+        if not results:
+            print(f"\n  Best IS ({label}): no results")
+            continue
+        qualified = [r for r in results if r[6] >= 3]  # min 3 trades
+        if not qualified: qualified = results
+        best = max(qualified, key=lambda x: x[1])  # best PF
+        ptype, best_pf, best_wr, best_pnl, best_sl, best_tp, best_n, be_best, trail_best = best
 
-    trades_oos = simulate_all_trades(oos_setups, best_sl, best_tp, be_best, trail_best)
-    if trades_oos:
-        wins_oos = [t for t in trades_oos if t.pnl_usd > 0]
-        wr_oos = len(wins_oos) / len(trades_oos)
-        gp_oos = sum(t.pnl_usd for t in wins_oos) if wins_oos else 0
-        gl_oos = abs(sum(t.pnl_usd for t in trades_oos if t.pnl_usd <= 0)) or 0.01
-        pf_oos = gp_oos / gl_oos
-        pnl_oos = sum(t.pnl_usd for t in trades_oos)
-        breakeven_wr = 1 / (1 + best_tp / best_sl)
-        print(f"  OOS: {len(trades_oos)} trades | {wr_oos*100:.1f}% win | PF={pf_oos:.2f} | P&L=${pnl_oos:+.2f}")
-        degrad = (best_pf - pf_oos) / best_pf * 100 if best_pf > 0 else 0
-        print(f"  PF degradation IS→OOS: {degrad:+.1f}% (<40% = acceptable)")
-        if wr_oos >= breakeven_wr:
-            print(f"  ✅ OOS WR {wr_oos*100:.1f}% >= breakeven {breakeven_wr*100:.0f}% — strategy generalises")
+        print(f"\n  Best IS ({label}):  SL={best_sl} TP={best_tp} (RR={best_tp/best_sl:.1f})")
+        print(f"  IS:  {best_n} trades | {best_wr*100:.1f}% win | PF={best_pf:.2f} | P&L=${best_pnl:+.2f}")
+
+        trades_oos = simulate_all_trades(oos_setups, best_sl, best_tp, be_best, trail_best)
+        if trades_oos:
+            wins_oos = [t for t in trades_oos if t.pnl_usd > 0]
+            wr_oos = len(wins_oos) / len(trades_oos)
+            gp_oos = sum(t.pnl_usd for t in wins_oos) if wins_oos else 0
+            gl_oos = abs(sum(t.pnl_usd for t in trades_oos if t.pnl_usd <= 0)) or 0.01
+            pf_oos = gp_oos / gl_oos
+            pnl_oos = sum(t.pnl_usd for t in trades_oos)
+            breakeven_wr = 1 / (1 + best_tp / best_sl)
+            print(f"  OOS: {len(trades_oos)} trades | {wr_oos*100:.1f}% win | PF={pf_oos:.2f} | P&L=${pnl_oos:+.2f}")
+            degrad = (best_pf - pf_oos) / best_pf * 100 if best_pf > 0 else 0
+            print(f"  PF degradation IS->OOS: {degrad:+.1f}% (<40% = acceptable)")
+            if wr_oos >= breakeven_wr:
+                print(f"  OOS WR {wr_oos*100:.1f}% >= breakeven {breakeven_wr*100:.0f}% — strategy generalises")
+            else:
+                print(f"  OOS WR {wr_oos*100:.1f}% < breakeven {breakeven_wr*100:.0f}% — overfitting risk")
         else:
-            print(f"  ❌ OOS WR {wr_oos*100:.1f}% < breakeven {breakeven_wr*100:.0f}% — overfitting risk")
+            print(f"  OOS: 0 trades.")
+
+    # ── Scalp vs Swing comparison ────
+    if swing_results and scalp_results:
+        print(f"\n  {'':>2}SCALP vs SWING COMPARISON")
+        print("  " + "-"*60)
+        best_swing = max([r for r in swing_results if r[6] >= 3] or swing_results, key=lambda x: x[1])
+        best_scalp = max([r for r in scalp_results if r[6] >= 3] or scalp_results, key=lambda x: x[1])
+        print(f"  {'':>10}  {'Swing':>12}  {'Scalp':>12}")
+        print(f"  {'SL/TP':>10}  {best_swing[4]}/{best_swing[5]:>8}  {best_scalp[4]}/{best_scalp[5]:>9}")
+        print(f"  {'Trades':>10}  {best_swing[6]:>12}  {best_scalp[6]:>12}")
+        print(f"  {'WR':>10}  {best_swing[2]*100:>11.1f}%  {best_scalp[2]*100:>11.1f}%")
+        print(f"  {'PF':>10}  {best_swing[1]:>12.2f}  {best_scalp[1]:>12.2f}")
+        print(f"  {'P&L':>10}  ${best_swing[3]:>+10.2f}  ${best_scalp[3]:>+10.2f}")
+
+
+# ── AI Evaluation (optional — triggered by --ai flag) ──────────────────────────
+
+def _setup_key(s: SetupRecord) -> str:
+    """Unique key for AI cache."""
+    return f"{s.entry_time.isoformat()}|{s.direction}|{s.setup_type}|{s.entry_price:.0f}"
+
+
+def _load_ai_cache() -> dict:
+    """Load cached AI evaluation results."""
+    if AI_CACHE_PATH.exists():
+        try:
+            return json.loads(AI_CACHE_PATH.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _save_ai_cache(cache: dict):
+    """Save AI evaluation results to cache."""
+    AI_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    AI_CACHE_PATH.write_text(json.dumps(cache, indent=2))
+
+
+def _parse_ai_json(text: str) -> dict:
+    """Parse JSON from AI response (handles fenced blocks)."""
+    import re
+    # Try fenced ```json ... ``` block first
+    m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+    # Try any {...} block
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
+def _batch_sonnet_eval(day_setups: list[SetupRecord], date_str: str) -> list[dict]:
+    """
+    Send 1 Sonnet call per day: review all qualifying setups from that day.
+    Returns list of verdict dicts aligned with day_setups.
+    """
+    from config.settings import SONNET_MODEL
+
+    setup_lines = []
+    for i, s in enumerate(day_setups, 1):
+        ind = getattr(s, "indicator_summary", {})
+        setup_lines.append(
+            f"Setup {i}: {s.direction} {s.setup_type}\n"
+            f"  Entry: {s.entry_price:.0f}, RSI: {ind.get('rsi', '?')}, "
+            f"BB: [{ind.get('bb_lower', '?')}/{ind.get('bb_mid', '?')}/{ind.get('bb_upper', '?')}]\n"
+            f"  EMA50: {ind.get('ema50', '?')}, Daily: {'bullish' if ind.get('daily_bullish') else 'bearish'}, "
+            f"4H RSI: {ind.get('h4_rsi', '?')}, HA: {'bull' if ind.get('ha_bullish') else 'bear'}\n"
+            f"  Local confidence: {s.confidence_score}%"
+        )
+
+    prompt = (
+        "<system>\n"
+        "You are a Japan 225 (Nikkei) trading setup reviewer. You review setups and give verdicts.\n"
+        "For each setup: APPROVE (take trade), REJECT (skip), or BORDERLINE (uncertain).\n"
+        "Consider: trend alignment, RSI levels, BB position, momentum confirmation.\n"
+        "Mean-reversion setups (bb_lower_bounce, oversold_reversal) expect to be below EMA50.\n"
+        "</system>\n\n"
+        "<task>\n"
+        f"Review these {len(day_setups)} setups from {date_str}.\n\n"
+        + "\n---\n".join(setup_lines) +
+        "\n\nRespond with JSON only:\n"
+        '{"setups": [{"id": 1, "verdict": "APPROVE|REJECT|BORDERLINE", '
+        '"confidence": 70, "reason": "short reason"}, ...]}\n'
+        "</task>"
+    )
+
+    env = {**os.environ}
+    env.pop("ANTHROPIC_API_KEY", None)
+
+    try:
+        result = subprocess.run(
+            [CLAUDE_BIN, "--model", SONNET_MODEL, "--print", "--dangerously-skip-permissions"],
+            input=prompt, capture_output=True, text=True, env=env, timeout=120
+        )
+        parsed = _parse_ai_json(result.stdout)
+        verdicts = parsed.get("setups", [])
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        print(f"    Sonnet call failed: {e}")
+        verdicts = []
+
+    # Align results with input setups
+    results = []
+    for i in range(len(day_setups)):
+        if i < len(verdicts):
+            v = verdicts[i]
+            results.append({
+                "verdict": v.get("verdict", "REJECT"),
+                "ai_confidence": v.get("confidence", 0),
+                "reason": v.get("reason", ""),
+            })
+        else:
+            results.append({"verdict": "REJECT", "ai_confidence": 0, "reason": "no AI response"})
+    return results
+
+
+def _batch_opus_review(borderline_setups: list[tuple[SetupRecord, dict]]) -> list[dict]:
+    """
+    Send 1 Opus call for all borderline/high-conf-reject setups.
+    Returns list of verdict dicts aligned with borderline_setups.
+    """
+    from config.settings import OPUS_MODEL
+
+    setup_lines = []
+    for i, (s, sonnet_r) in enumerate(borderline_setups, 1):
+        ind = getattr(s, "indicator_summary", {})
+        setup_lines.append(
+            f"Setup {i}: {s.direction} {s.setup_type} @ {s.entry_price:.0f}\n"
+            f"  RSI: {ind.get('rsi', '?')}, BB: [{ind.get('bb_lower', '?')}/{ind.get('bb_mid', '?')}/{ind.get('bb_upper', '?')}]\n"
+            f"  EMA50: {ind.get('ema50', '?')}, Daily: {'bullish' if ind.get('daily_bullish') else 'bearish'}\n"
+            f"  Local conf: {s.confidence_score}%, Sonnet verdict: {sonnet_r.get('verdict', '?')}\n"
+            f"  Sonnet reason: {sonnet_r.get('reason', '?')}"
+        )
+
+    prompt = (
+        "<system>\n"
+        "You are a senior Japan 225 (Nikkei) trade reviewer. Sonnet flagged these setups as uncertain.\n"
+        "Give final verdict for each: APPROVE or REJECT.\n"
+        "Also flag if a setup is a scalp candidate (quick in/out, tight SL 60-120pts, TP 150-300pts).\n"
+        "Mean-reversion setups expect below-EMA50 positions.\n"
+        "</system>\n\n"
+        "<task>\n"
+        f"Review these {len(borderline_setups)} setups Sonnet flagged as borderline.\n\n"
+        + "\n---\n".join(setup_lines) +
+        "\n\nRespond with JSON only:\n"
+        '{"setups": [{"id": 1, "verdict": "APPROVE|REJECT", "scalp_candidate": true, '
+        '"confidence": 75, "reason": "short reason"}, ...]}\n'
+        "</task>"
+    )
+
+    env = {**os.environ}
+    env.pop("ANTHROPIC_API_KEY", None)
+
+    try:
+        result = subprocess.run(
+            [CLAUDE_BIN, "--model", OPUS_MODEL, "--print", "--dangerously-skip-permissions"],
+            input=prompt, capture_output=True, text=True, env=env, timeout=180
+        )
+        parsed = _parse_ai_json(result.stdout)
+        verdicts = parsed.get("setups", [])
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        print(f"    Opus call failed: {e}")
+        verdicts = []
+
+    results = []
+    for i in range(len(borderline_setups)):
+        if i < len(verdicts):
+            v = verdicts[i]
+            results.append({
+                "verdict": v.get("verdict", "REJECT"),
+                "scalp_candidate": v.get("scalp_candidate", False),
+                "ai_confidence": v.get("confidence", 0),
+                "reason": v.get("reason", ""),
+                "opus_reviewed": True,
+            })
+        else:
+            results.append({"verdict": "REJECT", "scalp_candidate": False,
+                            "ai_confidence": 0, "reason": "no Opus response", "opus_reviewed": True})
+    return results
+
+
+def run_ai_evaluation(all_setups: list[SetupRecord], trades: list[TradeResult]):
+    """
+    AI evaluation on last 10 trading days. Mirrors live bot pipeline.
+    Sonnet reviews per day, Opus reviews borderlines.
+    """
+    if not os.path.exists(CLAUDE_BIN):
+        print(f"\n  AI evaluation skipped — claude binary not found at {CLAUDE_BIN}")
+        return
+
+    # Find last 10 unique trading dates
+    all_dates = sorted(set(s.entry_time.date() for s in all_setups))
+    if len(all_dates) <= 10:
+        ai_dates = set(all_dates)
     else:
-        print(f"  OOS: 0 trades.")
+        ai_dates = set(all_dates[-10:])
+
+    ai_setups = [s for s in all_setups if s.entry_time.date() in ai_dates]
+    if not ai_setups:
+        print("\n  AI evaluation: no setups in last 10 trading days")
+        return
+
+    print(f"\n{'='*70}")
+    print("  AI EVALUATION — Last 10 Trading Days")
+    print(f"  Dates: {min(ai_dates)} -> {max(ai_dates)}")
+    print(f"  Setups to evaluate: {len(ai_setups)}")
+    print(f"{'='*70}")
+
+    cache = _load_ai_cache()
+
+    # Group by date
+    by_date = defaultdict(list)
+    for s in ai_setups:
+        by_date[s.entry_time.date()].append(s)
+
+    all_results = {}
+    borderlines = []
+    sonnet_calls = 0
+
+    for date in sorted(by_date.keys()):
+        day_setups = by_date[date]
+        date_str = str(date)
+
+        # Check cache
+        uncached = [s for s in day_setups if _setup_key(s) not in cache]
+        cached = [s for s in day_setups if _setup_key(s) in cache]
+
+        for s in cached:
+            all_results[_setup_key(s)] = cache[_setup_key(s)]
+
+        if uncached:
+            print(f"  {date_str}: {len(uncached)} setups -> Sonnet...", end=" ", flush=True)
+            day_results = _batch_sonnet_eval(uncached, date_str)
+            sonnet_calls += 1
+            for s, r in zip(uncached, day_results):
+                key = _setup_key(s)
+                cache[key] = r
+                all_results[key] = r
+            approved = sum(1 for r in day_results if r["verdict"] == "APPROVE")
+            print(f"{approved}/{len(day_results)} approved")
+
+        # Collect borderlines for Opus
+        for s in day_setups:
+            key = _setup_key(s)
+            r = all_results.get(key, {})
+            if not r.get("opus_reviewed"):
+                if r.get("verdict") == "BORDERLINE":
+                    borderlines.append((s, r))
+                elif r.get("verdict") == "REJECT" and s.confidence_score >= 80:
+                    borderlines.append((s, r))
+
+    # Opus review for borderlines
+    opus_calls = 0
+    if borderlines:
+        print(f"\n  {len(borderlines)} borderline setups -> Opus...", end=" ", flush=True)
+        opus_results = _batch_opus_review(borderlines)
+        opus_calls += 1
+        for (s, _), opus_r in zip(borderlines, opus_results):
+            key = _setup_key(s)
+            all_results[key].update(opus_r)
+            cache[key] = all_results[key]
+        opus_approved = sum(1 for r in opus_results if r["verdict"] == "APPROVE")
+        scalp_flagged = sum(1 for r in opus_results if r.get("scalp_candidate"))
+        print(f"{opus_approved}/{len(borderlines)} approved, {scalp_flagged} scalp candidates")
+
+    _save_ai_cache(cache)
+    print(f"\n  AI calls: {sonnet_calls} Sonnet + {opus_calls} Opus = {sonnet_calls + opus_calls} total")
+
+    # ── Compare local-only vs AI-filtered for AI period ────
+    ai_date_set = ai_dates
+    # Get trades for AI period
+    ai_trades = [t for t in trades if t.entry_time.date() in ai_date_set]
+
+    # AI-approved setups → simulate
+    approved_setups = [s for s in ai_setups
+                       if all_results.get(_setup_key(s), {}).get("verdict") == "APPROVE"]
+    ai_trades_filtered = simulate_all_trades(approved_setups)
+
+    # Scalp candidates → simulate with reduced TP
+    scalp_setups = [s for s in ai_setups
+                    if all_results.get(_setup_key(s), {}).get("scalp_candidate")]
+    scalp_trades = simulate_all_trades(scalp_setups, sl_dist=80, tp_dist=200, be_trigger=80, trail_dist=80) if scalp_setups else []
+
+    print(f"\n  {'':>2}WHAT AI ADDS (last 10 trading days)")
+    print("  " + "-"*60)
+    print(f"  {'Metric':>15}  {'Local Only':>12}  {'AI Filtered':>12}  {'Scalp':>12}")
+    print("  " + "-"*60)
+
+    local_s = _calc_stats(ai_trades)
+    ai_s = _calc_stats(ai_trades_filtered)
+    scalp_s = _calc_stats(scalp_trades)
+
+    print(f"  {'Trades':>15}  {local_s['n']:>12}  {ai_s['n']:>12}  {scalp_s['n']:>12}")
+    print(f"  {'WR':>15}  {local_s['wr']*100:>11.1f}%  {ai_s['wr']*100:>11.1f}%  {scalp_s['wr']*100:>11.1f}%")
+    print(f"  {'PF':>15}  {local_s['pf']:>12.2f}  {ai_s['pf']:>12.2f}  {scalp_s['pf']:>12.2f}")
+    print(f"  {'P&L':>15}  ${local_s['pnl']:>+10.2f}  ${ai_s['pnl']:>+10.2f}  ${scalp_s['pnl']:>+10.2f}")
+
+    # Delta
+    if local_s['n'] > 0 and ai_s['n'] > 0:
+        wr_delta = (ai_s['wr'] - local_s['wr']) * 100
+        pf_delta = ai_s['pf'] - local_s['pf']
+        pnl_delta = ai_s['pnl'] - local_s['pnl']
+        print(f"\n  AI delta: WR {wr_delta:+.1f}pp | PF {pf_delta:+.2f} | P&L ${pnl_delta:+.2f}")
+        if pf_delta > 0:
+            print(f"  AI IMPROVES the strategy — keep AI filter active")
+        else:
+            print(f"  AI HURTS the strategy — consider loosening AI criteria")
+
+
+# ── $20 Account Simulation ────────────────────────────────────────────────────
+
+# Simulation constants
+SIM_MARGIN_FACTOR      = 0.005   # 0.5% margin (matches settings.py)
+SIM_MAX_MARGIN_PCT     = 0.50    # 50% of balance cap
+SIM_CONTRACT_SIZE      = 1       # $1/pt
+SIM_MIN_LOT            = 0.01
+SIM_AI_CONF_THRESHOLD  = 87      # proxy for Sonnet approval (~40% pass rate)
+
+# Two parameter sets
+SIM_SWING = {"sl": 150, "tp": 400, "be": 150, "trail": 150, "label": "SWING"}
+SIM_SCALP = {"sl": 60,  "tp": 300, "be": 60,  "trail": 60,  "label": "SCALP"}
+
+
+def _sim_lot_size(balance: float, price: float) -> float:
+    """Compute max lot size given balance, price, margin rules. Floor to 0.01."""
+    max_margin = balance * SIM_MAX_MARGIN_PCT
+    margin_per_lot = price * SIM_MARGIN_FACTOR * SIM_CONTRACT_SIZE
+    if margin_per_lot <= 0:
+        return 0.0
+    raw = max_margin / margin_per_lot
+    return int(raw * 100) / 100  # floor to 0.01
+
+
+def _sim_min_margin(price: float) -> float:
+    """Minimum balance needed to open 0.01 lots."""
+    return SIM_MIN_LOT * price * SIM_MARGIN_FACTOR * SIM_CONTRACT_SIZE / SIM_MAX_MARGIN_PCT
+
+
+def run_account_simulation(all_setups: list[SetupRecord], start_balance: float = 20.0):
+    """
+    Simulate trading a $20 account with dynamic lot sizing.
+    Runs swing and scalp independently, side by side.
+    Uses confidence >= 87% as AI filter proxy (~40% pass rate).
+    """
+    # 1. Filter last 10 trading days
+    all_dates = sorted(set(s.entry_time.date() for s in all_setups))
+    if len(all_dates) <= 10:
+        sim_dates = set(all_dates)
+    else:
+        sim_dates = set(all_dates[-10:])
+
+    sim_setups = sorted(
+        [s for s in all_setups if s.entry_time.date() in sim_dates],
+        key=lambda x: x.entry_time,
+    )
+
+    # 2. AI filter proxy: confidence >= 87%
+    pre_filter = len(sim_setups)
+    sim_setups = [s for s in sim_setups if s.confidence_score >= SIM_AI_CONF_THRESHOLD]
+    pass_rate = len(sim_setups) / pre_filter * 100 if pre_filter else 0
+
+    print(f"\n{'='*75}")
+    print("  $20 ACCOUNT SIMULATION — Swing + Scalp + AI Filter")
+    print(f"{'='*75}")
+    print(f"  Period:       last 10 trading days ({min(sim_dates)} -> {max(sim_dates)})")
+    print(f"  Start balance: ${start_balance:.2f}")
+    print(f"  Margin:       {SIM_MARGIN_FACTOR*100:.1f}% per lot, {SIM_MAX_MARGIN_PCT*100:.0f}% balance cap")
+    print(f"  AI filter:    conf >= {SIM_AI_CONF_THRESHOLD}% ({len(sim_setups)}/{pre_filter} pass, {pass_rate:.0f}%)")
+    print(f"  Swing params: SL={SIM_SWING['sl']} TP={SIM_SWING['tp']} BE={SIM_SWING['be']} Trail={SIM_SWING['trail']}")
+    print(f"  Scalp params: SL={SIM_SCALP['sl']} TP={SIM_SCALP['tp']} BE={SIM_SCALP['be']} Trail={SIM_SCALP['trail']}")
+
+    if not sim_setups:
+        print(f"\n  No setups passed AI filter (conf >= {SIM_AI_CONF_THRESHOLD}%). Nothing to simulate.")
+        return
+
+    # 3. Run both strategies independently
+    for params in [SIM_SWING, SIM_SCALP]:
+        label = params["label"]
+        sl, tp, be, trail = params["sl"], params["tp"], params["be"], params["trail"]
+
+        print(f"\n{'─'*75}")
+        print(f"  {label} TRACK  (SL={sl} / TP={tp} / BE={be} / Trail={trail})")
+        print(f"{'─'*75}")
+
+        balance = start_balance
+        peak_balance = start_balance
+        max_dd = 0.0
+        trades_taken = 0
+        total_lots = 0.0
+        skip_until = datetime.min.replace(tzinfo=timezone.utc)
+        blown = False
+
+        # Day-by-day tracking
+        by_date = defaultdict(list)
+        for s in sim_setups:
+            by_date[s.entry_time.date()].append(s)
+
+        day_balances = []  # (date, trades_count, day_pnl, end_balance)
+
+        print(f"\n  {'Date':>10}  {'#':>2}  {'Lots':>5}  {'Day P&L':>9}  {'Balance':>9}  Details")
+        print("  " + "─" * 70)
+
+        for date in sorted(by_date.keys()):
+            if blown:
+                break
+            day_setups = by_date[date]
+            day_pnl = 0.0
+            day_trades = 0
+            day_details = []
+
+            for s in day_setups:
+                if blown:
+                    break
+                if s.entry_time < skip_until:
+                    continue
+
+                # Dynamic lot sizing
+                lot_size = _sim_lot_size(balance, s.entry_price)
+                if lot_size < SIM_MIN_LOT:
+                    min_needed = _sim_min_margin(s.entry_price)
+                    if not day_details:
+                        day_details.append(f"skip (need ${min_needed:.2f})")
+                    continue
+
+                # Simulate trade
+                pnl_pts, reason, duration = simulate_trade(
+                    s.direction, s.entry_price, s.future_candles,
+                    sl, tp, be, trail
+                )
+                pnl_usd = pnl_pts * lot_size * SIM_CONTRACT_SIZE
+
+                balance += pnl_usd
+                trades_taken += 1
+                day_trades += 1
+                day_pnl += pnl_usd
+                total_lots += lot_size
+
+                # Drawdown tracking
+                if balance > peak_balance:
+                    peak_balance = balance
+                dd = peak_balance - balance
+                if dd > max_dd:
+                    max_dd = dd
+
+                # R:R for display
+                rr = abs(pnl_pts) / sl if pnl_pts > 0 else -(abs(pnl_pts) / sl)
+                arrow = "▲" if s.direction == "LONG" else "▼"
+                win_loss = "W" if pnl_usd > 0 else "L"
+                day_details.append(
+                    f"{arrow}{s.entry_price:.0f} {win_loss} ${pnl_usd:+.2f} @{lot_size:.2f}L {reason}"
+                )
+
+                # Skip overlapping trades
+                tf = getattr(s, "timeframe", "15M")
+                candle_min = CANDLE_MINUTES.get(tf, 15)
+                skip_until = s.entry_time + timedelta(minutes=duration * candle_min)
+
+                # Check if blown
+                if balance < _sim_min_margin(s.entry_price):
+                    blown = True
+                    day_details.append("ACCOUNT BLOWN")
+
+            detail_str = " | ".join(day_details) if day_details else "—"
+            avg_lot = total_lots / trades_taken if trades_taken else 0
+            print(
+                f"  {str(date):>10}  {day_trades:>2}  "
+                f"{avg_lot:>5.2f}  ${day_pnl:>+8.2f}  ${balance:>8.2f}  {detail_str}"
+            )
+            day_balances.append((date, day_trades, day_pnl, balance))
+
+        # Summary for this track
+        total_return = (balance - start_balance) / start_balance * 100
+        avg_trades_day = trades_taken / len(day_balances) if day_balances else 0
+        avg_lot = total_lots / trades_taken if trades_taken else 0
+
+        print(f"\n  {label} SUMMARY")
+        print(f"  {'─'*40}")
+        print(f"  Final balance:  ${balance:.2f}")
+        print(f"  Total return:   {total_return:+.1f}%")
+        print(f"  Max drawdown:   ${max_dd:.2f}")
+        print(f"  Total trades:   {trades_taken}")
+        print(f"  Avg trades/day: {avg_trades_day:.1f}")
+        print(f"  Avg lot size:   {avg_lot:.3f}")
+        if blown:
+            print(f"  STATUS:         BLOWN (balance too low for 0.01 lots)")
+        elif total_return > 0:
+            print(f"  STATUS:         PROFITABLE")
+        else:
+            print(f"  STATUS:         UNPROFITABLE (but account survives)")
+
+    # 4. Side-by-side comparison
+    print(f"\n{'='*75}")
+    print("  SWING vs SCALP — $20 ACCOUNT COMPARISON")
+    print(f"{'='*75}")
+    print(f"  Run both tracks above and compare final balances, drawdowns, and viability.")
+    print(f"  Minimum viable balance: ${_sim_min_margin(38000):.2f} (at price ~38000)")
+    print(f"  At $20 start, max lots: {_sim_lot_size(20, 38000):.2f}")
+    print(f"\n  VERDICT:")
+    min_margin = _sim_min_margin(38000)
+    if start_balance < min_margin:
+        print(f"  $20 < ${min_margin:.2f} minimum — cannot even open 0.01 lots. Account NOT viable.")
+    else:
+        print(f"  $20 >= ${min_margin:.2f} minimum — can trade 0.01 lots. See results above for viability.")
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────────
@@ -660,9 +1391,20 @@ if __name__ == "__main__":
     import time
     from core.confidence import BB_MID_THRESHOLD_PTS, EMA50_THRESHOLD_PTS
 
-    print("Japan 225 Bot — Backtest")
+    parser = argparse.ArgumentParser(description="Japan 225 Bot — Backtest")
+    parser.add_argument("--ai", action="store_true",
+                        help="Run AI evaluation on last 10 trading days (Sonnet + Opus, ~45 min)")
+    parser.add_argument("--sim20", action="store_true",
+                        help="Simulate $20 account with dynamic lot sizing (swing + scalp, last 10 days)")
+    args = parser.parse_args()
+
+    print("Japan 225 Bot — Backtest (v2)")
     print(f"Thresholds: BB_MID={BB_MID_THRESHOLD_PTS}pts  EMA50={EMA50_THRESHOLD_PTS}pts")
-    print(f"Daily candles: {MIN_CANDLES_DAILY} (EMA200 guaranteed)\n")
+    print(f"Daily candles: {MIN_CANDLES_DAILY} (EMA200 guaranteed)")
+    if args.ai:
+        print("AI mode: ON (last 10 trading days)\n")
+    else:
+        print("AI mode: OFF (pure local pipeline)\n")
 
     t_start = time.time()
 
@@ -672,8 +1414,7 @@ if __name__ == "__main__":
     print(f"  4H candles: {len(df_4h)} (resampled from 1H)")
 
     # 2. Pre-compute daily and 4H (done ONCE each)
-    # Note: 5M precomputed via precompute_5m() — enable when 5M added to confidence scoring
-    for df in [df_15m, df_4h, df_1d]:
+    for df in [df_15m, df_1h, df_4h, df_1d]:
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
         else:
@@ -682,16 +1423,49 @@ if __name__ == "__main__":
     daily_tf = precompute_daily(df_1d)
     h4_tf    = precompute_4h(df_4h)
 
+    # 3. Scan 1H candles for the period BEFORE 15M data starts
+    start_15m = df_15m.index[0]
+    start_1h = df_1h.index[0]
+
+    setups_1h = []
+    raw_1h = 0
+    qual_1h = 0
+    if start_1h < start_15m:
+        print(f"\nScanning 1H candles for gap period ({start_1h.date()} -> {start_15m.date()})...")
+        setups_1h, raw_1h, qual_1h = find_setups_1h(df_1h, df_4h, daily_tf, h4_tf, cutoff_time=start_15m)
+        print(f"1H scan: {len(setups_1h)} qualifying setups ({raw_1h} raw, {qual_1h} passed gate)")
+
+    # 4. Scan 15M candles (standard — last 60 days)
     print(f"\nScanning {len(df_15m)} 15M candles for setups...")
-    setups, signals_raw, signals_qual = find_setups(df_15m, df_4h, daily_tf, h4_tf)
+    setups_15m, raw_15m, qual_15m = find_setups(df_15m, df_4h, daily_tf, h4_tf)
+    print(f"15M scan: {len(setups_15m)} qualifying setups ({raw_15m} raw, {qual_15m} passed gate)")
+
+    # 5. Merge setups from both periods
+    all_setups = setups_1h + setups_15m
+    signals_raw = raw_1h + raw_15m
+    signals_qual = qual_1h + qual_15m
+
     t_scan = time.time() - t_start
-    print(f"Scan complete: {len(setups)} qualifying setups found in {t_scan:.1f}s\n")
+    print(f"\nTotal: {len(all_setups)} qualifying setups found in {t_scan:.1f}s")
+    if setups_1h:
+        print(f"  1H: {len(setups_1h)} | 15M: {len(setups_15m)}")
 
-    # 3. Simulate baseline trades
-    trades = simulate_all_trades(setups)
-    print_report(trades, signals_raw, signals_qual, df_15m)
+    # 6. Simulate baseline trades
+    trades = simulate_all_trades(all_setups)
+    earliest = start_1h.date() if setups_1h else None
+    print_report(trades, signals_raw, signals_qual, df_15m,
+                 setups_1h_count=len(setups_1h), setups_15m_count=len(setups_15m),
+                 earliest_date=earliest)
 
-    # 4. WFO (fast — no re-scanning)
-    run_wfo_grid(setups, df_15m)
+    # 7. WFO (fast — no re-scanning, swing + scalp)
+    run_wfo_grid(all_setups, df_15m)
+
+    # 8. AI evaluation (optional)
+    if args.ai:
+        run_ai_evaluation(all_setups, trades)
+
+    # 9. $20 account simulation (optional)
+    if args.sim20:
+        run_account_simulation(all_setups, start_balance=20.0)
 
     print(f"\nTotal runtime: {time.time()-t_start:.1f}s")

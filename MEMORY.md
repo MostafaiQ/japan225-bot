@@ -120,6 +120,10 @@ Dashboard chat: Claude Code CLI (claude --print). No model constant needed.
 - confidence.py: C5/C10/C11 now setup-type-aware. bb_lower_bounce + oversold_reversal: below-EMA50=expected, bearish HA=expected, 4H bearish passes if multi-TF oversold or daily bullish. LONG_RSI_LOW 35→30. C2 near_bb_lower 80→150.
 - analyzer.py: Conditional Opus (--agents only when local conf 60-86%). Mean-reversion bounce rules in system prompt. Parse error auto-retry. WebResearcher: real news (Google News RSS), JP holidays (nager.date), CNN Fear & Greed.
 - Scan analyzer data (2026-03-02): 29 missed moves of 150+pts, 48% AI LONG miss rate, RSI 20-35 zone averaged +327pts. These changes target 65-72% reduction in missed moves.
+- analyzer.py: New `evaluate_scalp()` method — Opus evaluates near-miss setups for quick scalp. Opus picks BOTH SL (60-120pts, structure-based) and TP (150-300pts, nearest target level). Enforces effective R:R >= 1.5 after spread. Called when Sonnet rejects but local conf passed and AI conf >= 40%.
+- monitor.py: Near-miss → Opus scalp auto-execute. No user confirmation for scalps. `_execute_scalp()` builds alert, validates R:R >= 1.2, opens trade, notifies via Telegram.
+- monitor.py: Normal trade alerts auto-execute after 2 min if user doesn't respond. `_auto_execute_after_timeout()` asyncio background task.
+- telegram_bot.py: `send_scalp_executed()` replaces old 3-button `send_near_miss_alert()`. Notification-only (no buttons). Near-miss callback handlers removed.
 
 ## Dashboard Fixes Applied (2026-03-01)
 - monitor.py: _last_scan_detail added to bot_state.json. Scan records written for ALL active-session outcomes (no_setup, cooldown, low_conf, event_block, friday_block). Previously only Haiku-rejected and Sonnet/Opus scans wrote records.
@@ -149,14 +153,18 @@ Note: above_ema50 gate REMOVED from bollinger_mid_bounce. EMA50 status shown in 
   5M alignment guard: LONG needs 15M RSI<65 + price within 300pts of 15M BB mid/lower. SHORT needs 15M RSI>35 + price within 300pts of 15M BB upper.
   No-setup reasoning: diagnostic string with BB_mid dist, RSI status, bounce status, daily trend.
 
-## Backtest Status (2026-03-01, NKD=F, 42 days, all sessions)
-Data: NKD=F 15M + 1H, ^N225 daily. Sessions: Tokyo(00-06) + London(08-16) + NY(16-21 UTC).
-SESSION_HOURS_UTC added to settings.py — single source of truth for backtest + monitor.
+## Backtest Status (2026-03-02, NKD=F, ~875 days combined, all sessions)
+Data: NKD=F 1H (730d, 2023-10 to 2025-12) + 15M (60d, 2025-12 to 2026-03) + ^N225 daily.
+Sessions: Tokyo(00-06) + London(08-16) + NY(16-21 UTC). backtest.py v2.
+Combined 1H+15M: 2222 qualifying setups (1080 from 1H, 1142 from 15M). 807 trades after dedup.
 Results WITHOUT AI filter (worst case):
-  731 raw setups, 208 trades after dedup, 47% WR, PF=0.72
-  Setup frequency: 17.4/day raw → ~8-12 AI evaluations/day (30-min cooldown)
-  Tokyo: 49% WR | London: 44% WR | NY: 48% WR
-  bollinger_mid_bounce: 148 trades, 47% WR | bollinger_lower_bounce: 60 trades, 45% WR
+  807 trades, 44% WR, PF=0.70. 1H: 486 trades 43% WR | 15M: 321 trades 46% WR
+  Tokyo: 43% WR | London: 43% WR | NY: 50% WR
+  bollinger_mid_bounce: 508 trades 46% WR | bollinger_lower_bounce: 231 trades 42% WR
+WFO best swing: SL=150 TP=600 PF=0.74 | best scalp: SL=60 TP=300 PF=0.91 (scalp outperforms)
+`--ai` flag: AI eval on last 10 trading days (Sonnet+Opus, cached). Runtime: 110s local, ~45min with AI.
+`--sim20` flag: $20 account sim, last 10 days, dynamic lots, swing+scalp side-by-side, AI proxy (conf>=87%).
+  Swing: blown by day 4 (SL=150 too wide for $20). Scalp: survives 10d but -34% ($13.20 final).
 PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 
 ## AI Pipeline (updated 2026-03-02) — Single subprocess: Sonnet 4.6 + Opus sub-agent

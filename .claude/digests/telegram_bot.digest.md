@@ -68,7 +68,8 @@ Section headers (── Info ──, ── Controls ──) use callback_data="
 
 ## Alert methods
 send_alert(message: str)                    → plain HTML message
-send_trade_alert(trade_data: dict)          → CONFIRM / REJECT inline buttons, stores in self.pending_alert
+send_trade_alert(trade_data: dict)          → CONFIRM / REJECT inline buttons, stores in self.pending_alert. Auto-executes after 2 min if no response.
+send_scalp_executed(alert_data, scalp_result) → notification-only (no buttons). Opus-approved scalp auto-executed.
 send_position_update(pnl_pts, phase, price) → milestone or phase change, colored P&L
 send_adverse_alert(message, tier, deal_id)  → tier-colored alert with Close now / Hold inline buttons
 

@@ -18,7 +18,7 @@ from typing import Optional
 import httpx
 
 from config.settings import (
-    SONNET_MODEL,
+    SONNET_MODEL, OPUS_MODEL,
     AI_MAX_TOKENS, AI_TEMPERATURE,
     CONFIDENCE_BASE, CONFIDENCE_CRITERIA, MIN_CONFIDENCE,
     DEFAULT_SL_DISTANCE, DEFAULT_TP_DISTANCE, SPREAD_ESTIMATE,
@@ -520,6 +520,108 @@ class AIAnalyzer:
         result["_model"]  = model
         result["_cost"]   = 0.0
         result["_tokens"] = tokens
+        return result
+
+    def evaluate_scalp(
+        self,
+        indicators: dict,
+        direction: str,
+        setup_type: str,
+        local_confidence: int,
+        ai_confidence: int,
+        ai_reasoning: str,
+    ) -> dict:
+        """
+        Opus evaluates a near-miss setup for a quick scalp opportunity.
+        Called when Sonnet rejected but local confidence passed and AI conf >= 40%.
+        Opus picks BOTH SL and TP from structure (support/resistance levels).
+        Returns: {scalp_viable, tp_distance, sl_distance, reasoning, confidence}
+        """
+        indicator_block = _fmt_indicators(indicators)
+
+        system_prompt = (
+            "You are a scalp-trade evaluator for Japan 225 Cash CFD ($1/pt, spread ~7pts).\n"
+            "A setup was detected by local indicators and passed local confidence scoring,\n"
+            "but the primary AI (Sonnet) rejected it. Your job: decide if there's a quick\n"
+            "scalp opportunity (get in, grab profits, get out) even though the full\n"
+            "400pt swing target may not be achievable.\n\n"
+            "YOU MUST PICK BOTH SL AND TP FROM STRUCTURE:\n"
+            "- SL: Place below nearest support (LONG) or above nearest resistance (SHORT).\n"
+            "  Use swing lows, BB lower, pivot S1/S2, fib levels, PDL for LONG SL placement.\n"
+            "  Use swing highs, BB upper, pivot R1/R2, fib levels, PDH for SHORT SL placement.\n"
+            "  BOUNDS: 60-120pts. Tighter = better R:R. Japan 225 has 30-80pt wicks on 15M.\n"
+            "  SL < 60 = noise stops you out. SL > 120 = swing trade, not a scalp.\n\n"
+            "- TP: Place at nearest obstacle (resistance for LONG, support for SHORT).\n"
+            "  Use BB mid/upper, EMA50, pivot levels, VWAP, PDH/PDL, fib levels.\n"
+            "  BOUNDS: 150-300pts.\n\n"
+            "R:R REQUIREMENTS (after 7pt spread):\n"
+            "  Effective R:R = (TP - 7) / (SL + 7) must be >= 1.5\n"
+            "  This is critical — low win rate on near-miss trades means R:R must compensate.\n"
+            "  Example: SL=80, TP=200 → (200-7)/(80+7) = 2.22 ✓\n"
+            "  Example: SL=100, TP=150 → (150-7)/(100+7) = 1.34 ✗ REJECT\n\n"
+            "OTHER RULES:\n"
+            "- If price is oversold (RSI<35) with daily bullish, bounce to BB mid is common.\n"
+            "- If no clear scalp target exists within 300pts, reject.\n"
+            "- If Sonnet's rejection reason is about a concrete imminent risk (high-impact event,\n"
+            "  major breakdown, gap risk), respect it and reject.\n"
+            "- Be decisive. This is a scalp — quick in, quick out.\n"
+            "- Explain WHERE you placed SL and TP and WHY (which technical level)."
+        )
+
+        user_prompt = (
+            f"DIRECTION: {direction} | SETUP: {setup_type}\n"
+            f"LOCAL CONFIDENCE: {local_confidence}% (passed threshold)\n"
+            f"SONNET CONFIDENCE: {ai_confidence}% (rejected)\n"
+            f"SONNET REASONING: {ai_reasoning}\n\n"
+            f"INDICATORS:\n{indicator_block}\n\n"
+            f"Output ONLY valid JSON:\n"
+            f'{{"scalp_viable": true, "sl_distance": 85, "tp_distance": 200, '
+            f'"reasoning": "SL below swing low at X, TP at BB mid at Y", "confidence": 65}}\n'
+            f"or\n"
+            f'{{"scalp_viable": false, "reasoning": "Sonnet was right because..."}}'
+        )
+
+        raw, tokens = self._run_claude(
+            OPUS_MODEL, system_prompt, user_prompt,
+            timeout=90, use_opus_agent=False,
+        )
+
+        default = {
+            "scalp_viable": False,
+            "reasoning": "Opus scalp eval returned unparseable output",
+        }
+        result = _parse_json(raw, default)
+
+        # Enforce bounds and R:R
+        if result.get("scalp_viable"):
+            sl = result.get("sl_distance", 0)
+            tp = result.get("tp_distance", 0)
+
+            # Clamp SL to 60-120
+            sl = max(60, min(120, sl)) if sl else 100
+            # Clamp TP to 150-300
+            tp = max(150, min(300, tp)) if tp else 200
+
+            # Check effective R:R >= 1.5 after spread
+            effective_rr = (tp - SPREAD_ESTIMATE) / (sl + SPREAD_ESTIMATE)
+            if effective_rr < 1.5:
+                result["scalp_viable"] = False
+                result["reasoning"] = (
+                    f"R:R too low: SL={sl} TP={tp} → effective "
+                    f"{effective_rr:.2f} < 1.5 minimum"
+                )
+            else:
+                result["sl_distance"] = sl
+                result["tp_distance"] = tp
+                result["effective_rr"] = round(effective_rr, 2)
+
+        result["_model"] = OPUS_MODEL
+        logger.info(
+            f"Opus scalp eval: viable={result.get('scalp_viable')}, "
+            f"sl={result.get('sl_distance', 'N/A')}, tp={result.get('tp_distance', 'N/A')}, "
+            f"rr={result.get('effective_rr', 'N/A')}, "
+            f"reason={result.get('reasoning', '')[:100]}"
+        )
         return result
 
 

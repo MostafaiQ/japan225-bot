@@ -34,7 +34,7 @@ from config.settings import (
     MONITOR_INTERVAL_SECONDS, POSITION_CHECK_EVERY_N_CYCLES,
     SCAN_INTERVAL_SECONDS, OFFHOURS_INTERVAL_SECONDS,
     AI_COOLDOWN_MINUTES, HAIKU_MIN_SCORE, PRICE_DRIFT_ABORT_PTS, SAFETY_CONSECUTIVE_EMPTY,
-    calculate_margin, calculate_profit, SPREAD_ESTIMATE,
+    calculate_margin, calculate_profit, SPREAD_ESTIMATE, DEFAULT_SL_DISTANCE,
     MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, BREAKEVEN_BUFFER,
     ADVERSE_SEVERE_PTS, DAILY_EMA200_CANDLES, PRE_SCREEN_CANDLES, AI_ESCALATION_CANDLES,
     MINUTE_5_CANDLES,
@@ -702,6 +702,46 @@ class TradingMonitor:
                 f"Confidence={final_confidence}% (need {min_conf}%)"
             )
             self._last_scan_detail = {"outcome": "ai_rejected", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
+
+            # --- Near-miss → Opus scalp evaluation → auto-execute ---
+            # If local confidence passed but AI rejected (not a hard QUICK REJECT),
+            # ask Opus if there's a quick scalp opportunity. If yes, auto-execute.
+            local_score = local_conf.get("score", 0)
+            ai_reasoning = final_result.get("reasoning", "")
+            is_quick_reject = "QUICK REJECT" in ai_reasoning.upper()
+
+            if local_score >= min_conf and not is_quick_reject and final_confidence >= 40:
+                logger.info(
+                    f"Near-miss: local {local_score}% >= {min_conf}%, "
+                    f"AI {final_confidence}% >= 40%. Sending to Opus for scalp eval."
+                )
+                try:
+                    scalp_result = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: self.analyzer.evaluate_scalp(
+                            indicators=indicators,
+                            direction=direction,
+                            setup_type=setup.get("type", "unknown"),
+                            local_confidence=local_score,
+                            ai_confidence=final_confidence,
+                            ai_reasoning=ai_reasoning[:300],
+                        ),
+                    )
+                    if scalp_result.get("scalp_viable"):
+                        await self._execute_scalp(
+                            scalp_result=scalp_result,
+                            direction=direction,
+                            setup=setup,
+                            session=session,
+                            current_price=current_price,
+                            local_conf=local_conf,
+                            final_confidence=final_confidence,
+                        )
+                    else:
+                        logger.info(f"Opus rejected scalp: {scalp_result.get('reasoning', '')[:150]}")
+                except Exception as e:
+                    logger.warning(f"Opus scalp evaluation failed: {e}")
+
             # No cooldown — subscription is $0/call, scan again in 5 min
             return SCAN_INTERVAL_SECONDS
 
@@ -777,6 +817,9 @@ class TradingMonitor:
         self.storage.set_pending_alert(trade_alert)
         await self.telegram.send_trade_alert(trade_alert)
         logger.info(f"Trade alert sent: {direction} @ {entry:.0f}, confidence={final_confidence}%")
+
+        # Auto-execute after 2 min if user doesn't respond
+        asyncio.ensure_future(self._auto_execute_after_timeout(trade_alert, timeout_secs=120))
 
         return SCAN_INTERVAL_SECONDS
 
@@ -1006,6 +1049,101 @@ class TradingMonitor:
             f"Balance: ${new_balance:.2f} | Duration: {duration} min"
         )
         logger.info(f"Position closed: {result} | P&L: {pnl_points:+.0f}pts (${pnl_dollars:+.2f})")
+
+    # ============================================================
+    # AUTO-EXECUTE TIMEOUT (confirmed setups — 2 min no response)
+    # ============================================================
+
+    async def _auto_execute_after_timeout(self, alert_data: dict, timeout_secs: int = 120):
+        """Wait timeout_secs, then auto-execute if alert is still pending (user didn't respond)."""
+        try:
+            await asyncio.sleep(timeout_secs)
+            pending = self.storage.get_pending_alert()
+            if not pending:
+                # User already confirmed or rejected — nothing to do
+                return
+            # Check it's the same alert (match timestamp)
+            if pending.get("timestamp") != alert_data.get("timestamp"):
+                return
+            logger.info(
+                f"Auto-executing trade after {timeout_secs}s timeout — user did not respond. "
+                f"{alert_data.get('direction')} @ {alert_data.get('entry')}"
+            )
+            await self.telegram.send_alert(
+                f"⏱ <b>Auto-executing</b> — no response after {timeout_secs // 60} min.\n"
+                f"{alert_data.get('direction')} @ {alert_data.get('entry'):.0f}"
+            )
+            self.storage.clear_pending_alert()
+            await self._on_trade_confirm(alert_data)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Auto-execute timeout error: {e}")
+
+    # ============================================================
+    # SCALP AUTO-EXECUTION (Opus-gated near-miss trades)
+    # ============================================================
+
+    async def _execute_scalp(
+        self, scalp_result: dict, direction: str, setup: dict,
+        session: dict, current_price: float, local_conf: dict,
+        final_confidence: int,
+    ):
+        """Auto-execute a scalp trade approved by Opus. No user confirmation needed."""
+        tp_distance = scalp_result.get("tp_distance", 200)
+        sl_distance = scalp_result.get("sl_distance", 100)  # Opus picks structure-based SL (60-120)
+        entry = setup.get("entry", current_price)
+        tp_sign = 1 if direction == "LONG" else -1
+        sl = entry - tp_sign * sl_distance
+        tp = entry + tp_sign * tp_distance
+
+        # --- Balance & lot sizing ---
+        balance_info = self.ig.get_account_info()
+        balance = balance_info.get("balance", 0) if balance_info else 0
+        if balance <= 0:
+            logger.error("Scalp aborted: could not get account balance")
+            return
+        lots = self.risk.get_safe_lot_size(balance, current_price, sl_distance=sl_distance)
+
+        # --- R:R validation (>= 1.5 after spread for scalps) ---
+        effective_rr = (tp_distance - SPREAD_ESTIMATE) / (sl_distance + SPREAD_ESTIMATE)
+        if effective_rr < 1.5:
+            logger.info(f"Scalp aborted: effective R:R {effective_rr:.2f} < 1.5")
+            return
+
+        # Check position limit
+        pos = self.storage.get_position_state()
+        if pos.get("has_open"):
+            logger.info("Scalp aborted: position already open")
+            return
+
+        logger.info(
+            f"Scalp auto-executing: {direction} @ {entry:.0f}, "
+            f"SL={sl:.0f} TP={tp:.0f} (TP dist={tp_distance}), lots={lots}"
+        )
+
+        # Build alert data in the same format _on_trade_confirm expects
+        scalp_alert = {
+            "direction": direction,
+            "entry": entry,
+            "sl": sl,
+            "tp": tp,
+            "lots": lots,
+            "confidence": final_confidence,
+            "setup_type": setup.get("type", "unknown"),
+            "session": session["name"],
+            "reasoning": scalp_result.get("reasoning", ""),
+            "timestamp": datetime.now().isoformat(),
+            "is_scalp": True,
+            "local_confidence": local_conf.get("score"),
+            "scalp_tp_distance": tp_distance,
+            "scalp_sl_distance": sl_distance,
+            "effective_rr": scalp_result.get("effective_rr"),
+        }
+
+        # Notify user THEN execute (no confirmation needed)
+        await self.telegram.send_scalp_executed(scalp_alert, scalp_result)
+        await self._on_trade_confirm(scalp_alert)
 
     # ============================================================
     # TRADE EXECUTION (called by Telegram on CONFIRM)

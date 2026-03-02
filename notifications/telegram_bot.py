@@ -350,6 +350,42 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"send_trade_alert failed: {e}")
 
+    async def send_scalp_executed(self, alert_data: dict, scalp_result: dict):
+        """Notify user that an Opus-approved scalp trade was auto-executed."""
+        direction = alert_data.get("direction", "LONG")
+        entry = alert_data.get("entry", 0)
+        sl = alert_data.get("sl", 0)
+        tp = alert_data.get("tp", 0)
+        tp_dist = alert_data.get("scalp_tp_distance", abs(tp - entry))
+        sl_dist = alert_data.get("scalp_sl_distance", abs(entry - sl))
+        eff_rr = alert_data.get("effective_rr", 0)
+        local_conf = alert_data.get("local_confidence", 0)
+        confidence = alert_data.get("confidence", 0)
+        opus_reason = scalp_result.get("reasoning", "")[:250]
+
+        text = "\n".join([
+            "⚡ <b>SCALP AUTO-EXECUTED</b> ⚡",
+            DIV,
+            f"{_dir(direction)}  |  {alert_data.get('session', '?')}  |  {alert_data.get('setup_type', '?')}",
+            DIV,
+            f"Entry: {_price(entry)}  |  SL: {_price(sl)}  |  TP: {_price(tp)}",
+            f"SL: <b>{sl_dist:.0f}pts</b>  |  TP: <b>{tp_dist:.0f}pts</b>  |  R:R: <b>1:{eff_rr:.1f}</b>",
+            f"Lots: {alert_data.get('lots', '?')}  |  Local: {local_conf}%  |  Sonnet: {confidence}%",
+            DIV,
+            f"<i>Opus:</i> {opus_reason}",
+            DIV,
+            "Sonnet rejected — Opus found scalp. Auto-executed.",
+        ])
+        try:
+            await self.app.bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text=text,
+                parse_mode=ParseMode.HTML,
+            )
+            logger.info(f"Scalp executed notification sent: {direction}")
+        except Exception as e:
+            logger.error(f"send_scalp_executed failed: {e}")
+
     async def send_position_update(self, pnl_points: float, phase: str, current_price: float):
         text = "\n".join([
             "📊 <b>Position Update</b>",

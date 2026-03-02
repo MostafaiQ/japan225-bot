@@ -72,6 +72,18 @@ _monitoring_cycle(pos_state):  # every 2s price check; position existence check 
 
 _handle_position_closed(pos_state): logs trade, sends Telegram, resets momentum_tracker=None
 
+_auto_execute_after_timeout(alert_data, timeout_secs=120): asyncio background task.
+  Waits 120s, then checks if pending alert still exists (user didn't respond).
+  If same alert still pending → auto-execute via _on_trade_confirm(). Sends Telegram "Auto-executing" notice.
+
+_execute_scalp(scalp_result, direction, setup, session, current_price, local_conf, final_confidence):
+  Auto-execute Opus-approved scalp. Uses Opus's structure-based SL (60-120pts) and TP (150-300pts).
+  Validates R:R >= 1.5 after spread. Gets balance, computes lots. Calls send_scalp_executed() then _on_trade_confirm().
+
+Near-miss flow (in _scanning_cycle, after AI rejection):
+  Triggers when: local_score >= min_conf AND not QUICK REJECT AND final_confidence >= 40
+  → evaluate_scalp() via Opus → if scalp_viable → _execute_scalp() (no user confirmation)
+
 _on_trade_confirm(alert_data): re-fetches price, checks drift vs PRICE_DRIFT_ABORT_PTS,
   calls ig.open_position(), open_trade_atomic(), inits MomentumTracker
 
