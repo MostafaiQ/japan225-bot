@@ -560,10 +560,12 @@ class TradingMonitor:
                 "action_taken": f"haiku_rejected_{prescreen_direction.lower()}",
                 "api_cost": haiku_cost,
             })
+            # Haiku says no setup — cooldown so we don't re-call every 5 min on the same signal.
+            self.storage.set_ai_cooldown(prescreen_direction)
             return SCAN_INTERVAL_SECONDS
 
-        # Haiku approved → escalate to Sonnet. No cooldown set so bot can catch the next setup
-        # immediately if this one doesn't trade (Sonnet/Opus reject or user declines alert).
+        # Haiku approved → escalate to Sonnet. No cooldown — if Sonnet/Opus or user rejects,
+        # bot is free to catch the next setup immediately.
         logger.info(
             f"Haiku gate: APPROVED (local={local_conf['score']}%). Escalating to Sonnet..."
         )
@@ -644,8 +646,6 @@ class TradingMonitor:
                 f"Confidence={final_confidence}% (need {min_conf}%)"
             )
             self._last_scan_detail = {"outcome": "ai_rejected", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
-            # Sonnet/Opus spent real money evaluating — cooldown prevents re-calling on same setup.
-            self.storage.set_ai_cooldown(direction)
             return SCAN_INTERVAL_SECONDS
 
         # --- Risk validation ---
