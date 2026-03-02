@@ -107,7 +107,7 @@ RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
 RSI_ENTRY_LOW = 35            # Ideal entry RSI range (15M)
 RSI_ENTRY_HIGH = 55
-RSI_ENTRY_HIGH_BOUNCE = 65    # RSI upper gate for BB mid bounce (AI gates 55-65 momentum zone)
+RSI_ENTRY_HIGH_BOUNCE = 55    # RSI upper gate for BB mid bounce (backtest: RSI 55-65 LONG WR=38%, cut off)
 
 # ============================================
 # CONFIDENCE SCORING (8-point system)

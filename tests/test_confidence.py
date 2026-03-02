@@ -24,6 +24,8 @@ def make_tf(
     above_ema50=True,
     above_ema200=True,
     volume_signal="NORMAL",
+    pullback_depth=-50,
+    avg_candle_range=80,
 ):
     """Build a synthetic analyze_timeframe() output dict."""
     return {
@@ -37,6 +39,8 @@ def make_tf(
         "above_ema50": above_ema50,
         "above_ema200": above_ema200,
         "volume_signal": volume_signal,
+        "pullback_depth": pullback_depth,
+        "avg_candle_range": avg_candle_range,
     }
 
 
@@ -72,6 +76,7 @@ def ideal_short_setup():
         bb_lower=37400,   # 600 pts below (TP viable for short)
         ema50=38050,      # price below EMA50 (bearish)
         above_ema50=False, above_ema200=False,
+        pullback_depth=50,  # price rallied before SHORT entry (C12)
     )
     return tf_daily, tf_4h, tf_15m
 
@@ -107,10 +112,10 @@ class TestScoreComputation:
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         assert result["score"] <= 100
 
-    def test_total_criteria_is_11(self):
+    def test_total_criteria_is_12(self):
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
-        assert result["total_criteria"] == 11
+        assert result["total_criteria"] == 12
 
     def test_passed_criteria_matches_score(self):
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
@@ -576,3 +581,83 @@ class TestOversoldSetupTypeAware:
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         # Without setup_type, below-EMA50 = C5 fails
         assert result["criteria"]["structure"] is False
+
+    def test_c1_passes_for_oversold_when_daily_bearish(self):
+        """C1 should pass for oversold setup even when daily is bearish."""
+        tf_daily, tf_4h, tf_15m = self._oversold_setup()
+        tf_daily["above_ema200"] = False
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m, setup_type="bollinger_lower_bounce")
+        assert result["criteria"]["daily_trend"] is True
+        assert "oversold exempt" in result["reasons"]["daily_trend"]
+
+    def test_c1_fails_for_regular_when_daily_bearish(self):
+        """C1 should still fail for regular setup when daily is bearish."""
+        tf_daily, tf_4h, tf_15m = self._oversold_setup()
+        tf_daily["above_ema200"] = False
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m, setup_type="bollinger_mid_bounce")
+        assert result["criteria"]["daily_trend"] is False
+
+
+# ── C12: Entry Quality ──────────────────────────────────────────────────────
+
+class TestEntryQualityC12:
+    def test_long_with_pullback_passes(self):
+        """LONG entry after price pullback (negative) should pass C12."""
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m["pullback_depth"] = -80  # price fell 80pts
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["entry_quality"] is True
+
+    def test_long_chasing_fails(self):
+        """LONG entry after price rise (positive/chasing) should fail C12."""
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m["pullback_depth"] = 50  # price already rising
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["entry_quality"] is False
+
+    def test_short_with_rally_passes(self):
+        """SHORT entry after price rally (positive) should pass C12."""
+        tf_daily, tf_4h, tf_15m = ideal_short_setup()
+        tf_15m["pullback_depth"] = 80  # price rose 80pts
+        result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["entry_quality"] is True
+
+    def test_short_chasing_fails(self):
+        """SHORT entry after price fall (negative/chasing) should fail C12."""
+        tf_daily, tf_4h, tf_15m = ideal_short_setup()
+        tf_15m["pullback_depth"] = -50  # price already falling
+        result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["entry_quality"] is False
+
+    def test_high_vol_passes_regardless(self):
+        """High volatility (>120pt avg range) should pass C12 regardless of pullback."""
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m["pullback_depth"] = 50  # chasing (normally fails)
+        tf_15m["avg_candle_range"] = 150  # but high vol
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["entry_quality"] is True
+
+    def test_zero_pullback_fails_long(self):
+        """Zero pullback (flat) should fail C12 for LONG."""
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m["pullback_depth"] = 0
+        tf_15m["avg_candle_range"] = 80
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["entry_quality"] is False
+
+    def test_missing_data_defaults_fail(self):
+        """Missing pullback_depth should default to 0 (fails for LONG)."""
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m.pop("pullback_depth", None)
+        tf_15m.pop("avg_candle_range", None)
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["entry_quality"] is False
+
+    def test_c12_affects_score(self):
+        """C12 failure should reduce score by ~6 points (70/12 ≈ 5.83)."""
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m["pullback_depth"] = -80
+        result_pass = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        tf_15m["pullback_depth"] = 50
+        result_fail = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result_pass["score"] > result_fail["score"]

@@ -80,13 +80,13 @@ SCAN_INTERVAL_SECONDS = 300    MONITOR_INTERVAL_SECONDS = 2   OFFHOURS_INTERVAL_
 POSITION_CHECK_EVERY_N_CYCLES = 15  # 15 × 2s = 30s position existence check; position cycle REPLACES price cycle = exactly 30 calls/min
 ADVERSE_LOOKBACK_READINGS = 150     # 150 × 2s = 5-minute adverse window
 AI_COOLDOWN_MINUTES = 15       PRICE_DRIFT_ABORT_PTS = 20     SAFETY_CONSECUTIVE_EMPTY = 2
-HAIKU_MIN_SCORE = 60  # requires 5/11 criteria (5/11=61≥60; 4/11=55 < 60)
+HAIKU_MIN_SCORE = 60  # requires 5/12 criteria (5/12=59 < 60; 6/12=65≥60)
 PRE_SCREEN_CANDLES = 220 (15M fetch)   AI_ESCALATION_CANDLES = 220 (4H fetch)   DAILY_EMA200_CANDLES = 250
 MINUTE_5_CANDLES = 100 (5M fallback TF fetch, ~8h of 5M data)
 ADVERSE_MILD_PTS = 60          ADVERSE_MODERATE_PTS = 120     ADVERSE_SEVERE_PTS = 175
 PAPER_TRADING_SESSION_GATE = REMOVED. All sessions live.
 ENABLE_EMA50_BOUNCE_SETUP = False (disabled until validated)
-RSI_ENTRY_HIGH_BOUNCE = 65 (relaxed from 55; AI gates RSI 55-65 momentum zone)
+RSI_ENTRY_HIGH_BOUNCE = 55 (backtest: RSI 55-65 LONG WR=38%, cut off dead zone)
 SONNET_MODEL = "claude-sonnet-4-6"   OPUS_MODEL = "claude-opus-4-6"   (HAIKU_MODEL removed — 2-tier pipeline)
 TRADING_MODE default = "live" (env var in .env also set to "live"). Paper mode code REMOVED.
 ```
@@ -113,7 +113,7 @@ Dashboard chat: Claude Code CLI (claude --print). No model constant needed.
 - dashboard/services/config_manager.py: DEFAULTS dict replaced with _defaults() function that imports live from settings.py. Config page now always reflects actual settings values. Dashboard overrides still take precedence. Also fixed DEFAULT_SL_DISTANCE was hardcoded 200 (wrong) — now reads 150 from settings.py.
 - dashboard + telegram: COOLDOWN phase badge, sortable Recent Scans (click headers), "↑ Escalate" button on cooldown rows (clears cooldown + triggers scan). Telegram /status shows cooldown countdown + "Escalate to Haiku" inline button. _today_text() now shows time/dir/conf/emoji per scan. "No active position" centered.
 - monitor.py: Cooldown scans now compute approx confidence (tf_4h={}) so dashboard shows score instead of "—". clear_cooldown.trigger file added (dashboard writes it, monitor clears cooldown at next cycle).
-- core/confidence.py: 8→10→11-criteria. C9 volume, C10 4H EMA50, C11 HA alignment. Proportional formula: 30+int(n*70/11). LONG 70% needs 7/11, SHORT 75% needs 8/11. 264/264 tests pass.
+- core/confidence.py: 12-criteria system. C12 entry_quality (pullback+vol). C1 oversold-exempt. RSI gate 65→55. Formula: 30+int(n*70/12). LONG 7/12=70%, SHORT 8/12=76%. 338/338 tests pass.
 - monitor.py: No cooldown on AI reject — $0/call subscription, scan again in 5 min. Haiku pre-gate REMOVED (2026-03-02).
 - monitor.py + status.py: Session "—" bug fixed — _current_session persists across write_state() calls. Next Scan In frozen bug fixed — bot stores next_scan_at (ISO datetime), status.py computes countdown dynamically on every API poll.
 - indicators.py: bb_mid_bounce RSI range 35→30 (captures 30-35 zone). BB_LOWER_THRESHOLD 80→150. Relaxed bounce_starting gate for oversold RSI<40 (accepts wick/HA/candle pattern). New `oversold_reversal` setup type (RSI<30 + daily bullish + any reversal confirm).
@@ -163,8 +163,8 @@ Results WITHOUT AI filter (worst case):
   bollinger_mid_bounce: 508 trades 46% WR | bollinger_lower_bounce: 231 trades 42% WR
 WFO best swing: SL=150 TP=600 PF=0.74 | best scalp: SL=60 TP=300 PF=0.91 (scalp outperforms)
 `--ai` flag: AI eval on last 10 trading days (Sonnet+Opus, cached). Runtime: 110s local, ~45min with AI.
-`--sim20` flag: $20 account sim, last 10 days, dynamic lots, swing+scalp side-by-side, AI proxy (conf>=87%).
-  Swing: blown by day 4 (SL=150 too wide for $20). Scalp: survives 10d but -34% ($13.20 final).
+`--sim20` flag: $20 account sim, last 10 days, dynamic lots, swing+scalp side-by-side, AI proxy (conf>=88%).
+  Swing: blown by day 4 (SL=150 too wide for $20). Scalp: survives 10d but -32% ($13.60 final).
 PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 
 ## AI Pipeline (updated 2026-03-02) — Single subprocess: Sonnet 4.6 + Opus sub-agent
@@ -177,8 +177,8 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
   Files: market_snapshot.md, recent_activity.md, macro.md, live_edge.md
 - Haiku pre-gate: **REMOVED** (2026-03-02). Quick-reject logic in Sonnet prompt.
   C7/C8 (event/blackout) hard-blocked BEFORE Sonnet. No cooldown on AI reject.
-  Proportional formula: score=30+int(passed*70/11). 11/11=100%, 7/11=74%, 8/11=80%.
-  LONG needs 7/11 (74≥70), SHORT needs 8/11 (80≥75).
+  Proportional formula: score=30+int(passed*70/12). 12/12=100%, 7/12=70%, 8/12=76%.
+  LONG needs 7/12 (70≥70), SHORT needs 8/12 (76≥75).
 - C5/C10/C11 now setup-type-aware: bb_lower_bounce + oversold_reversal get lenient treatment
   (below-EMA50 expected, bearish HA expected, 4H bearish expected for mean-reversion).
 - Sonnet 4.6: adaptive thinking. Mean-reversion bounce rules in system prompt.

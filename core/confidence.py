@@ -1,17 +1,17 @@
 """
-Local confidence scorer — bidirectional 11-criteria system.
+Local confidence scorer — bidirectional 12-criteria system.
 
 Computes a confidence score LOCALLY from indicator data before any AI call.
 Acts as a gate: only escalate to Sonnet/Opus if local score >= HAIKU_MIN_SCORE (60%).
 
 Scoring (proportional):
   score = min(30 + int(passed * 70 / total_criteria), 100)
-  11/11=100%, 10/11=93%, 9/11=87%, 8/11=80%, 7/11=74%, 6/11=68% (fails 70 gate),
-  5/11=61%, 4/11=55% (below 60% gate)
-  LONG needs 7/11 (74%≥70), SHORT needs 8/11 (80%≥75).
+  12/12=100%, 11/12=94%, 10/12=88%, 9/12=82%, 8/12=76%, 7/12=70%,
+  6/12=65% (fails 70 gate), 5/12=59% (below 60% gate)
+  LONG needs 7/12 (70%≥70), SHORT needs 8/12 (76%≥75).
 
-Criteria (11 total):
-  C1  daily_trend       — daily EMA200 agrees with direction
+Criteria (12 total):
+  C1  daily_trend       — daily EMA200 agrees with direction (oversold exempt)
   C2  entry_level       — price at BB/EMA technical level
   C3  rsi_15m           — 15M RSI in valid entry zone
   C4  tp_viable         — price below/above BB mid (room for TP)
@@ -22,6 +22,7 @@ Criteria (11 total):
   C9  volume            — 15M volume not critically low (signal != LOW)
   C10 trend_4h          — 4H EMA50 or oversold reversal (setup-type-aware)
   C11 ha_aligned        — 15M HA or reversal signals (setup-type-aware)
+  C12 entry_quality     — pullback depth + volatility regime (data-backed filter)
 """
 import logging
 from datetime import datetime, timezone
@@ -98,15 +99,28 @@ def compute_confidence(
     rsi_4h = tf_4h.get("rsi")
     rsi_daily = tf_daily.get("rsi")
 
-    # ---- Criterion 1: Daily Trend Aligned ----
+    # Setup-type-aware flag — used by C1, C5, C10, C11, C12
+    _oversold_setup = setup_type in ("bollinger_lower_bounce", "oversold_reversal")
+
+    # ---- Criterion 1: Daily Trend Aligned (oversold-exempt) ----
+    # Oversold bounces (bb_lower_bounce, oversold_reversal) pass C1 even when daily is bearish.
+    # Backtest data: counter-trend LONG trades win 48% vs trend-aligned at 41%.
+    # Mean-reversion into a daily downtrend produces sharper, more decisive bounces.
     if direction == "LONG":
-        # Price above daily EMA200 (primary) or EMA50 if EMA200 unavailable
         if above_ema200_daily is not None:
             c1 = bool(above_ema200_daily)
-            reasons["daily_trend"] = f"Daily EMA200: {'above' if c1 else 'below'} (price={price:.0f})"
+            if not c1 and _oversold_setup:
+                c1 = True
+                reasons["daily_trend"] = f"Daily EMA200: below (oversold exempt — counter-trend bounce)"
+            else:
+                reasons["daily_trend"] = f"Daily EMA200: {'above' if c1 else 'below'} (price={price:.0f})"
         elif above_ema50_daily is not None:
             c1 = bool(above_ema50_daily)
-            reasons["daily_trend"] = f"Daily EMA200 N/A, using EMA50: {'above' if c1 else 'below'}"
+            if not c1 and _oversold_setup:
+                c1 = True
+                reasons["daily_trend"] = f"Daily EMA50: below (oversold exempt — counter-trend bounce)"
+            else:
+                reasons["daily_trend"] = f"Daily EMA200 N/A, using EMA50: {'above' if c1 else 'below'}"
         else:
             c1 = False
             reasons["daily_trend"] = "Daily EMA data unavailable"
@@ -228,7 +242,6 @@ def compute_confidence(
     # ---- Criterion 5: Price Structure (setup-type-aware) ----
     # For oversold setups (bb_lower_bounce, oversold_reversal): being below EMA50 is EXPECTED.
     # Accept reversal signals (swept_low, bullish candle, lower wick) instead of EMA50 position.
-    _oversold_setup = setup_type in ("bollinger_lower_bounce", "oversold_reversal")
     if direction == "LONG":
         if _oversold_setup:
             # Oversold: check for reversal signals instead of EMA50 position
@@ -357,7 +370,31 @@ def compute_confidence(
         reasons["ha_aligned"] = "HA unavailable — defaulting pass"
     criteria["ha_aligned"] = c11
 
-    # ---- Compute final score (proportional, 11 criteria) ----
+    # ---- Criterion 12: Entry Quality (pullback depth + volatility regime) ----
+    # Backtest data (1620 scalp trades):
+    #   Pullback (<-30pts before LONG): 43% WR. Chase (>+30pts): 36% WR.
+    #   High vol (>120pt candles): 49% WR. Medium vol (56-123pt): 37% WR.
+    # LONG: price should have pulled back (fallen) before entry — buying a real dip.
+    # SHORT: price should have rallied (risen) before entry — selling a real top.
+    # High volatility passes regardless — moves are decisive in high vol.
+    pullback = tf_15m.get("pullback_depth", 0) or 0
+    avg_range = tf_15m.get("avg_candle_range", 0) or 0
+    HIGH_VOL_THRESHOLD = 120  # pts — above this, pass regardless (big moves follow through)
+
+    if avg_range >= HIGH_VOL_THRESHOLD:
+        c12 = True
+        reasons["entry_quality"] = f"High vol ({avg_range:.0f}pts avg range) — moves decisive"
+    elif direction == "LONG":
+        # Require pullback: price should have fallen before LONG entry (buying the dip)
+        c12 = pullback < 0
+        reasons["entry_quality"] = f"Pullback {pullback:+.0f}pts ({'dip' if c12 else 'chase — no pullback'}), vol={avg_range:.0f}pts"
+    else:
+        # Require rally: price should have risen before SHORT entry (selling the top)
+        c12 = pullback > 0
+        reasons["entry_quality"] = f"Pre-entry {pullback:+.0f}pts ({'rally' if c12 else 'falling — no rally'}), vol={avg_range:.0f}pts"
+    criteria["entry_quality"] = c12
+
+    # ---- Compute final score (proportional, 12 criteria) ----
     passed = sum(1 for v in criteria.values() if v)
     total = len(criteria)
     score = min(BASE_SCORE + int(passed * (MAX_SCORE - BASE_SCORE) / total), MAX_SCORE)

@@ -575,6 +575,24 @@ def analyze_timeframe(candles: list[dict]) -> dict:
     result["avg_body_size"]           = bt["avg_body_size"]
     result["wick_ratio"]              = bt["wick_ratio"]
 
+    # ── Pre-entry Context (trade quality filters) ────────────────────────
+    # Pullback depth: price change over last 5 candles (negative = price fell)
+    if len(closes) >= 6:
+        result["pullback_depth"] = round(closes[-1] - closes[-6], 1)
+    else:
+        result["pullback_depth"] = 0.0
+
+    # Average candle range (volatility proxy) — last 5 completed candles
+    n_vol = min(5, len(candles))
+    recent_ranges = [candles[-(i+1)]["high"] - candles[-(i+1)]["low"] for i in range(n_vol)]
+    result["avg_candle_range"] = round(sum(recent_ranges) / len(recent_ranges), 1) if recent_ranges else 0.0
+
+    # Bollinger Band width (market regime: narrow=squeeze, wide=trending)
+    if result["bollinger_upper"] and result["bollinger_lower"]:
+        result["bb_width"] = round(result["bollinger_upper"] - result["bollinger_lower"], 1)
+    else:
+        result["bb_width"] = None
+
     return result
 
 
@@ -867,6 +885,10 @@ def detect_setup(
         "consecutive_direction": tf_15m.get("consecutive_direction"),
         "avg_body_size": tf_15m.get("avg_body_size"),
         "wick_ratio": tf_15m.get("wick_ratio"),
+        # Trade quality context
+        "pullback_depth": tf_15m.get("pullback_depth"),
+        "avg_candle_range": tf_15m.get("avg_candle_range"),
+        "bb_width": tf_15m.get("bb_width"),
     }
 
     if not price:

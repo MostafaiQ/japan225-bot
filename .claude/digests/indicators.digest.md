@@ -3,6 +3,7 @@
 # Updated 2026-03-02: Phase 1 indicators (HA, FVG, Fibonacci, PDH/PDL, liquidity sweep)
 # Updated 2026-03-02: _build_confluence() wired into all 4 setup paths. indicators_snapshot expanded with Phase 1 keys.
 # Updated 2026-03-02: bb_mid_bounce RSI 35→30, relaxed bounce_starting gate, BB_LOWER 80→150pts, new oversold_reversal type.
+# Updated 2026-03-02: pullback_depth, avg_candle_range, bb_width added to analyze_timeframe() + indicators_snapshot.
 
 ## Functions
 
@@ -40,6 +41,10 @@ analyze_timeframe(candles: list[dict]) -> dict
   #              fibonacci (dict: fib_236/382/500/618/786), fib_near (str|None),
   #              prev_candle_high, prev_candle_low (PDH/PDL),
   #              swept_low (bool), swept_high (bool)
+  #   --- Trade quality context ---
+  #              pullback_depth (float): closes[-1] - closes[-6], negative = price fell
+  #              avg_candle_range (float): mean(high-low) of last 5 candles (volatility proxy)
+  #              bb_width (float|None): BB upper - BB lower (market regime)
   # NOTE: needs 200 candles for EMA200; <200 logs warning and uses EMA50 fallback
 
 confirm_5m_entry(tf_5m: dict, direction: str) -> bool
