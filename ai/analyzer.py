@@ -186,6 +186,7 @@ def build_scan_prompt(
     live_edge_block: str = None,
     is_opus: bool = False,
     sonnet_analysis: dict = None,
+    haiku_reasoning: str = None,
 ) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
@@ -211,26 +212,42 @@ def build_scan_prompt(
             f"✓{','.join(passed)} ✗{','.join(failed)}\n"
         )
 
+    # --- Build cumulative AI reasoning chain ---
+    haiku_block = ""
+    if haiku_reasoning:
+        haiku_block = (
+            f"\nHAIKU PRE-GATE ASSESSMENT (approved escalation):\n"
+            f"  {haiku_reasoning}\n"
+        )
+
     if is_opus and sonnet_analysis:
         sonnet_conf   = sonnet_analysis.get("confidence", "?")
         sonnet_warn   = sonnet_analysis.get("warnings", [])
         sonnet_reason = sonnet_analysis.get("reasoning", "")
         role_block = (
-            f"\nSONNET APPROVED at {sonnet_conf}% confidence.\n"
+            f"\n--- PRIOR AI ASSESSMENTS (cumulative chain) ---\n"
+            f"{haiku_block}"
+            f"\nSONNET ANALYSIS at {sonnet_conf}% confidence:\n"
             f"  Reasoning: {sonnet_reason}\n"
             f"  Warnings flagged: {sonnet_warn}\n"
-            f"\nYOUR ROLE: Devil's advocate. Find specific reasons to REJECT.\n"
-            f"Before outputting JSON, reason through:\n"
-            f"  1. STRUCTURE: Are D1/4H/15M actually aligned? (specific values)\n"
-            f"  2. RISK: What exact scenario makes this lose 150pts? (be concrete)\n"
-            f"  3. EDGE: Given live edge stats above, does this setup type have positive EV right now?\n"
-            f"  4. DECISION: If you cannot find sufficient reason to reject, approve.\n"
+            f"\n--- YOUR TASK ---\n"
+            f"Two prior models have analyzed this setup. You have their reasoning above\n"
+            f"plus the raw indicator data below. Make your OWN independent assessment:\n"
+            f"  1. VERIFY the technical case: Do the actual indicator values (RSI, EMA, BB, HA, FVG)\n"
+            f"     support the direction? Cite specific numbers.\n"
+            f"  2. FIND RISKS the prior models missed: What concrete scenario causes a 150pt loss?\n"
+            f"     (news event, technical breakdown, liquidity gap — be specific)\n"
+            f"  3. EVALUATE EDGE: Given live edge stats, does this setup type have positive EV?\n"
+            f"  4. DECISION: Weigh the cumulative evidence. If the technical case is sound and\n"
+            f"     no disqualifying risk exists, approve. If you find a concrete reason to reject,\n"
+            f"     reject with that specific reason.\n"
         )
     else:
         role_block = (
+            f"{haiku_block}"
             "\nBefore outputting JSON, reason through:\n"
             "  1. STRUCTURE: Are D1/4H/15M aligned? (cite specific RSI/EMA/BB values)\n"
-            "  2. SETUP QUALITY: Is the technical trigger clean? (price distance, volume)\n"
+            "  2. SETUP QUALITY: Is the technical trigger clean? (price distance, volume, HA, FVG)\n"
             "  3. RISK: What specific scenario causes a 150pt loss? (be concrete)\n"
             "  4. EDGE: Given live edge stats, does this setup type have positive EV now?\n"
         )
@@ -439,6 +456,7 @@ class AIAnalyzer:
         prescreen_direction: str = None,
         local_confidence: dict = None,
         live_edge_block: str = None,
+        haiku_reasoning: str = None,
     ) -> dict:
         return self._analyze(
             model=SONNET_MODEL,
@@ -449,6 +467,7 @@ class AIAnalyzer:
             prescreen_direction=prescreen_direction,
             local_confidence=local_confidence,
             live_edge_block=live_edge_block,
+            haiku_reasoning=haiku_reasoning,
         )
 
     # ── Opus confirmation ──────────────────────────────────────────────────────
@@ -461,6 +480,7 @@ class AIAnalyzer:
         web_research: dict,
         sonnet_analysis: dict,
         live_edge_block: str = None,
+        haiku_reasoning: str = None,
     ) -> dict:
         direction = sonnet_analysis.get("direction", "LONG") or "LONG"
 
@@ -478,6 +498,7 @@ class AIAnalyzer:
             live_edge_block=live_edge_block,
             is_opus=True,
             sonnet_analysis=sonnet_analysis,
+            haiku_reasoning=haiku_reasoning,
         )
 
         from config.settings import MIN_CONFIDENCE_SHORT
@@ -506,6 +527,7 @@ class AIAnalyzer:
         live_edge_block: str = None,
         is_opus: bool = False,
         sonnet_analysis: dict = None,
+        haiku_reasoning: str = None,
     ) -> dict:
         user_prompt = build_scan_prompt(
             indicators, recent_scans, market_context, web_research,
@@ -514,6 +536,7 @@ class AIAnalyzer:
             live_edge_block=live_edge_block,
             is_opus=is_opus,
             sonnet_analysis=sonnet_analysis,
+            haiku_reasoning=haiku_reasoning,
         )
 
         schema_comment = (

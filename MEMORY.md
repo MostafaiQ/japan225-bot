@@ -10,8 +10,9 @@ Digests live in `.claude/digests/`. Read only the digest(s) relevant to your tas
 Oracle VM: monitor.py (24/7, systemd: japan225-bot)
   SCANNING (no position): every 5min active sessions, 30min off-hours
     → fetch 15M+Daily in parallel → detect_setup() pre-screen → if found:
-    → AI cooldown check (30min) → fetch 4H → compute_confidence() (Daily reused from pre-screen)
-    → if score >= 50%: Haiku pre-gate → Sonnet → Opus (if 70%<conf<87%)
+    → NO cooldown ($0/call subscription) → fetch 4H → compute_confidence()
+    → if score >= 50%: Haiku pre-gate → Sonnet (with Haiku reasoning) → Opus (with Haiku+Sonnet reasoning)
+    → Cumulative AI chain: each tier's reasoning feeds into the next tier's prompt
     → if AI confirms & risk passes: Telegram CONFIRM/REJECT alert (15min TTL)
   MONITORING (position open): every 60s
     → check IG position exists (2 consecutive empty = closed, SAFETY_CONSECUTIVE_EMPTY)

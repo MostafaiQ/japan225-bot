@@ -25,15 +25,18 @@ precheck_with_haiku(setup_type, direction, rsi_15m, volume_signal, session,
   # Default on parse error: {should_escalate: True, reason: "Haiku parse error..."} — safe fail-open
 
 scan_with_sonnet(indicators, recent_scans, market_context, web_research,
-                 prescreen_direction=None, local_confidence=None, live_edge_block=None) -> dict
+                 prescreen_direction=None, local_confidence=None, live_edge_block=None,
+                 haiku_reasoning=None) -> dict
+  # haiku_reasoning: Haiku's reason string, injected into Sonnet's prompt as prior context
 
 confirm_with_opus(indicators, recent_scans, market_context, web_research,
-                  sonnet_analysis, live_edge_block=None) -> dict
+                  sonnet_analysis, live_edge_block=None, haiku_reasoning=None) -> dict
   # Calls _should_call_opus() first — may return Sonnet result directly (opus_skipped=True)
+  # haiku_reasoning: threaded to Opus prompt alongside Sonnet's full analysis (cumulative chain)
 
 _analyze(model, indicators, recent_scans, market_context, web_research,
          prescreen_direction=None, local_confidence=None, live_edge_block=None,
-         is_opus=False, sonnet_analysis=None) -> dict
+         is_opus=False, sonnet_analysis=None, haiku_reasoning=None) -> dict
   # Builds prompt via build_scan_prompt() + JSON schema trailer
   # Calls _run_claude() → _parse_json() → returns dict + _model, _cost, _tokens
   # Safe default on parse failure: {setup_found: False, confidence: 0, ...}
@@ -49,9 +52,13 @@ Skip Opus if confidence >= 87% (certain) or <= threshold+2 (near-reject floor).
 Compact reference card. ~230 tokens. Includes HA, FVG, Fibonacci, sweep signal guidance.
 11-criteria confidence breakdown. Passed as <system> block in _run_claude.
 
-## build_scan_prompt(...) -> str
+## build_scan_prompt(..., haiku_reasoning=None) -> str
 Same compact format as before. Appends JSON schema template at end for model output.
 Includes path to storage/context/ files as a note (Claude can read them if needed).
+**Cumulative AI reasoning chain**:
+  - For Sonnet: haiku_reasoning → HAIKU PRE-GATE ASSESSMENT block (context, not confirmation bias)
+  - For Opus: haiku_reasoning + sonnet analysis → PRIOR AI ASSESSMENTS block, then own assessment task
+  - Opus is told to verify technical case, find risks prior models missed, and make independent decision
 Key formatters:
   _fmt_indicators(indicators)   → pipe-format table (includes HA, FVG, fib_near, sweep signals)
   _fmt_recent_scans(scans)      → 1-line per scan summary

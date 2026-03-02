@@ -465,43 +465,7 @@ class TradingMonitor:
         prescreen_direction = setup["direction"]
         logger.info(f"Pre-screen: {prescreen_direction} setup detected. Checking local confidence...")
 
-        # --- AI cooldown check (compute approx confidence for display — no 4H fetch needed) ---
-        if self.storage.is_ai_on_cooldown(AI_COOLDOWN_MINUTES):
-            approx_conf = compute_confidence(
-                direction=prescreen_direction,
-                tf_daily=tf_daily,
-                tf_4h={},   # no 4H fetch — C6/C10 default gracefully
-                tf_15m=tf_15m,
-            )
-            logger.info(f"AI on cooldown ({AI_COOLDOWN_MINUTES} min). Conf≈{approx_conf['score']}%. Skipping escalation.")
-            self._last_scan_detail = {"outcome": "cooldown", "direction": prescreen_direction, "confidence": approx_conf["score"], "price": current_price, "setup_type": setup.get("type")}
-            self.storage.save_scan({
-                "timestamp": datetime.now().isoformat(), "session": session["name"],
-                "price": current_price, "indicators": {}, "market_context": {},
-                "analysis": {"setup_found": True, "reasoning": f"[AI Cooldown] {prescreen_direction} setup, conf≈{approx_conf['score']}%"},
-                "setup_found": False, "confidence": approx_conf["score"], "action_taken": f"cooldown_{prescreen_direction.lower()}", "api_cost": 0,
-            })
-            return SCAN_INTERVAL_SECONDS
-
-        # --- Short AI-reject cooldown (5 min after Sonnet/Opus rejection) ---
-        # Prevents re-calling AI immediately after a rejection of the same setup.
-        if not force_scan and self._ai_reject_until and datetime.now(timezone.utc) < self._ai_reject_until:
-            approx_conf = compute_confidence(
-                direction=prescreen_direction,
-                tf_daily=tf_daily,
-                tf_4h={},
-                tf_15m=tf_15m,
-            )
-            secs_left = int((self._ai_reject_until - datetime.now(timezone.utc)).total_seconds())
-            logger.info(f"Short AI-reject cooldown ({secs_left}s remaining). Conf≈{approx_conf['score']}%.")
-            self._last_scan_detail = {"outcome": "cooldown", "direction": prescreen_direction, "confidence": approx_conf["score"], "price": current_price, "setup_type": setup.get("type")}
-            self.storage.save_scan({
-                "timestamp": datetime.now().isoformat(), "session": session["name"],
-                "price": current_price, "indicators": {}, "market_context": {},
-                "analysis": {"setup_found": True, "reasoning": f"[Short cooldown] AI rejected {secs_left}s ago, conf≈{approx_conf['score']}%"},
-                "setup_found": False, "confidence": approx_conf["score"], "action_taken": f"cooldown_{prescreen_direction.lower()}", "api_cost": 0,
-            })
-            return SCAN_INTERVAL_SECONDS
+        # No AI cooldown — subscription is $0/call, always escalate if setup found
 
         # --- Fetch 4H for full analysis (1 API call; daily already fetched above) ---
         candles_4h = await asyncio.get_event_loop().run_in_executor(
@@ -630,8 +594,7 @@ class TradingMonitor:
                 "action_taken": f"haiku_rejected_{prescreen_direction.lower()}",
                 "api_cost": haiku_cost,
             })
-            # Haiku says no setup — cooldown so we don't re-call every 5 min on the same signal.
-            self.storage.set_ai_cooldown(prescreen_direction)
+            # No cooldown on Haiku reject — subscription is $0/call, scan again in 5 min
             return SCAN_INTERVAL_SECONDS
 
         # Haiku approved → escalate to Sonnet. No cooldown — if Sonnet/Opus or user rejects,
@@ -659,6 +622,7 @@ class TradingMonitor:
             prescreen_direction=prescreen_direction,
             local_confidence=local_conf,
             live_edge_block=live_edge,
+            haiku_reasoning=haiku_result.get("reason", ""),
         )
 
         sonnet_confidence = sonnet_result.get("confidence", 0)
@@ -685,6 +649,7 @@ class TradingMonitor:
                 web_research=web_research,
                 sonnet_analysis=sonnet_result,
                 live_edge_block=live_edge,
+                haiku_reasoning=haiku_result.get("reason", ""),
             )
             final_result = opus_result
             if opus_result.get("setup_found"):
@@ -706,6 +671,7 @@ class TradingMonitor:
                 web_research=web_research,
                 sonnet_analysis=sonnet_result,
                 live_edge_block=live_edge,
+                haiku_reasoning=haiku_result.get("reason", ""),
             )
             final_result = opus_result
             logger.info(
@@ -748,8 +714,7 @@ class TradingMonitor:
                 f"Confidence={final_confidence}% (need {min_conf}%)"
             )
             self._last_scan_detail = {"outcome": "ai_rejected", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
-            # U4: short cooldown after Sonnet/Opus rejection (5 min)
-            self._ai_reject_until = datetime.now(timezone.utc) + timedelta(seconds=300)
+            # No cooldown — subscription is $0/call, scan again in 5 min
             return SCAN_INTERVAL_SECONDS
 
         # --- Risk validation ---
