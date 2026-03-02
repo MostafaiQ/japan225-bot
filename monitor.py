@@ -147,6 +147,7 @@ class TradingMonitor:
         await self.startup_sync()
 
         self.running = True
+        self._trigger_poll_task = asyncio.create_task(self._poll_trigger_file())
 
         try:
             while self.running:
@@ -154,6 +155,7 @@ class TradingMonitor:
         except asyncio.CancelledError:
             logger.info("Monitor loop cancelled")
         finally:
+            self._trigger_poll_task.cancel()
             await self._shutdown()
 
     # ============================================================
@@ -1165,6 +1167,21 @@ class TradingMonitor:
             f"Monitoring active."
         )
         logger.info(f"Trade #{trade_num} opened: {direction} @ {actual_entry:.0f}")
+
+    async def _poll_trigger_file(self):
+        """Background task: check for dashboard force_scan.trigger every 2s, wake main loop."""
+        while self.running:
+            try:
+                if self._trigger_path.exists():
+                    logger.info("Dashboard force-scan trigger detected (poll). Waking main loop.")
+                    self._force_scan_event.set()
+                if self._clear_cd_path.exists():
+                    self._clear_cd_path.unlink()
+                    self.storage.clear_ai_cooldown()
+                    logger.info("Dashboard clear-cooldown trigger detected (poll).")
+            except Exception:
+                pass
+            await asyncio.sleep(2)
 
     async def _on_force_scan(self):
         """Triggered by /force command. Wakes the main loop immediately."""
