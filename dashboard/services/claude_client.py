@@ -73,6 +73,7 @@ def chat(message: str, history: list[dict]) -> str:
 
     env = {**os.environ}
     env.pop("CLAUDECODE", None)
+    env.pop("ANTHROPIC_API_KEY", None)  # force OAuth (Claude Max subscription), not the trading API key
 
     try:
         result = subprocess.run(
