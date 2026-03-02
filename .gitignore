@@ -26,3 +26,6 @@ storage/data/trading.db
 storage/data/*.db
 .env*
 storage/data/
+
+# Context files — runtime snapshots, regenerated each scan
+storage/context/*.md

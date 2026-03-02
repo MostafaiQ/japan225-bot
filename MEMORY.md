@@ -38,7 +38,8 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 | `core/session.py` | get_current_session() UTC, is_no_trade_day(), is_weekend(), is_friday_blackout() |
 | `core/momentum.py` | MomentumTracker class. add_price(), should_alert(), is_stale(), milestone_alert() |
 | `core/confidence.py` | compute_confidence(direction, tf_daily, tf_4h, tf_15m, events, web) → score dict. 10-criteria proportional scoring. |
-| `ai/analyzer.py` | AIAnalyzer. precheck_with_haiku(), scan_with_sonnet(), confirm_with_opus(). Tool use. Prompt caching. post_trade_analysis(), load_prompt_learnings(). |
+| `ai/analyzer.py` | AIAnalyzer. precheck_with_haiku(), scan_with_sonnet(), confirm_with_opus(). **CLI subprocess (OAuth/subscription, no API key)**. post_trade_analysis(), load_prompt_learnings(). |
+| `ai/context_writer.py` | write_context() — writes storage/context/*.md before each AI call. market_snapshot, recent_activity, macro, live_edge. Called by monitor.py before Haiku. |
 | `trading/risk_manager.py` | RiskManager.validate_trade() 11 checks. get_safe_lot_size() |
 | `trading/exit_manager.py` | ExitManager. evaluate_position(), execute_action(), manual_trail_update() |
 | `notifications/telegram_bot.py` | TelegramBot. send_trade_alert(), /menu inline buttons, /close /kill /pause /resume |
@@ -142,19 +143,25 @@ Results WITHOUT AI filter (worst case):
   bollinger_mid_bounce: 148 trades, 47% WR | bollinger_lower_bounce: 60 trades, 45% WR
 PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 
-## AI Pipeline (updated 2026-03-01) — 3-tier: Haiku → Sonnet → Opus
-- Haiku pre-gate: ~$0.0013/call, filters obvious rejects before Sonnet. Gate at HAIKU_MIN_SCORE=60%.
+## AI Pipeline (updated 2026-03-02) — 3-tier: Haiku → Sonnet → Opus
+- **Auth: Claude Code CLI (OAuth/subscription) — no ANTHROPIC_API_KEY used in analyzer.**
+  All three tiers call `claude --model X --print --dangerously-skip-permissions` subprocess.
+  ANTHROPIC_API_KEY is stripped from env before each call to force OAuth.
+- Context folder: storage/context/*.md written before every Haiku call by context_writer.py.
+  Files: market_snapshot.md, recent_activity.md, macro.md, live_edge.md
+  Claude CLI subprocess can read these for richer, auditable context.
+- Haiku pre-gate: filters obvious rejects. Gate at HAIKU_MIN_SCORE=60%.
   C7/C8 (event/blackout) hard-blocked BEFORE Haiku. Cooldown ONLY on Haiku REJECT (15 min).
   Haiku approve (any outcome) → no cooldown — bot can catch next setup immediately.
   Proportional formula: score=30+int(passed*70/10). 5/10=65 (passes gate), 4/10=58 (fails gate).
   LONG needs 6/10 (72≥70), SHORT needs 7/10 (79≥75).
-- Sonnet: tool use structured output, prompt caching, compact pipe-format inputs (~$0.004/call)
-- Opus: devil's advocate framing, called only if Sonnet 75–86%. Skipped if <75% (low conf) or ≥87% (very high conf). (~$0.010/call)
+- Sonnet: prompt-based JSON output, robust regex parser with safe defaults ($0 subscription)
+- Opus: devil's advocate framing, called only if Sonnet 75–86%. ($0 subscription)
+- _cost field always 0.0 (subscription). _tokens always zeros. Kept for interface compat.
 - prompt_learnings.json: auto-updated after each trade close, injected into future prompts
-- CLAUDE.md in project root: auto-loaded by all sessions + dashboard subprocess (deadlock fix)
+- CLAUDE.md in project root: auto-loaded by all Claude Code sessions + dashboard subprocess
 - Dashboard chat: rolling history summary (capped ~650 tokens) + bot_state.json injection
 - Skills: ~/.claude/skills/ — 5 auto-drafted, more created when query type hits 5+ uses/week
-- Opus pricing corrected: $15/$75 per million tokens. Monthly cost target: ~$3-5.
 - HC retired for routine use. Use skills instead. HC = break-glass only.
 
 ## Important Behavioral Notes (hard-won, never forget)

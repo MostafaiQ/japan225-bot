@@ -48,6 +48,7 @@ from trading.risk_manager import RiskManager
 from storage.database import Storage
 from notifications.telegram_bot import TelegramBot
 from ai.analyzer import AIAnalyzer, WebResearcher
+from ai.context_writer import write_context
 
 logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
 logger = logging.getLogger("monitor")
@@ -545,6 +546,25 @@ class TradingMonitor:
                            and k not in ("no_event_1hr", "no_friday_monthend")]
         live_edge = self.storage.get_ai_context_block()
         indicators = {"m15": tf_15m, "h4": tf_4h, "daily": tf_daily}
+
+        # Write context files before AI call — gives Claude richer, auditable context
+        recent_scans_ctx = self.storage.get_recent_scans(15)
+        recent_trades_ctx = self.storage.get_recent_trades(10)
+        write_context(
+            indicators=indicators,
+            market_context={
+                "session_name": session.get("name", ""),
+                "trading_mode": "live",
+                "prescreen_setup_type": setup.get("type", ""),
+                "prescreen_reasoning": setup.get("reason", ""),
+            },
+            web_research=web_research,
+            recent_scans=recent_scans_ctx,
+            recent_trades=recent_trades_ctx,
+            live_edge_block=live_edge,
+            local_confidence=local_conf,
+            prescreen_direction=prescreen_direction,
+        )
 
         haiku_result = self.analyzer.precheck_with_haiku(
             setup_type=setup.get("type", ""),
