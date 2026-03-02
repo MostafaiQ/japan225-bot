@@ -178,7 +178,8 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 - brier_scores.json: Brier score calibration tracking (updated by post_trade_analysis, read by /brier-check skill)
 - CLAUDE.md in project root: auto-loaded by all Claude Code sessions + dashboard subprocess
 - Dashboard chat: rolling history summary (capped ~650 tokens) + bot_state.json injection
-- Skills: ~/.claude/skills/ — 8 skills (session-brief, brier-check, cost-report, deploy-check, prompt-audit, strategy-health, trade-review, backtest-import)
+- Skills: ~/.claude/skills/ — 9 skills (session-brief, brier-check, cost-report, deploy-check, prompt-audit, strategy-health, trade-review, backtest-import, recall)
+- QMD v1.0.7: 3 collections (digests, project-docs, scan-data). `/recall` skill for BM25 search. Re-index cron at :05 past even hours.
 - Agents: ~/.claude/agents/ — market-analyst.md (read-only market analysis), trade-debugger.md (trade postmortem)
 - Hooks: PostToolUse on Edit|Write of .py → auto-runs pytest (catches regressions during dev)
 - HC retired for routine use. Use skills instead. HC = break-glass only.
