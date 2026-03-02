@@ -558,6 +558,7 @@ class TradingMonitor:
             tf_15m=tf_15m,
             upcoming_events=web_research.get("economic_calendar", []),
             web_research=web_research,
+            setup_type=prescreen_result.get("type"),
         )
         logger.info(f"Local confidence: {local_conf['score']}% ({prescreen_direction})")
 

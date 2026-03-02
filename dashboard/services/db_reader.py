@@ -68,17 +68,26 @@ def get_position() -> dict | None:
 
 # ── Scans ─────────────────────────────────────────────────────────────────────
 
-def get_recent_scans(limit: int = 10) -> list[dict]:
+def get_recent_scans(limit: int = 50, date: str = None, include_no_setup: bool = False) -> list[dict]:
+    """Fetch recent scans. Optional date filter (YYYY-MM-DD). Optional include_no_setup."""
     try:
         with _conn() as conn:
+            where_parts = []
+            params: list = []
+            if not include_no_setup:
+                where_parts.append("action_taken != 'no_setup'")
+            if date:
+                where_parts.append("timestamp LIKE ?")
+                params.append(f"{date}%")
+            where_clause = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+            params.append(limit)
             rows = conn.execute(
-                "SELECT timestamp, session, price, setup_found, confidence, action_taken "
-                "FROM scans WHERE action_taken != 'no_setup' ORDER BY id DESC LIMIT ?", (limit,)
+                f"SELECT timestamp, session, price, setup_found, confidence, action_taken "
+                f"FROM scans {where_clause} ORDER BY id DESC LIMIT ?", params
             ).fetchall()
         result = []
         for r in rows:
             d = dict(r)
-            # Try to parse direction from action_taken
             a = d.get("action_taken", "") or ""
             d["direction"] = "LONG" if "long" in a.lower() else ("SHORT" if "short" in a.lower() else None)
             result.append(d)
@@ -141,11 +150,15 @@ def get_tokens_today() -> dict:
 
 
 def get_ai_calls_today() -> int:
+    """Count scans that went through AI evaluation (Sonnet/Opus/Haiku) today.
+    Subscription = $0 cost, so we check action_taken instead of api_cost."""
     today = date.today().isoformat()
     try:
         with _conn() as conn:
             r = conn.execute(
-                "SELECT COUNT(*) as c FROM scans WHERE timestamp LIKE ? AND api_cost > 0",
+                "SELECT COUNT(*) as c FROM scans WHERE timestamp LIKE ? "
+                "AND (action_taken LIKE 'ai_rejected%' OR action_taken LIKE 'haiku_rejected%' "
+                "OR action_taken LIKE 'pending%')",
                 (f"{today}%",)
             ).fetchone()
         return int(r["c"]) if r else 0

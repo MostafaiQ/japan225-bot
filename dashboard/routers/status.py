@@ -78,7 +78,7 @@ async def status():
         position["current_price"]    = cp
         position["unrealised_pnl"]   = round(pnl, 1)
 
-    scans = db_reader.get_recent_scans(10)
+    scans = db_reader.get_recent_scans(50)
 
     # Uptime from state or started_at
     uptime = state.get("uptime", "—")

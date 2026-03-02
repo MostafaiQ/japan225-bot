@@ -15,13 +15,13 @@ Criteria (11 total):
   C2  entry_level       — price at BB/EMA technical level
   C3  rsi_15m           — 15M RSI in valid entry zone
   C4  tp_viable         — price below/above BB mid (room for TP)
-  C5  structure         — 15M EMA50 structure agrees with direction
+  C5  structure         — 15M EMA50 or reversal signals (setup-type-aware)
   C6  macro             — 4H RSI in healthy range
   C7  no_event_1hr      — no HIGH-impact event within 60 min
   C8  no_friday_monthend— not Friday blackout / month-end
   C9  volume            — 15M volume not critically low (signal != LOW)
-  C10 trend_4h          — 4H EMA50 agrees with direction (HTF alignment)
-  C11 ha_aligned        — 15M Heiken Ashi candle aligned with direction
+  C10 trend_4h          — 4H EMA50 or oversold reversal (setup-type-aware)
+  C11 ha_aligned        — 15M HA or reversal signals (setup-type-aware)
 """
 import logging
 from datetime import datetime, timezone
@@ -38,8 +38,8 @@ MAX_SCORE = 100
 MIN_CONFIDENCE_LONG = 70
 MIN_CONFIDENCE_SHORT = 75
 
-# RSI ranges — LONG upper gate uses RSI_ENTRY_HIGH_BOUNCE from settings (currently 55)
-LONG_RSI_LOW = 35
+# RSI ranges — LONG lower gate widened to 30 (captures RSI 30-35 near BB mid)
+LONG_RSI_LOW = 30  # widened from 35 to match detect_setup bb_mid_bounce range
 LONG_RSI_HIGH = RSI_ENTRY_HIGH_BOUNCE  # imported from settings — single source of truth
 SHORT_RSI_LOW, SHORT_RSI_HIGH = 55, 75
 
@@ -57,6 +57,7 @@ def compute_confidence(
     tf_15m: dict,
     upcoming_events: list = None,
     web_research: dict = None,
+    setup_type: str = None,
 ) -> dict:
     """
     Compute local confidence score for a potential trade.
@@ -133,7 +134,7 @@ def compute_confidence(
             ema50_15m is not None and abs(price - ema50_15m) <= EMA50_THRESHOLD_PTS
         )
         near_bb_lower = (
-            bb_lower is not None and abs(price - bb_lower) <= 80
+            bb_lower is not None and abs(price - bb_lower) <= 150  # widened to match detect_setup
         )
         # VWAP fallback: price below VWAP within 150pts (discount zone)
         near_vwap_long = (
@@ -193,7 +194,7 @@ def compute_confidence(
     # Setup-aware: BB lower bounce uses deeply oversold zone (20-40), not the standard 35-48
     if rsi_15m is not None:
         if direction == "LONG":
-            at_bb_lower = bb_lower is not None and abs(price - bb_lower) <= 80
+            at_bb_lower = bb_lower is not None and abs(price - bb_lower) <= 150
             if at_bb_lower:
                 c3 = 20 <= rsi_15m <= 40
                 reasons["rsi_15m"] = f"RSI 15M: {rsi_15m:.1f} (BB lower zone 20-40)"
@@ -224,12 +225,24 @@ def compute_confidence(
         )
     criteria["tp_viable"] = c4
 
-    # ---- Criterion 5: Price Structure ----
-    # LONG: price above EMA50 on 15M (higher lows structure)
-    # SHORT: price below EMA50 on 15M (lower highs structure)
+    # ---- Criterion 5: Price Structure (setup-type-aware) ----
+    # For oversold setups (bb_lower_bounce, oversold_reversal): being below EMA50 is EXPECTED.
+    # Accept reversal signals (swept_low, bullish candle, lower wick) instead of EMA50 position.
+    _oversold_setup = setup_type in ("bollinger_lower_bounce", "oversold_reversal")
     if direction == "LONG":
-        c5 = bool(above_ema50_15m) if above_ema50_15m is not None else False
-        reasons["structure"] = f"Price {'above' if c5 else 'below'} EMA50 on 15M"
+        if _oversold_setup:
+            # Oversold: check for reversal signals instead of EMA50 position
+            swept_low = tf_15m.get("swept_low", False)
+            candle_patterns = tf_15m.get("candlestick_patterns", [])
+            bullish_candle = any(p.get("direction") == "bullish" for p in candle_patterns) if candle_patterns else False
+            c_open = tf_15m.get("open")
+            c_low = tf_15m.get("low")
+            lower_wick = (min(c_open, price) - c_low) if (c_open is not None and c_low is not None) else 0
+            c5 = bool(above_ema50_15m) or swept_low or bullish_candle or lower_wick >= 15
+            reasons["structure"] = f"Oversold structure: {'above EMA50' if above_ema50_15m else 'below EMA50 (expected)'} | reversal={'Y' if (swept_low or bullish_candle or lower_wick >= 15) else 'N'}"
+        else:
+            c5 = bool(above_ema50_15m) if above_ema50_15m is not None else False
+            reasons["structure"] = f"Price {'above' if c5 else 'below'} EMA50 on 15M"
     else:
         c5 = (not bool(above_ema50_15m)) if above_ema50_15m is not None else False
         reasons["structure"] = f"Price {'below (bearish)' if c5 else 'above (not bearish)'} EMA50 on 15M"
@@ -294,12 +307,22 @@ def compute_confidence(
     reasons["volume"] = f"15M volume signal: {volume_signal}"
     criteria["volume"] = c9
 
-    # ---- Criterion 10: 4H EMA50 Alignment (HTF confirmation) ----
+    # ---- Criterion 10: 4H EMA50 Alignment (setup-type-aware) ----
+    # Oversold bounces: 4H below EMA50 is EXPECTED (that's why it's oversold).
+    # Pass if RSI 4H < 40 (multi-TF oversold confluence) or daily bullish (structural support).
     above_ema50_4h = tf_4h.get("above_ema50")
     if above_ema50_4h is not None:
         if direction == "LONG":
-            c10 = bool(above_ema50_4h)
-            reasons["trend_4h"] = f"4H EMA50: {'above (bullish)' if c10 else 'below (bearish)'}"
+            if _oversold_setup and not bool(above_ema50_4h):
+                # Oversold: below 4H EMA50 is expected; pass if multi-TF oversold or daily bullish
+                rsi_4h_oversold = rsi_4h is not None and rsi_4h < 45
+                c10 = rsi_4h_oversold or bool(above_ema200_daily)
+                rsi_4h_str = f"{rsi_4h:.1f}" if rsi_4h is not None else "N/A"
+                daily_str = "bullish" if above_ema200_daily else "bearish"
+                reasons["trend_4h"] = f"4H EMA50: below (expected for oversold) | 4H RSI={rsi_4h_str} | daily={daily_str}"
+            else:
+                c10 = bool(above_ema50_4h)
+                reasons["trend_4h"] = f"4H EMA50: {'above (bullish)' if c10 else 'below (bearish)'}"
         else:
             c10 = not bool(above_ema50_4h)
             reasons["trend_4h"] = f"4H EMA50: {'below (bearish)' if c10 else 'above (not bearish)'}"
@@ -308,14 +331,24 @@ def compute_confidence(
         reasons["trend_4h"] = "4H EMA50 unavailable — defaulting pass"
     criteria["trend_4h"] = c10
 
-    # ---- Criterion 11: Heiken Ashi Alignment ----
+    # ---- Criterion 11: Heiken Ashi Alignment (setup-type-aware) ----
+    # Oversold bounces: bearish HA is EXPECTED at the reversal point (mean-reversion).
+    # Pass if: HA already turning bullish, OR streak weakening (>= -2), OR bullish candle pattern present.
     ha_bullish = tf_15m.get("ha_bullish")
     ha_streak = tf_15m.get("ha_streak")
     streak_str = f", streak={ha_streak}" if ha_streak is not None else ""
     if ha_bullish is not None:
         if direction == "LONG":
-            c11 = bool(ha_bullish)
-            reasons["ha_aligned"] = f"HA 15M: {'bullish' if c11 else 'bearish'}{streak_str}"
+            if _oversold_setup and not bool(ha_bullish):
+                # Oversold: bearish HA expected at reversal point
+                streak_weakening = ha_streak is not None and ha_streak >= -2
+                candle_patterns_ha = tf_15m.get("candlestick_patterns", [])
+                bullish_pattern_ha = any(p.get("direction") == "bullish" for p in candle_patterns_ha) if candle_patterns_ha else False
+                c11 = streak_weakening or bullish_pattern_ha or (rsi_15m is not None and rsi_15m < 30)
+                reasons["ha_aligned"] = f"HA 15M: bearish (expected for oversold){streak_str} | streak_weakening={'Y' if streak_weakening else 'N'}"
+            else:
+                c11 = bool(ha_bullish)
+                reasons["ha_aligned"] = f"HA 15M: {'bullish' if c11 else 'bearish'}{streak_str}"
         else:
             c11 = not bool(ha_bullish)
             reasons["ha_aligned"] = f"HA 15M: {'bearish (aligned SHORT)' if c11 else 'bullish (counter-HA)'}{streak_str}"

@@ -1,6 +1,6 @@
 # ai/analyzer.py — DIGEST (updated 2026-03-02)
-# Single-subprocess pipeline: Sonnet 4.6 with Opus sub-agent for borderline calls.
-# Haiku pre-gate REMOVED. Separate Opus subprocess REMOVED. All in one `claude` invocation.
+# Single-subprocess pipeline: Sonnet 4.6 primary, Opus 4.6 sub-agent for borderline/oversold setups.
+# Haiku pre-gate REMOVED. Separate Opus subprocess REMOVED. All in one `claude` invocation with --agents flag.
 # AUTH: Claude Code CLI subprocess (OAuth/subscription). No ANTHROPIC_API_KEY used.
 # JSON output via prompt schema + regex parser. No tool use schemas.
 # Context files written to storage/context/ by ai/context_writer.py before each call.
@@ -13,10 +13,10 @@ _cost always 0.0. _tokens always zeros. Kept for interface compat with save_scan
 ## class AIAnalyzer
 __init__(): total_cost=0.0 (subscription, always zero)
 
-_run_claude(model, system_prompt, user_prompt, timeout=180) -> str
-  # subprocess.run([CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions", "--agents", agents_json])
-  # agents_json defines "opus_reviewer" sub-agent (model=OPUS_MODEL)
-  # Sonnet can spawn this sub-agent internally for borderline 72-86% calls
+_run_claude(model, system_prompt, user_prompt, use_opus_agent=False, timeout=180) -> str
+  # subprocess.run([CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions", ...agents_json...])
+  # If use_opus_agent=True: agents_json defines "opus_reviewer" sub-agent (model=OPUS_MODEL)
+  # If use_opus_agent=False: no --agents flag, standard Sonnet run only
   # Strips ANTHROPIC_API_KEY from env to force OAuth.
   # Returns stdout string. Returns "" on timeout or binary not found.
 
@@ -30,18 +30,24 @@ _analyze(model, indicators, recent_scans, market_context, web_research,
          prescreen_direction=None, local_confidence=None, live_edge_block=None,
          failed_criteria=None) -> dict
   # Builds prompt via build_scan_prompt() + JSON schema trailer
+  # Conditional Opus: if local_confidence in 60-86% range → use_opus_agent=True, calls _run_claude with Opus
+  # Parse failure auto-retry: on first parse failure, retries once without Opus (use_opus_agent=False)
   # Calls _run_claude() → _parse_json() → returns dict + _model, _cost, _tokens
-  # Safe default on parse failure: {setup_found: False, confidence: 0, ...}
+  # Safe default on parse failure after retry: {setup_found: False, confidence: 0, ...}
 
 ## _parse_json(text, default) -> dict
 Tries fenced ```json...``` block first, then any {…} in text, then returns default.
 Logs warning if parse fails.
 
 ## build_system_prompt() -> str
-Compact reference card. ~280 tokens. Includes HA, FVG, Fibonacci, sweep signal guidance.
+Compact reference card. ~350 tokens. Includes HA, FVG, Fibonacci, sweep signal guidance.
 VWAP guidance: above=premium (SHORT), below=discount (LONG). PDH/PDL.
 11-criteria confidence breakdown. Quick-reject guidance for junk setups.
-OPUS REVIEW instruction: spawn opus_reviewer agent for borderline 72-86% confidence.
+NEW: MEAN-REVERSION BOUNCE RULES section:
+  - bb_lower_bounce: ±150pts from lower band, RSI 20-40, reversal confirms on wick/HA/candle/sweep.
+  - oversold_reversal: RSI<30 + daily bullish + reversal confirm.
+  Both: expect to fail C5/C10/C11 (EMA50 gates relaxed for oversold).
+Opus review instructions simplified for oversold setups (focus on reversal signals).
 Passed as <system> block in _run_claude.
 
 ## build_scan_prompt(..., failed_criteria=None) -> str
@@ -65,3 +71,14 @@ Also computes Brier score in storage/data/brier_scores.json (last 100 trades).
 ## class WebResearcher
 research() -> dict  # Synchronous/blocking. Run via run_in_executor.
 Returns: {timestamp, nikkei_news, economic_calendar, vix, usd_jpy, fear_greed}
+
+_get_nikkei_news() -> list[str]
+  # Google News RSS feed: "Nikkei 225 OR Japan economy OR BOJ"
+  # Returns top 5 headlines with timestamps
+
+_get_calendar() -> list[dict]
+  # nager.date API for JP public holidays and key economic events
+  # Filters for HIGH-impact only (BOJ, NFP, CPI, PPI, etc.)
+
+_get_fear_greed() -> float|None
+  # CNN Fear & Greed Index API. Returns index value or None if unavailable.

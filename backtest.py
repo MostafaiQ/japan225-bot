@@ -296,6 +296,7 @@ def find_setups(df_15m: pd.DataFrame, df_4h: pd.DataFrame,
                 tf_15m=tf_15m,
                 upcoming_events=[],
                 web_research=None,
+                setup_type=setup.get("type"),
             )
             logging.disable(logging.NOTSET)
         except Exception:

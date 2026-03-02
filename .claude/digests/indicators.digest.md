@@ -2,6 +2,7 @@
 # Purpose: Pure math. No API calls, no side effects. Fully testable.
 # Updated 2026-03-02: Phase 1 indicators (HA, FVG, Fibonacci, PDH/PDL, liquidity sweep)
 # Updated 2026-03-02: _build_confluence() wired into all 4 setup paths. indicators_snapshot expanded with Phase 1 keys.
+# Updated 2026-03-02: bb_mid_bounce RSI 35→30, relaxed bounce_starting gate, BB_LOWER 80→150pts, new oversold_reversal type.
 
 ## Functions
 
@@ -61,9 +62,10 @@ detect_setup(tf_daily, tf_4h, tf_15m, tf_5m=None) -> dict
   # Reasoning now includes "Confluence: ..." and "Caution: ..." from _build_confluence().
   #
   # LONG paths:
-  #   bollinger_mid_bounce:   near_mid ±150pts, RSI 35-65, bounce_starting (price>prev_close)
+  #   bollinger_mid_bounce:   near_mid ±150pts, RSI 30-65, bounce_starting (price>prev_close OR lower_wick>=20 OR HA bullish OR bullish candle pattern)
   #                           above_ema50 gate REMOVED. EMA50 status in reasoning string for AI.
-  #   bollinger_lower_bounce: near_lower ±80pts, RSI 20-40, lower_wick >=15pts
+  #   bollinger_lower_bounce: near_lower ±150pts, RSI 20-40, lower_wick >=15pts
+  #   oversold_reversal:      RSI<30 + daily bullish + reversal confirm (wick≥10 OR HA bullish OR candle pattern OR liquidity sweep)
   #   ema50_bounce:           DISABLED (ENABLE_EMA50_BOUNCE_SETUP=False)
   #
   # SHORT paths:

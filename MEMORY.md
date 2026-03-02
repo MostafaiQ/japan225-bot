@@ -116,6 +116,10 @@ Dashboard chat: Claude Code CLI (claude --print). No model constant needed.
 - core/confidence.py: 8→10→11-criteria. C9 volume, C10 4H EMA50, C11 HA alignment. Proportional formula: 30+int(n*70/11). LONG 70% needs 7/11, SHORT 75% needs 8/11. 264/264 tests pass.
 - monitor.py: No cooldown on AI reject — $0/call subscription, scan again in 5 min. Haiku pre-gate REMOVED (2026-03-02).
 - monitor.py + status.py: Session "—" bug fixed — _current_session persists across write_state() calls. Next Scan In frozen bug fixed — bot stores next_scan_at (ISO datetime), status.py computes countdown dynamically on every API poll.
+- indicators.py: bb_mid_bounce RSI range 35→30 (captures 30-35 zone). BB_LOWER_THRESHOLD 80→150. Relaxed bounce_starting gate for oversold RSI<40 (accepts wick/HA/candle pattern). New `oversold_reversal` setup type (RSI<30 + daily bullish + any reversal confirm).
+- confidence.py: C5/C10/C11 now setup-type-aware. bb_lower_bounce + oversold_reversal: below-EMA50=expected, bearish HA=expected, 4H bearish passes if multi-TF oversold or daily bullish. LONG_RSI_LOW 35→30. C2 near_bb_lower 80→150.
+- analyzer.py: Conditional Opus (--agents only when local conf 60-86%). Mean-reversion bounce rules in system prompt. Parse error auto-retry. WebResearcher: real news (Google News RSS), JP holidays (nager.date), CNN Fear & Greed.
+- Scan analyzer data (2026-03-02): 29 missed moves of 150+pts, 48% AI LONG miss rate, RSI 20-35 zone averaged +327pts. These changes target 65-72% reduction in missed moves.
 
 ## Dashboard Fixes Applied (2026-03-01)
 - monitor.py: _last_scan_detail added to bot_state.json. Scan records written for ALL active-session outcomes (no_setup, cooldown, low_conf, event_block, friday_block). Previously only Haiku-rejected and Sonnet/Opus scans wrote records.
@@ -126,16 +130,17 @@ Dashboard chat: Claude Code CLI (claude --print). No model constant needed.
 
 ## Strategy History (archived — see high-chancellor-archive.md for full details)
 HC 6-fix redesign 2026-02-28: ADVERSE tiers widened, bounce confirmation added, RSI tuned,
-C4 redesigned, EMA50 bounce disabled, session gate removed. Tests: 320/320 passing (C9/C10/C11, new indicators, Phase 1 confluence wiring, Phase 2 pivots/candle/body).
+C4 redesigned, EMA50 bounce disabled, session gate removed. Tests: 328/328 passing (C9/C10/C11, new indicators, Phase 1 confluence wiring, Phase 2 pivots/candle/body, oversold setup-type-aware scoring).
 Live trading active 2026-03-01. Historical backtest (bad): 613 trades, 0.8% WR → fixed.
 
 ---
 
-## Setup Types (detect_setup — updated 2026-03-01)
+## Setup Types (detect_setup — updated 2026-03-02)
 | Type | Direction | Trigger | RSI | Gate |
 |------|-----------|---------|-----|------|
-| bollinger_mid_bounce | LONG | price ±150pts from BB mid | 35-65 | bounce_starting (EMA50 status in reasoning for AI) |
-| bollinger_lower_bounce | LONG | price ±80pts from BB lower | 20-40 | lower_wick ≥15pts (no EMA50 gate) |
+| bollinger_mid_bounce | LONG | price ±150pts from BB mid | 30-65 | bounce_starting OR (RSI<40 + wick/HA/candle pattern) |
+| bollinger_lower_bounce | LONG | price ±150pts from BB lower | 20-40 | lower_wick ≥15pts (no EMA50 gate) |
+| oversold_reversal | LONG | RSI <30 + daily bullish | <30 | wick≥10 OR HA bullish OR candle pattern OR sweep |
 | bollinger_upper_rejection | SHORT | price ±150pts from BB upper | 55-75 | below_ema50 |
 | ema50_rejection | SHORT | price ≤ema50+2, dist ≤150 | 50-70 | daily bearish |
 SL=150 (WFO-validated), TP=400 for all types.
@@ -162,14 +167,18 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
   Both models run within the same subprocess — no extra Node.js startup overhead.
 - Context folder: storage/context/*.md written before every Sonnet call by context_writer.py.
   Files: market_snapshot.md, recent_activity.md, macro.md, live_edge.md
-- Haiku pre-gate: **REMOVED** (2026-03-02). Added ~5-10s latency per scan with no value at $0/call.
-  Quick-reject logic absorbed into Sonnet's system prompt. Local confidence floor at 60% filters junk.
+- Haiku pre-gate: **REMOVED** (2026-03-02). Quick-reject logic in Sonnet prompt.
   C7/C8 (event/blackout) hard-blocked BEFORE Sonnet. No cooldown on AI reject.
   Proportional formula: score=30+int(passed*70/11). 11/11=100%, 7/11=74%, 8/11=80%.
   LONG needs 7/11 (74≥70), SHORT needs 8/11 (80≥75).
-- Sonnet 4.6: adaptive thinking (on by default). Receives failed_criteria + quick-reject guidance.
-  Borderline 72-86% → spawns opus_reviewer sub-agent internally for devil's advocate.
-  High confidence (>=87%) or low (<72%) → Sonnet decides alone. ($0 subscription)
+- C5/C10/C11 now setup-type-aware: bb_lower_bounce + oversold_reversal get lenient treatment
+  (below-EMA50 expected, bearish HA expected, 4H bearish expected for mean-reversion).
+- Sonnet 4.6: adaptive thinking. Mean-reversion bounce rules in system prompt.
+  **Conditional Opus**: --agents only loaded when local conf 60-86%. Clear approve (≥87%) or
+  reject (≤59%) → no Opus overhead. Saves ~25-30s on non-borderline calls.
+  Parse error → automatic retry once (without Opus).
+- WebResearcher: _get_nikkei_news (Google News RSS), _get_calendar (nager.date JP holidays),
+  _get_fear_greed (CNN Fear & Greed). VIX + USD/JPY unchanged.
 - U2: Sonnet reasoning logged (first 200 chars) after every call.
 - U4: 5-min short cooldown after Sonnet/Opus rejection (prevents same-setup re-scan).
 - U5: Warning logged when 4H fetch fails but bot still escalates.

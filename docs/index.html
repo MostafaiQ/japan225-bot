@@ -474,13 +474,26 @@
         </div>
       </div>
       <div class="card">
-        <div class="flex-between" style="margin-bottom:14px;">
+        <div class="flex-between" style="margin-bottom:14px;flex-wrap:wrap;gap:8px;">
           <div class="card-title" style="margin-bottom:0">Recent Scans</div>
-          <button class="btn btn-ghost btn-sm" onclick="loadOverview()">Refresh</button>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+            <input type="date" id="scanDateFilter" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:12px;" onchange="loadScans()" title="Filter by date">
+            <select id="scanLimit" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:12px;" onchange="loadScans()">
+              <option value="25">25</option>
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+              <option value="250">250</option>
+            </select>
+            <label style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:3px;">
+              <input type="checkbox" id="scanShowAll" onchange="loadScans()" style="margin:0;"> All
+            </label>
+            <button class="btn btn-ghost btn-sm" onclick="loadScans()">Refresh</button>
+          </div>
         </div>
-        <div class="tbl-wrap">
+        <div id="scanSummary" style="font-size:12px;color:var(--text-muted);margin-bottom:8px;"></div>
+        <div class="tbl-wrap" style="max-height:500px;overflow-y:auto;">
           <table>
-            <thead><tr>
+            <thead style="position:sticky;top:0;z-index:1;"><tr>
               <th class="sortable sort-active" onclick="sortScans(0)" id="sh0">Time <i class="sort-icon">▼</i></th>
               <th class="sortable" onclick="sortScans(1)" id="sh1">Session <i class="sort-icon">↕</i></th>
               <th class="sortable" onclick="sortScans(2)" id="sh2">Price <i class="sort-icon">↕</i></th>
@@ -905,9 +918,9 @@ const _actionLabels = {
   haiku_rejected_short: '🤖 Pre-gate ✗ (S)',
   ai_rejected_long:     '🤖 AI ✗ (L)',
   ai_rejected_short:    '🤖 AI ✗ (S)',
-  pending:              '📤 Alert sent',
-  pending_long:         '📤 Alert (L)',
-  pending_short:        '📤 Alert (S)',
+  pending:              '✅ Approved → Alert',
+  pending_long:         '✅ Approved (L)',
+  pending_short:        '✅ Approved (S)',
 };
 
 let _scansData = [];
@@ -930,6 +943,30 @@ function sortScans(col) {
 function renderScans(scans) {
   _scansData = scans;
   _renderScansTable(scans);
+  const summary = document.getElementById('scanSummary');
+  if (summary) summary.textContent = `Showing ${scans.length} scans`;
+}
+
+async function loadScans() {
+  if (!S.url) return;
+  const dateEl = document.getElementById('scanDateFilter');
+  const limitEl = document.getElementById('scanLimit');
+  const allEl = document.getElementById('scanShowAll');
+  const date = dateEl?.value || '';
+  const limit = limitEl?.value || '50';
+  const showAll = allEl?.checked || false;
+  let url = `/api/scans?limit=${limit}`;
+  if (date) url += `&date=${date}`;
+  if (showAll) url += `&all=true`;
+  try {
+    const d = await req('GET', url);
+    renderScans(d.scans || []);
+    const summary = document.getElementById('scanSummary');
+    if (summary) summary.textContent = `Showing ${(d.scans||[]).length} of ${d.total} scans` + (d.date ? ` for ${d.date}` : '');
+  } catch(e) {
+    const summary = document.getElementById('scanSummary');
+    if (summary) summary.textContent = 'Failed to load scans';
+  }
 }
 
 function _renderScansTable(scans) {
@@ -1152,7 +1189,7 @@ async function sendChat() {
         // button stays disabled until job finishes (managed inside _startJobPolling)
       } else if (d.response) {
         // Legacy sync fallback
-        if (thinkEl) thinkEl.remove();
+        if (thinkEl) { if (thinkEl._elapsedTimer) clearInterval(thinkEl._elapsedTimer); thinkEl.remove(); }
         S.chat.push({ role:'assistant', content: d.response });
         _saveHistory();
         addMsg('assistant', d.response);
@@ -1177,10 +1214,18 @@ function _addThinkingBubble() {
   d.innerHTML = `<div class="chat-avatar claude">✦</div>
     <div class="chat-body">
       <div class="bubble"><div class="think-dots"><span></span><span></span><span></span></div></div>
-      <div class="think-status">Thinking…</div>
+      <div class="think-status">Thinking… <span class="think-elapsed" style="color:var(--text-muted);font-size:11px;">0s</span></div>
     </div>`;
   box.appendChild(d);
   box.scrollTop = box.scrollHeight;
+  // Elapsed timer
+  const startMs = Date.now();
+  const elapsedEl = d.querySelector('.think-elapsed');
+  d._elapsedTimer = setInterval(() => {
+    const s = Math.floor((Date.now() - startMs) / 1000);
+    if (s < 60) elapsedEl.textContent = s + 's';
+    else { const m = Math.floor(s/60); elapsedEl.textContent = m + 'm ' + (s%60) + 's'; }
+  }, 1000);
   return d;
 }
 
@@ -1191,14 +1236,16 @@ function _startJobPolling(jobId, thinkEl) {
 
   const poll = async () => {
     attempt++;
-    if (statusEl) statusEl.textContent = _thinkPhrases[Math.min(Math.floor(attempt / 2), _thinkPhrases.length - 1)];
+    const elapsedSpan = statusEl ? statusEl.querySelector('.think-elapsed') : null;
+    const phrase = _thinkPhrases[Math.min(Math.floor(attempt / 2), _thinkPhrases.length - 1)];
+    if (statusEl) { statusEl.innerHTML = phrase + (elapsedSpan ? ' <span class="think-elapsed" style="color:var(--text-muted);font-size:11px;">' + (elapsedSpan?.textContent||'') + '</span>' : ''); }
     try {
       const d = await req('GET', '/api/chat/status/' + jobId);
       if (d.status === 'done' || d.status === 'error') {
         clearInterval(S.pendingJob && S.pendingJob.timer);
         localStorage.removeItem('pendingJob');
         S.pendingJob = null;
-        if (thinkEl) thinkEl.remove();
+        if (thinkEl) { if (thinkEl._elapsedTimer) clearInterval(thinkEl._elapsedTimer); thinkEl.remove(); }
         const btn = document.getElementById('chatBtn');
         if (btn) { btn.disabled = false; btn.innerHTML = 'Send'; }
         const reply = d.response || '(no response)';

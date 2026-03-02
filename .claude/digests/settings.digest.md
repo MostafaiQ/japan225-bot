@@ -26,6 +26,7 @@ RUNNER_VELOCITY_THRESHOLD=0.75  TRAILING_STOP_DISTANCE=150  TRAILING_STOP_INCREM
 BOLLINGER_PERIOD=20  BOLLINGER_STD=2.0  EMA_FAST=50  EMA_SLOW=200  RSI_PERIOD=14
 RSI_OVERSOLD=30  RSI_OVERBOUGHT=70  RSI_ENTRY_LOW=35  RSI_ENTRY_HIGH=55
 RSI_ENTRY_HIGH_BOUNCE=65   # RSI upper gate for BB mid bounce (raised from 55; AI gates RSI 55-65 momentum zone)
+# NOTE: RSI thresholds for confidence scoring (30, 35, etc.) are now in confidence.py/indicators.py, not settings.py
 
 ## Confidence
 CONFIDENCE_BASE=30  CONFIDENCE_CRITERIA = 8 keys × 10pts each  # max = 110, capped at 100

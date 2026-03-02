@@ -164,7 +164,7 @@ class TestLongCriteria:
 
     def test_rsi_below_long_zone_fails(self):
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
-        tf_15m["rsi"] = 30  # Below 35
+        tf_15m["rsi"] = 28  # Below 30 (widened from 35)
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         assert result["criteria"]["rsi_15m"] is False
 
@@ -505,3 +505,74 @@ class TestC11HaStreakReason:
         tf_15m["ha_streak"] = -3
         result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
         assert "streak=-3" in result["reasons"]["ha_aligned"]
+
+
+# ── Setup-Type-Aware Scoring (oversold bounces) ──────────────────────────────
+
+class TestOversoldSetupTypeAware:
+    """Tests for C5/C10/C11 setup-type-aware behavior for oversold setups."""
+
+    def _oversold_setup(self):
+        """Create an oversold LONG scenario: price below EMA50, 4H bearish, HA bearish."""
+        tf_daily = make_tf(price=38000, rsi=55, above_ema200=True, above_ema50=True)
+        tf_4h = make_tf(rsi=38, above_ema200=True, above_ema50=False)  # 4H bearish
+        tf_15m = make_tf(
+            price=37500, rsi=25,
+            bb_mid=37800, bb_lower=37550,
+            ema50=37700, above_ema50=False, above_ema200=False,
+        )
+        tf_15m["ha_bullish"] = False
+        tf_15m["ha_streak"] = -5
+        tf_15m["swept_low"] = True
+        return tf_daily, tf_4h, tf_15m
+
+    def test_c5_passes_for_bb_lower_bounce_below_ema50(self):
+        """C5 should pass for bb_lower_bounce even when below EMA50 (reversal signal present)."""
+        tf_daily, tf_4h, tf_15m = self._oversold_setup()
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m, setup_type="bollinger_lower_bounce")
+        assert result["criteria"]["structure"] is True
+        assert "expected" in result["reasons"]["structure"].lower()
+
+    def test_c5_fails_for_bb_mid_bounce_below_ema50(self):
+        """C5 should still fail for bb_mid_bounce when below EMA50 (not an oversold setup)."""
+        tf_daily, tf_4h, tf_15m = self._oversold_setup()
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m, setup_type="bollinger_mid_bounce")
+        assert result["criteria"]["structure"] is False
+
+    def test_c10_passes_for_oversold_reversal_with_daily_bullish(self):
+        """C10 should pass for oversold_reversal when daily is bullish even if 4H below EMA50."""
+        tf_daily, tf_4h, tf_15m = self._oversold_setup()
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m, setup_type="oversold_reversal")
+        assert result["criteria"]["trend_4h"] is True
+
+    def test_c10_fails_for_regular_setup_below_4h_ema50(self):
+        """C10 should fail for regular setup when below 4H EMA50."""
+        tf_daily, tf_4h, tf_15m = self._oversold_setup()
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m, setup_type="bollinger_mid_bounce")
+        assert result["criteria"]["trend_4h"] is False
+
+    def test_c11_passes_for_oversold_with_rsi_below_30(self):
+        """C11 should pass for oversold setup even with bearish HA when RSI < 30."""
+        tf_daily, tf_4h, tf_15m = self._oversold_setup()
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m, setup_type="bollinger_lower_bounce")
+        assert result["criteria"]["ha_aligned"] is True
+
+    def test_c11_fails_for_regular_with_bearish_ha(self):
+        """C11 should fail for regular setup with bearish HA."""
+        tf_daily, tf_4h, tf_15m = self._oversold_setup()
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m, setup_type="bollinger_mid_bounce")
+        assert result["criteria"]["ha_aligned"] is False
+
+    def test_oversold_setup_scores_higher_than_regular(self):
+        """Oversold setup should score higher than same indicators with regular setup type."""
+        tf_daily, tf_4h, tf_15m = self._oversold_setup()
+        result_oversold = compute_confidence("LONG", tf_daily, tf_4h, tf_15m, setup_type="bollinger_lower_bounce")
+        result_regular = compute_confidence("LONG", tf_daily, tf_4h, tf_15m, setup_type="bollinger_mid_bounce")
+        assert result_oversold["score"] > result_regular["score"]
+
+    def test_setup_type_none_defaults_to_regular(self):
+        """When no setup_type passed, C5/C10/C11 use regular logic."""
+        tf_daily, tf_4h, tf_15m = self._oversold_setup()
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        # Without setup_type, below-EMA50 = C5 fails
+        assert result["criteria"]["structure"] is False

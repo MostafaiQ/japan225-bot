@@ -888,10 +888,19 @@ def detect_setup(
     # --- LONG Setup 1: Bollinger Mid Bounce ---
     if bb_mid and rsi_15m:
         near_mid_pts = abs(price - bb_mid) <= 150
-        rsi_ok_long = 35 <= rsi_15m <= RSI_ENTRY_HIGH_BOUNCE
+        rsi_ok_long = 30 <= rsi_15m <= RSI_ENTRY_HIGH_BOUNCE  # widened from 35 to 30 (captures RSI 30-35 near BB mid)
         above_ema50 = tf_15m.get("above_ema50")
         prev_close = tf_15m.get("prev_close")
         bounce_starting = prev_close is not None and price > prev_close
+        # Relaxed bounce gate for oversold: if RSI<40, accept alternative reversal signals
+        if not bounce_starting and rsi_15m < 40:
+            candle_open_b = tf_15m.get("open")
+            candle_low_b  = tf_15m.get("low")
+            lower_wick_b = (min(candle_open_b, price) - candle_low_b) if (candle_open_b is not None and candle_low_b is not None) else 0
+            ha_bull = tf_15m.get("ha_bullish")
+            candle_patterns = tf_15m.get("candlestick_patterns", [])
+            bullish_pattern = any(p.get("direction") == "bullish" for p in candle_patterns) if candle_patterns else False
+            bounce_starting = lower_wick_b >= 20 or ha_bull or bullish_pattern
 
         if near_mid_pts and rsi_ok_long and bounce_starting:
             entry = price
@@ -926,7 +935,7 @@ def detect_setup(
     # Deeply oversold — strongest mean-reversion signal.
     # No above_ema50 gate: price may be below EMA50 at the lower band (expected).
     if bb_lower and rsi_15m:
-        near_lower_pts = abs(price - bb_lower) <= 80
+        near_lower_pts = abs(price - bb_lower) <= 150  # widened from 80 to match BB mid threshold
         rsi_ok_lower = 20 <= rsi_15m <= 40
         candle_open_l = tf_15m.get("open")
         candle_low_l  = tf_15m.get("low")
@@ -986,6 +995,55 @@ def detect_setup(
                     f"LONG: EMA50 bounce on 15M. Price {dist_ema50:.0f}pts from EMA50 ({ema50_15m:.0f}). "
                     f"RSI {rsi_15m:.1f}. {daily_str}."
                 ),
+            })
+            return result
+
+    # --- LONG Setup 4: Oversold Reversal (extreme mean-reversion) ---
+    # Fires when RSI < 30 and daily is bullish — textbook oversold reversal in uptrend.
+    # Weaker reversal confirmation: any wick, HA turn, or candle pattern suffices.
+    if rsi_15m and rsi_15m < 30 and daily_bullish:
+        candle_open_os = tf_15m.get("open")
+        candle_low_os  = tf_15m.get("low")
+        lower_wick_os = (min(candle_open_os, price) - candle_low_os) if (candle_open_os is not None and candle_low_os is not None) else 0
+        ha_bull_os = tf_15m.get("ha_bullish")
+        swept_low = tf_15m.get("swept_low", False)
+        candle_patterns_os = tf_15m.get("candlestick_patterns", [])
+        bullish_pattern_os = any(p.get("direction") == "bullish" for p in candle_patterns_os) if candle_patterns_os else False
+        reversal_confirm = lower_wick_os >= 10 or ha_bull_os or bullish_pattern_os or swept_low
+
+        if reversal_confirm:
+            entry = price
+            sl = entry - DEFAULT_SL_DISTANCE
+            tp = entry + DEFAULT_TP_DISTANCE
+            rsi_4h_note = f" 4H RSI {rsi_4h:.1f} — multi-TF oversold." if rsi_4h and rsi_4h < 40 else ""
+            conf_list, counter_list = _build_confluence(tf_15m, "LONG", pivots=pivots)
+            confirm_str = []
+            if lower_wick_os >= 10:
+                confirm_str.append(f"wick {lower_wick_os:.0f}pts")
+            if ha_bull_os:
+                confirm_str.append("HA bullish")
+            if bullish_pattern_os:
+                confirm_str.append("bullish candle pattern")
+            if swept_low:
+                confirm_str.append("liquidity sweep")
+            reasoning = (
+                f"LONG: Oversold reversal on 15M. "
+                f"RSI {rsi_15m:.1f} extremely oversold in daily uptrend. "
+                f"Reversal: {', '.join(confirm_str)}. "
+                f"{daily_str}.{rsi_4h_note}"
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "oversold_reversal",
+                "direction": "LONG",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
             })
             return result
 
@@ -1060,7 +1118,7 @@ def detect_setup(
         mid_dist = abs(price - bb_mid)
         diag_parts.append(f"BB_mid={mid_dist:.0f}pts({'OK' if mid_dist <= 150 else 'FAR'})")
     if rsi_15m is not None:
-        diag_parts.append(f"RSI={rsi_15m:.1f}({'OK' if 35 <= rsi_15m <= RSI_ENTRY_HIGH_BOUNCE else 'OUT'})")
+        diag_parts.append(f"RSI={rsi_15m:.1f}({'OK' if 30 <= rsi_15m <= RSI_ENTRY_HIGH_BOUNCE else 'OUT'})")
     prev_close = tf_15m.get("prev_close")
     if prev_close is not None:
         diag_parts.append(f"bounce={'OK' if price > prev_close else 'NO'}")

@@ -43,8 +43,9 @@ def build_system_prompt() -> str:
     return """Japan 225 Cash CFD analyst. LONG+SHORT bidirectional. No directional bias.
 
 SETUPS — LONG (daily trend in reasoning; counter-trend allowed if strong confluence):
-  bb_mid_bounce:     price ±150pts BB_mid | RSI15M 35-55 | bounce_starting=T
-  bb_lower_bounce:   price ±80pts BB_lower | RSI15M 20-40 | lower_wick ≥15pts | EMA50 below OK
+  bb_mid_bounce:     price ±150pts BB_mid | RSI15M 30-65 | bounce confirmed (price>prev_close OR oversold reversal signals)
+  bb_lower_bounce:   price ±150pts BB_lower | RSI15M 20-40 | lower_wick ≥15pts | EMA50 below OK
+  oversold_reversal: RSI15M <30 | daily bullish | reversal confirmation (wick/HA/candle/sweep)
     → Caution if vol=LOW, but not auto-reject (late session vol naturally lower)
 
 SETUPS — SHORT (min confidence 75% — BOJ risk; counter-trend allowed if strong confluence):
@@ -69,14 +70,23 @@ CONFIDENCE (11 criteria, proportional scoring, base 30, cap 100):
   price_structure | macro_aligned | no_event_1hr | no_friday_monthend
   volume (prefer NORMAL+) | trend_4h (EMA50 aligned) | ha_aligned (HA candle direction)
 
+MEAN-REVERSION BOUNCE RULES (CRITICAL — read before evaluating bb_lower_bounce or oversold_reversal):
+  These setups fire BECAUSE of bearish conditions. Do NOT reject them for being bearish:
+  - Bearish HA streak is EXPECTED at oversold reversal — it's the setup trigger, not a disqualifier.
+  - Price below EMA50 is EXPECTED for lower-band bounces — the band IS below EMA50 in selloffs.
+  - FVG supply zones are SOFT resistance, not hard ceilings — they frequently get filled during reversals.
+  - 4H bearish structure is EXPECTED — it creates the oversold condition for the bounce.
+  - Evaluate bounce QUALITY: wick rejection, pattern, sweep, volume surge, RSI divergence.
+  - For bb_lower_bounce/oversold_reversal: the DEFAULT should be to APPROVE if daily trend is bullish
+    and any reversal confirmation exists. Only reject if there's a specific concrete catalyst against
+    (imminent high-impact event, massive volume on breakdown, no reversal signal at all).
+
 QUICK REJECT: If ≥4 technical criteria fail AND volume is LOW AND no macro catalyst → set setup_found=false immediately.
   Do not spend analysis time on junk setups. Volume=LOW alone is NOT a reject (Tokyo session inherently lower).
 
-OPUS REVIEW: If your initial confidence lands in the 72-86% range (borderline zone),
-  you MUST use the Agent tool to spawn the "opus_reviewer" sub-agent. Pass it your full analysis
-  (direction, confidence, reasoning, indicator snapshot, risks) and ask it to challenge your case.
-  Incorporate Opus's feedback — if it finds a concrete disqualifying risk, reduce confidence or reject.
-  If your confidence is >=87% (clear approve) or <=71% (clear reject), skip Opus review.
+OPUS REVIEW: If an opus_reviewer agent is available AND your confidence lands in 72-86%,
+  use it to challenge your case. If no agent available, do your own devil's advocate check.
+  If confidence >=87% (clear approve) or <=71% (clear reject), skip extra review.
 
 EXIT: +150pts → SL to BE+10. TP=400pts. 75%TP in <2h → trail@150pts.
 EMA50_bounce setup: DISABLED — do not approve."""
@@ -354,11 +364,12 @@ class AIAnalyzer:
     def __init__(self):
         self.total_cost = 0.0  # Always $0 (subscription); kept for interface compat
 
-    def _run_claude(self, model: str, system_prompt: str, user_prompt: str, timeout: int = 180) -> tuple[str, dict]:
+    def _run_claude(self, model: str, system_prompt: str, user_prompt: str,
+                    timeout: int = 180, use_opus_agent: bool = False) -> tuple[str, dict]:
         """
         Invoke Claude Code CLI with OAuth credentials (no API key).
         Combines system + user prompt so Claude has full context in --print mode.
-        Includes Opus sub-agent definition so Sonnet can delegate devil's advocate review.
+        Opus sub-agent only loaded when use_opus_agent=True (borderline 60-86% local conf).
         Returns (output_text, token_estimates) — tokens are estimates from char count.
         """
         env = {**os.environ}
@@ -371,23 +382,22 @@ class AIAnalyzer:
         # Estimate input tokens: ~4 chars/token for English/structured data
         est_input_tokens = len(full_prompt) // 4
 
-        # Define Opus sub-agent for devil's advocate review within the same subprocess
-        from config.settings import OPUS_MODEL
-        agents_json = json.dumps({
-            "opus_reviewer": {
-                "description": "Devil's advocate trade setup reviewer. Challenges the analysis, finds risks, verifies technical case. Use when your confidence is 72-86% (borderline zone).",
-                "model": OPUS_MODEL,
-            }
-        })
+        # Build CLI command — only include Opus sub-agent when borderline confidence
+        cmd = [CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions"]
+        if use_opus_agent:
+            from config.settings import OPUS_MODEL
+            agents_json = json.dumps({
+                "opus_reviewer": {
+                    "description": "Devil's advocate trade setup reviewer. Challenges the analysis, finds risks, verifies technical case. Use when your confidence is 72-86% (borderline zone).",
+                    "model": OPUS_MODEL,
+                }
+            })
+            cmd.extend(["--agents", agents_json])
 
         start = time.time()
         try:
             result = subprocess.run(
-                [
-                    CLAUDE_BIN, "--model", model, "--print",
-                    "--dangerously-skip-permissions",
-                    "--agents", agents_json,
-                ],
+                cmd,
                 input=full_prompt,
                 capture_output=True,
                 text=True,
@@ -480,17 +490,33 @@ class AIAnalyzer:
             f'"trend_observation": "...", "warnings": [], "edge_factors": []}}'
         )
 
-        raw, tokens = self._run_claude(model, build_system_prompt(), user_prompt, timeout=180)
+        # Conditional Opus: only load sub-agent when local conf in borderline zone (60-86%)
+        local_score = local_confidence.get("score", 0) if local_confidence else 0
+        use_opus = 60 <= local_score <= 86
+
+        system_prompt = build_system_prompt()
+        raw, tokens = self._run_claude(model, system_prompt, user_prompt,
+                                       timeout=180, use_opus_agent=use_opus)
 
         default = {
             "setup_found": False,
             "confidence": 0,
-            "reasoning": f"Parse error — CLI returned unparseable output",
+            "reasoning": "Parse error — CLI returned unparseable output",
             "confidence_breakdown": {},
             "warnings": [],
             "edge_factors": [],
         }
         result = _parse_json(raw, default)
+
+        # Retry once on parse error (empty output or no reasoning)
+        if not raw.strip() or (result.get("reasoning", "").startswith("Parse error") and not result.get("setup_found")):
+            logger.warning("AI returned empty/unparseable output — retrying once")
+            raw2, tokens2 = self._run_claude(model, system_prompt, user_prompt,
+                                             timeout=120, use_opus_agent=False)
+            if raw2.strip():
+                result = _parse_json(raw2, default)
+                tokens = tokens2
+
         result["_model"]  = model
         result["_cost"]   = 0.0
         result["_tokens"] = tokens
@@ -648,15 +674,55 @@ class WebResearcher:
         }
 
     def _get_nikkei_news(self) -> list[str]:
+        """Fetch Japan/Nikkei market headlines from Google News RSS (no API key)."""
         try:
-            return ["News API integration pending"]
+            import xml.etree.ElementTree as ET
+            # Google News RSS for Japan economy / Nikkei / BOJ
+            urls = [
+                "https://news.google.com/rss/search?q=Nikkei+225+OR+Japan+economy+OR+BOJ&hl=en&gl=US&ceid=US:en",
+            ]
+            headlines = []
+            for url in urls:
+                try:
+                    resp = self.client.get(url, timeout=5)
+                    if resp.status_code == 200:
+                        root = ET.fromstring(resp.text)
+                        for item in root.findall(".//item")[:5]:  # top 5 headlines
+                            title = item.findtext("title", "")
+                            if title:
+                                headlines.append(title.strip())
+                except Exception:
+                    continue
+            if not headlines:
+                headlines = ["No headlines available"]
+            logger.debug(f"News: {len(headlines)} headlines fetched")
+            return headlines[:8]  # cap at 8
         except Exception as e:
             logger.warning(f"News fetch failed: {e}")
-            return []
+            return ["News fetch failed"]
 
     def _get_calendar(self) -> list[dict]:
+        """Fetch upcoming economic events from free calendar API."""
         try:
-            return []
+            # Try nager.date for public holidays (Japan = JP)
+            today = datetime.now().strftime("%Y-%m-%d")
+            year = datetime.now().year
+            resp = self.client.get(
+                f"https://date.nager.at/api/v3/publicholidays/{year}/JP",
+                timeout=5
+            )
+            events = []
+            if resp.status_code == 200:
+                for h in resp.json():
+                    if h.get("date", "") >= today:
+                        events.append({
+                            "name": h.get("localName", h.get("name", "Holiday")),
+                            "time": h.get("date"),
+                            "impact": "MEDIUM",
+                        })
+                        if len(events) >= 3:
+                            break
+            return events
         except Exception as e:
             logger.warning(f"Calendar fetch failed: {e}")
             return []
@@ -689,6 +755,21 @@ class WebResearcher:
         return None
 
     def _get_fear_greed(self) -> Optional[int]:
+        """Fetch CNN Fear & Greed index (or alternative)."""
+        try:
+            resp = self.client.get(
+                "https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
+                timeout=5,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                score = data.get("fear_and_greed", {}).get("score")
+                if score is not None:
+                    logger.debug(f"Fear & Greed: {score:.0f}")
+                    return int(score)
+        except Exception as e:
+            logger.warning(f"Fear & Greed fetch failed: {e}")
         return None
 
     def close(self):
