@@ -3,7 +3,7 @@ GET /api/health  — unauthenticated ping
 GET /api/status  — full bot state for Overview tab
 """
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -13,6 +13,20 @@ from dashboard.services import db_reader
 router = APIRouter()
 
 STATE_PATH = Path(__file__).parent.parent.parent / "storage" / "data" / "bot_state.json"
+
+
+def _next_scan_in(state: dict) -> int | None:
+    """Compute live countdown (seconds) from next_scan_at ISO timestamp."""
+    ts = state.get("next_scan_at")
+    if not ts:
+        return None
+    try:
+        target = datetime.fromisoformat(ts)
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+        return max(0, int((target - datetime.now(timezone.utc)).total_seconds()))
+    except Exception:
+        return None
 
 
 def _read_state() -> dict:
@@ -62,7 +76,7 @@ async def status():
         "phase":            state.get("phase", "SCANNING" if not position else "MONITORING"),
         "scanning_paused":  state.get("scanning_paused", False),
         "last_scan":        state.get("last_scan"),
-        "next_scan_in":     state.get("next_scan_in"),
+        "next_scan_in":     _next_scan_in(state),
         "last_scan_detail": state.get("last_scan_detail"),
         "ai_calls_today":   db_reader.get_ai_calls_today(),
         "cost_today":       db_reader.get_cost_today(),

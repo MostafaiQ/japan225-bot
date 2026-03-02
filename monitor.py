@@ -88,6 +88,7 @@ class TradingMonitor:
         self._started_at = datetime.now(timezone.utc)
         self._last_scan_time: datetime | None = None
         self._next_scan_at: datetime | None = None
+        self._current_session: str | None = None   # persists across write_state calls
         self._current_price: float | None = None
         self._last_scan_detail: dict = {}  # dashboard: shows last scan outcome
         # Paths for dashboard integration
@@ -272,15 +273,17 @@ class TradingMonitor:
     def _write_state(self, session_name: str | None = None, phase: str | None = None):
         """Write bot_state.json for the dashboard to read."""
         try:
+            if session_name:
+                self._current_session = session_name
             uptime_secs = int((datetime.now(timezone.utc) - self._started_at).total_seconds())
             h, rem = divmod(uptime_secs, 3600)
             m = rem // 60
             state = {
-                "session":        session_name or "—",
+                "session":        self._current_session or "—",
                 "phase":          phase or ("MONITORING" if self.storage.get_position_state().get("has_open") else "SCANNING"),
                 "scanning_paused": self.scanning_paused,
                 "last_scan":      self._last_scan_time.isoformat() if self._last_scan_time else None,
-                "next_scan_in":   max(0, int((self._next_scan_at - datetime.now(timezone.utc)).total_seconds())) if self._next_scan_at else None,
+                "next_scan_at":   self._next_scan_at.isoformat() if self._next_scan_at else None,
                 "current_price":  self._current_price,
                 "uptime":         f"{h}h {m}m",
                 "started_at":     self._started_at.isoformat(),
@@ -561,11 +564,11 @@ class TradingMonitor:
             self.storage.set_ai_cooldown(prescreen_direction)
             return SCAN_INTERVAL_SECONDS
 
-        # Haiku approved → set cooldown and escalate to Sonnet.
+        # Haiku approved → escalate to Sonnet. No cooldown set so bot can catch the next setup
+        # immediately if this one doesn't trade (Sonnet/Opus reject or user declines alert).
         logger.info(
             f"Haiku gate: APPROVED (local={local_conf['score']}%). Escalating to Sonnet..."
         )
-        self.storage.set_ai_cooldown(prescreen_direction)
 
         recent_scans = self.storage.get_recent_scans(5)
         market_context = self.storage.get_market_context()

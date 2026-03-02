@@ -103,7 +103,8 @@ Dashboard chat: Claude Code CLI (claude --print). No model constant needed.
 - dashboard/services/db_reader.py: get_recent_scans() now filters out no_setup rows. Overview Recent Scans table only shows meaningful events (AI involved, blocked, cooldown, etc.).
 - dashboard/services/config_manager.py: DEFAULTS dict replaced with _defaults() function that imports live from settings.py. Config page now always reflects actual settings values. Dashboard overrides still take precedence. Also fixed DEFAULT_SL_DISTANCE was hardcoded 200 (wrong) — now reads 150 from settings.py.
 - core/confidence.py: 8-criteria → 10-criteria. Added C9 (volume_signal != LOW) and C10 (4H EMA50 agrees with direction). Scoring formula changed from linear (30+n×10) to proportional (30+int(n×70/10)) — 100% is now genuinely exceptional (10/10 only). LONG threshold 70% now requires 6/10, SHORT 75% requires 7/10. 243/243 tests pass.
-- monitor.py: Haiku reject now also sets AI cooldown (AI_COOLDOWN_MINUTES). Previously only Haiku approve set cooldown — caused Haiku to re-fire every 5min for repeated setups at same price.
+- monitor.py: Cooldown ONLY on Haiku reject (not approve). Haiku approve → Sonnet/Opus can evaluate; if they reject, next 5-min scan is free to try again. Haiku reject → 15-min cooldown to avoid same-setup re-calls.
+- monitor.py + status.py: Session "—" bug fixed — _current_session persists across write_state() calls. Next Scan In frozen bug fixed — bot stores next_scan_at (ISO datetime), status.py computes countdown dynamically on every API poll.
 
 ## Dashboard Fixes Applied (2026-03-01)
 - monitor.py: _last_scan_detail added to bot_state.json. Scan records written for ALL active-session outcomes (no_setup, cooldown, low_conf, event_block, friday_block). Previously only Haiku-rejected and Sonnet/Opus scans wrote records.
@@ -141,7 +142,8 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 
 ## AI Pipeline (updated 2026-03-01) — 3-tier: Haiku → Sonnet → Opus
 - Haiku pre-gate: ~$0.0013/call, filters obvious rejects before Sonnet. Gate at HAIKU_MIN_SCORE=60%.
-  C7/C8 (event/blackout) hard-blocked BEFORE Haiku. Cooldown set AFTER Haiku approves (not at gate).
+  C7/C8 (event/blackout) hard-blocked BEFORE Haiku. Cooldown ONLY on Haiku REJECT (15 min).
+  Haiku APPROVE → no cooldown → bot free to catch next trade if Sonnet/Opus reject.
   Proportional formula: score=30+int(passed*70/10). 5/10=65 (passes gate), 4/10=58 (fails gate).
   LONG needs 6/10 (72≥70), SHORT needs 7/10 (79≥75).
 - Sonnet: tool use structured output, prompt caching, compact pipe-format inputs (~$0.004/call)
