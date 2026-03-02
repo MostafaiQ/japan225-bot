@@ -1,6 +1,6 @@
 # Japan 225 Semi-Auto Trading Bot
 
-Automated Japan 225 Cash CFD scanning system on IG Markets. Runs entirely on an Oracle Cloud VM, scanning every **5 minutes** during active sessions using Claude AI (Sonnet for routine pre-screening, Opus for full AI confirmation). Sends Telegram alerts with CONFIRM/REJECT buttons for human approval before execution.
+Automated Japan 225 Cash CFD scanning system on IG Markets. Runs entirely on an Oracle Cloud VM, scanning every **5 minutes** during active sessions using a 3-tier Claude AI pipeline (Haiku pre-gate → Sonnet analysis → Opus confirmation). Uses Claude Code CLI subscription ($0/call). Sends Telegram alerts with CONFIRM/REJECT buttons for human approval before execution.
 
 **This is NOT a fully autonomous bot.** Every trade requires your explicit confirmation via Telegram. You stay in control.
 
@@ -14,7 +14,7 @@ Oracle VM (always-on, does everything)
 │  monitor.py  (systemd: japan225-bot)                            │
 │  ├─ SCANNING (no open position)                                 │
 │  │   every 5 min active sessions · 30 min off-hours             │
-│  │   pre-screen → confidence → Sonnet → Opus → alert            │
+│  │   pre-screen → confidence → Haiku → Sonnet → Opus → alert   │
 │  ├─ MONITORING (position open)                                  │
 │  │   every 2 s · 3-phase exit · adverse move alerts             │
 │  └─ TELEGRAM (always-on polling)                                │
@@ -42,12 +42,13 @@ japan225-bot/
 │   └── settings.py            # All constants — single source of truth
 ├── core/
 │   ├── ig_client.py           # IG Markets REST API wrapper
-│   ├── indicators.py          # Bollinger, EMA, RSI, VWAP + detect_setup() LONG/SHORT
+│   ├── indicators.py          # Bollinger, EMA, RSI, VWAP, Heiken Ashi, FVG, Fibonacci, PDH/PDL, liquidity sweep + detect_setup()
 │   ├── session.py             # Session awareness (Tokyo/London/NY), no-trade days
 │   ├── momentum.py            # MomentumTracker + adverse move tier detection
-│   └── confidence.py          # 8-point confidence scoring (LONG and SHORT)
+│   └── confidence.py          # 11-criteria proportional confidence scoring (LONG and SHORT)
 ├── ai/
-│   └── analyzer.py            # Claude Sonnet + Opus scan analysis + web research
+│   ├── analyzer.py            # 3-tier AI: Haiku pre-gate → Sonnet → Opus (Claude Code CLI, subscription)
+│   └── context_writer.py      # Writes storage/context/*.md before each AI call
 ├── trading/
 │   ├── risk_manager.py        # 11-point pre-trade validation
 │   └── exit_manager.py        # 3-phase exit strategy (Initial/Breakeven/Runner)
@@ -78,7 +79,7 @@ japan225-bot/
 │       └── git_ops.py         # apply-fix: patch --dry-run → stash → apply → commit → push
 ├── docs/
 │   └── index.html             # Single-page frontend (GitHub Pages)
-├── tests/                     # 234 tests — all passing
+├── tests/                     # 264 tests — all passing
 ├── .github/workflows/
 │   └── tests.yml              # CI — runs tests only, no scanning
 ├── .env.example
@@ -116,7 +117,7 @@ python3 monitor.py
 | Service | Where to Get | What You Need |
 |---------|-------------|---------------|
 | IG Markets API | labs.ig.com | API key, username, password, account number |
-| Anthropic API | console.anthropic.com | API key |
+| Claude Code CLI | claude.ai/download | Subscription (Pro/Max plan, $0/call) |
 | Telegram Bot | @BotFather on Telegram | Bot token + your chat ID |
 
 **Getting your Telegram Chat ID:** Send any message to your bot, then visit `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates` and look for `"chat":{"id":XXXXXXX}`.
@@ -184,7 +185,7 @@ Use `/menu` for an interactive inline button panel (easiest on mobile).
 
 Trade alerts include inline **CONFIRM** / **REJECT** buttons. Position alerts include inline **Close now** / **Hold** buttons.
 
-**Telegram stays available even when IG is down.** If IG Markets returns 503 (e.g. weekend maintenance), the bot sends a Telegram alert and retries the IG connection every 5 minutes — it does not exit.
+**Telegram stays available even when IG is down.** If IG Markets returns 503 (e.g. weekend maintenance), the bot sends a Telegram alert and retries the IG connection every 1 minute — it does not exit. Dashboard shows "IG OFFLINE" phase during this time.
 
 ---
 
@@ -195,14 +196,15 @@ Every 5 minutes during active sessions:
 1. **Session check:** Active session? (Tokyo / London / NY). Skip if off-hours or no-trade day.
 2. **Pre-check:** System active? No open position? Not in cooldown?
 3. **IG API:** Fetch 15M + Daily candles in parallel for local pre-screen.
-4. **Indicators:** Calculate Bollinger Bands, EMA 50/200, RSI, VWAP. Detect LONG or SHORT setup.
-5. **Confidence score:** Score the setup locally (0–100%). Skip AI if below 50%.
-6. **AI escalation (if passes):** Fetch 4H data + web research (news, VIX, USD/JPY, calendar).
-7. **Sonnet pre-screen:** Quick analysis with full setup type, reasoning, and session context.
-8. **Opus confirmation:** Deep analysis only if Sonnet agrees (saves cost). 30-min AI cooldown.
-9. **Risk validation:** 11 independent checks must ALL pass.
-10. **Telegram alert:** CONFIRM/REJECT buttons. Alert expires in 15 minutes if not confirmed.
-11. **Execute:** On CONFIRM, trade placed via IG API.
+4. **Indicators:** Bollinger Bands, EMA 50/200, RSI, VWAP, Heiken Ashi, FVG, Fibonacci, PDH/PDL, liquidity sweep. Detect LONG or SHORT setup (bidirectional — no daily hard gate).
+5. **Confidence score:** 11-criteria proportional scoring (0–100%). Skip AI if below 60%.
+6. **Haiku pre-gate:** Fast filter with full context (web research, failed criteria, indicators). Rejects obvious noise. 15-min cooldown on reject.
+7. **AI escalation (if Haiku approves):** Fetch 4H data. Write context files to `storage/context/*.md`.
+8. **Sonnet analysis:** Full scan with setup type, reasoning, direction, and session context.
+9. **Opus confirmation:** Called if Sonnet confidence is 75–86% (devil's advocate) or if Sonnet rejects but confidence is near threshold (second opinion).
+10. **Risk validation:** 11 independent checks must ALL pass.
+11. **Telegram alert:** CONFIRM/REJECT buttons. Alert expires in 15 minutes if not confirmed.
+12. **Execute:** On CONFIRM, trade placed via IG API.
 
 ---
 
@@ -215,7 +217,7 @@ Every 5 minutes during active sessions:
 | `bollinger_upper_rejection` | SHORT | Price within 150pts of BB upper band | 55–75 |
 | `ema50_rejection` | SHORT | Price at or below EMA50 + 2pts | 50–70 |
 
-All setups require `daily_bullish=True` (LONG) or `daily_bullish=False` (SHORT) on the daily chart. AI (Sonnet + Opus) acts as the quality gate — local indicators are the pre-screen only.
+Setup detection is **bidirectional** — no daily trend hard gate. Counter-trend setups are penalized by confidence criterion C1 (daily trend). AI (Haiku + Sonnet + Opus) acts as the quality gate.
 
 ---
 
@@ -237,22 +239,25 @@ All setups require `daily_bullish=True` (LONG) or `daily_bullish=False` (SHORT) 
 
 ---
 
-## Confidence Scoring (8-Point System)
+## Confidence Scoring (11-Criteria Proportional)
 
-Base confidence starts at 30%. Each criterion adds 10 points. Capped at 100%.
+Proportional formula: `score = min(30 + passed × 70 / 11, 100)`. LONG needs 7/11 (74% ≥ 70%), SHORT needs 8/11 (80% ≥ 75%).
 
-| Criterion | +10% if... |
-|-----------|-----------|
-| Daily Trend | Price above (LONG) or below (SHORT) EMA 200 on daily chart |
-| Entry at Tech Level | Entry within 150pts of BB midband, EMA50, or 80pts of BB lower |
-| RSI in Range | LONG: RSI 35–55. LONG lower band: RSI 20–40. SHORT: RSI 55–75. |
-| TP Viable | Price at or below BB midband (confirms pullback to entry zone) |
-| Structure | Price above (LONG) or below (SHORT) EMA50 on 15M |
-| Macro Alignment | 4H RSI 35–75 (LONG) or 30–60 (SHORT) |
-| No Event 1hr | No high-impact event within 1 hour |
-| No Friday/Month-End | Not Friday with data or last 2 days of month |
+| # | Criterion | Passes if... |
+|---|-----------|-------------|
+| C1 | Daily Trend | Price above (LONG) or below (SHORT) EMA 200 on daily chart |
+| C2 | Entry at Tech Level | Entry within 150pts of BB midband, EMA50, or 80pts of BB lower |
+| C3 | RSI in Range | LONG: RSI 35–55. LONG lower band: RSI 20–40. SHORT: RSI 55–75 |
+| C4 | TP Viable | Price at or below BB midband (pullback confirmation) |
+| C5 | Structure | Price above (LONG) or below (SHORT) EMA50 on 15M |
+| C6 | Macro Alignment | 4H RSI 35–75 (LONG) or 30–60 (SHORT) |
+| C7 | No Event 1hr | No high-impact event within 1 hour |
+| C8 | No Friday/Month-End | Not Friday with PPI/CPI/NFP/BOJ or last 2 days of month |
+| C9 | Volume Confirmation | 15M volume ratio ≥ 0.8 |
+| C10 | 4H EMA50 Alignment | Price above (LONG) or below (SHORT) 4H EMA50 |
+| C11 | Heiken Ashi Aligned | 15M HA candle bullish (LONG) or bearish (SHORT) |
 
-**Minimum to trade: 70% (LONG), 75% (SHORT).** Shorts have a higher bar due to BOJ intervention risk.
+**Minimum to trade: 70% (LONG), 75% (SHORT).** Shorts have a higher bar due to BOJ intervention risk. C7/C8 are hard blocks (skip immediately, no AI call).
 
 ---
 
@@ -273,25 +278,19 @@ The monitor checks every 2 seconds and auto-executes phase transitions.
 
 ---
 
-## Active Sessions (Kuwait Time, UTC+3)
+## Active Sessions
 
-Scanning runs every **5 minutes** during these sessions. Off-hours = 30-minute heartbeat only.
+Scanning runs every **5 minutes** during active sessions. Off-hours = sleep until next session (capped at 30 min).
 
-| Kuwait Time | Session | Priority |
-|-------------|---------|----------|
-| 03:00–05:00 | Tokyo Open | HIGH |
-| 05:00–07:00 | Mid Tokyo | HIGH |
-| 07:00–09:00 | Late Tokyo | MEDIUM |
-| 09:00–11:00 | Tokyo Close | MEDIUM |
-| 11:00–13:00 | London Open | HIGH |
-| 13:00–15:00 | Mid London | MEDIUM |
-| 15:00–17:00 | Late London | MEDIUM |
-| 17:30–19:30 | NY Open | HIGH |
-| 19:30–21:30 | Mid NY | MEDIUM |
-| 21:30–23:30 | Late NY | LOW |
-| 00:00–03:00 | Off Hours | SKIP |
+| UTC Hours | Session | Notes |
+|-----------|---------|-------|
+| 00:00–06:00 | Tokyo | N225 cash market, highest quality |
+| 06:00–08:00 | Gap | Skipped — chaotic Tokyo-close / London-open crossover |
+| 08:00–16:00 | London | Strong directional moves |
+| 16:00–21:00 | New York | US-correlated, decent quality |
+| 21:00–00:00 | Gap | Skipped — thin volume |
 
-Monday through Friday only.
+Monday through Friday only. No trading on US/JP holidays or NFP/CPI Fridays.
 
 ---
 
@@ -302,9 +301,9 @@ Monday through Friday only.
 | IG Markets API | Free |
 | Oracle Cloud VM | Free (Always Free Tier) |
 | Telegram | Free |
-| **Anthropic API** | **~$30–60/month** |
+| **Claude Code CLI** | **$0/call** (included in Pro/Max subscription) |
 
-Most scans use local pre-screening only (no AI cost). AI (Sonnet + Opus) is only called when the local confidence score passes 50%, with a 30-minute cooldown between AI calls. Typical: 5–12 AI evaluations per day across all sessions.
+All AI calls (Haiku, Sonnet, Opus) use the Claude Code CLI with OAuth subscription — no per-token billing. Local pre-screening filters most scans before any AI call. Haiku pre-gate rejects weak setups cheaply (15-min cooldown). Typical: 5–12 AI evaluations per day across all sessions.
 
 ---
 

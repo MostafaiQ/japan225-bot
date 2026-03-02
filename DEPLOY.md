@@ -70,7 +70,7 @@ IG_USERNAME=your_username
 IG_PASSWORD=your_password
 IG_ACC_NUMBER=your_account
 IG_ENV=live
-ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_API_KEY=sk-ant-...   # Optional — Claude Code CLI uses OAuth subscription
 TELEGRAM_BOT_TOKEN=your_token
 TELEGRAM_CHAT_ID=your_chat_id
 TRADING_MODE=live
@@ -304,7 +304,7 @@ If Oracle Cloud's default security list blocks outbound traffic:
 - [ ] Alert expiry works (unconfirmed alerts auto-expire after 15 min)
 - [ ] System pause/resume works via `/stop` and `/resume`
 - [ ] Inline Close/Hold buttons work on position alerts
-- [ ] `python3 healthcheck.py` shows all green (234 tests passing, all services active)
+- [ ] `python3 healthcheck.py` shows all green (264 tests passing, all services active)
 - [ ] `IG_ENV=live` set in `.env`
 - [ ] Start with minimum lot sizes (0.01–0.02)
 
@@ -316,7 +316,7 @@ If Oracle Cloud's default security list blocks outbound traffic:
 Systemd auto-restarts after 30 seconds. Check logs: `journalctl -u japan225-bot --since "10 min ago"`.
 
 **IG API returns 503 (weekend maintenance / outage):**
-The bot stays alive. Telegram is started before the IG connection attempt, so it remains fully responsive. The bot sends you a Telegram alert and retries IG every 5 minutes. No action needed — it self-recovers when IG comes back up.
+The bot stays alive. Telegram is started before the IG connection attempt, so it remains fully responsive. The bot sends you a Telegram alert and retries IG every 1 minute. Dashboard shows "IG OFFLINE" phase. No action needed — it self-recovers when IG comes back up.
 
 **IG API connection fails (persistent):**
 Tokens expire after ~6 hours. The bot auto-reauthenticates. If it keeps failing outside of known maintenance windows, check your `.env` credentials with `./setup.sh`.
