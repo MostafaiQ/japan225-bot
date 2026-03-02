@@ -844,7 +844,8 @@ function renderStatus(d) {
     ['Last Result',    lastScanHtml],
     ['Next Scan In',   `<span id="nextScanVal">${fmtCountdown(d.next_scan_in)}</span>`],
     ['AI Calls Today', d.ai_calls_today ?? '—'],
-    ['Scan Cost',      d.cost_today   != null ? '$' + d.cost_today.toFixed(4) : '—'],
+    ['Bot Tokens',     d.tokens_today ? `~${(d.tokens_today.tokens/1000).toFixed(1)}k (${d.tokens_today.scans} scans)` : '—'],
+    ['Chat Tokens',    d.chat_tokens_today != null ? `~${(d.chat_tokens_today/1000).toFixed(1)}k` : '—'],
     ['Uptime',         d.uptime       || '—'],
   ];
   document.getElementById('statusRows').innerHTML = rows.map(([l,v]) =>
@@ -1316,10 +1317,10 @@ async function _refreshChatCost() {
     ]);
     const badge = document.getElementById('chatCostBadge');
     if (!badge) return;
-    const chatCost  = chatD.today_usd != null ? `Chat ~$${chatD.today_usd.toFixed(3)}` : '';
-    const scanCost  = statusD.cost_today != null ? `Bot $${statusD.cost_today.toFixed(4)}` : '';
-    const parts = [chatCost, scanCost].filter(Boolean);
-    badge.textContent = parts.length ? parts.join(' | ') + ' today (est)' : 'Costs in Anthropic console';
+    const chatTk = chatD.today_tokens ? `Chat ~${(chatD.today_tokens/1000).toFixed(1)}k` : '';
+    const botTk  = statusD.tokens_today ? `Bot ~${(statusD.tokens_today.tokens/1000).toFixed(1)}k` : '';
+    const parts = [chatTk, botTk].filter(Boolean);
+    badge.textContent = parts.length ? parts.join(' | ') + ' tokens today' : '$0 (subscription)';
   } catch(_) {}
 }
 

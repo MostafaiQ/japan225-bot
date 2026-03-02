@@ -13,6 +13,26 @@ from dashboard.services import db_reader
 router = APIRouter()
 
 STATE_PATH = Path(__file__).parent.parent.parent / "storage" / "data" / "bot_state.json"
+CHAT_COSTS_PATH = Path(__file__).parent.parent.parent / "storage" / "data" / "chat_costs.json"
+
+
+def _chat_tokens_today() -> int:
+    """Estimate chat tokens used today from chat_costs.json."""
+    try:
+        if not CHAT_COSTS_PATH.exists():
+            return 0
+        data = json.loads(CHAT_COSTS_PATH.read_text())
+        if not isinstance(data, list):
+            return 0
+        from datetime import date
+        today = date.today().isoformat()
+        total = 0
+        for e in data:
+            if e.get("ts", "").startswith(today):
+                total += e.get("est_tokens", (e.get("input_chars", 0) + e.get("output_chars", 0)) // 4)
+        return total
+    except Exception:
+        return 0
 
 
 def _next_scan_in(state: dict) -> int | None:
@@ -79,7 +99,8 @@ async def status():
         "next_scan_in":     _next_scan_in(state),
         "last_scan_detail": state.get("last_scan_detail"),
         "ai_calls_today":   db_reader.get_ai_calls_today(),
-        "cost_today":       db_reader.get_cost_today(),
+        "tokens_today":     db_reader.get_tokens_today(),
+        "chat_tokens_today": _chat_tokens_today(),
         "uptime":           uptime,
         "position":         position,
         "recent_scans":     scans,

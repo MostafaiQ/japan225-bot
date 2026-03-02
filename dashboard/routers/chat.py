@@ -83,9 +83,11 @@ async def get_chat_costs():
         today_entries = [e for e in data if e.get("ts", "").startswith(today)]
         today_usd  = round(sum(e["cost_usd"] for e in today_entries), 4)
         total_usd  = round(sum(e["cost_usd"] for e in data), 4)
+        today_tokens = sum(e.get("est_tokens", (e.get("input_chars", 0) + e.get("output_chars", 0)) // 4) for e in today_entries)
         return {
             "today_usd": today_usd,
             "total_usd": total_usd,
+            "today_tokens": today_tokens,
             "note": "estimate (~±30%)",
             "entries": today_entries[-20:],
         }

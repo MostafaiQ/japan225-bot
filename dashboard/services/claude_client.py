@@ -245,11 +245,13 @@ def _log_chat_cost(prompt: str, response: str) -> None:
     """Estimate cost from char count and append to chat_costs.json (max 500 entries)."""
     try:
         cost = len(prompt) * _SONNET_INPUT_PER_CHAR + len(response) * _SONNET_OUTPUT_PER_CHAR
+        est_tokens = len(prompt) // 4 + len(response) // 4
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "cost_usd": round(cost, 6),
             "input_chars": len(prompt),
             "output_chars": len(response),
+            "est_tokens": est_tokens,
         }
         data: list = []
         if CHAT_COSTS_FILE.exists():
