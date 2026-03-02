@@ -1,5 +1,5 @@
 """
-Tests for core/confidence.py — bidirectional 10-criteria local scoring.
+Tests for core/confidence.py — bidirectional 11-criteria local scoring.
 All tests use synthetic indicator data; no API calls needed.
 """
 import pytest
@@ -82,7 +82,7 @@ class TestScoreComputation:
     def test_all_criteria_pass_gives_100(self):
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
-        # 10/10 criteria → 30 + int(10 * 70 / 10) = 100
+        # 11/11 criteria → 30 + int(11 * 70 / 11) = 100
         assert result["score"] == 100
 
     def test_base_score_with_zero_criteria(self):
@@ -107,10 +107,10 @@ class TestScoreComputation:
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         assert result["score"] <= 100
 
-    def test_total_criteria_is_10(self):
+    def test_total_criteria_is_11(self):
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
-        assert result["total_criteria"] == 10
+        assert result["total_criteria"] == 11
 
     def test_passed_criteria_matches_score(self):
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
@@ -382,3 +382,46 @@ class TestFormatConfidenceBreakdown:
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         text = format_confidence_breakdown(result)
         assert "PASS" in text or "FAIL" in text
+
+
+# ── C11: Heiken Ashi Alignment ──────────────────────────────────────────────
+
+class TestHaAlignedC11:
+    def test_ha_bullish_passes_for_long(self):
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m["ha_bullish"] = True
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["ha_aligned"] is True
+
+    def test_ha_bearish_fails_for_long(self):
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m["ha_bullish"] = False
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["ha_aligned"] is False
+
+    def test_ha_bearish_passes_for_short(self):
+        tf_daily, tf_4h, tf_15m = ideal_short_setup()
+        tf_15m["ha_bullish"] = False
+        result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["ha_aligned"] is True
+
+    def test_ha_bullish_fails_for_short(self):
+        tf_daily, tf_4h, tf_15m = ideal_short_setup()
+        tf_15m["ha_bullish"] = True
+        result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["ha_aligned"] is False
+
+    def test_ha_unavailable_defaults_pass(self):
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m.pop("ha_bullish", None)
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["ha_aligned"] is True
+
+    def test_ha_affects_score(self):
+        """C11 failure should reduce score by ~6 points (70/11 ≈ 6.36)."""
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m["ha_bullish"] = True
+        result_pass = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        tf_15m["ha_bullish"] = False
+        result_fail = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result_pass["score"] > result_fail["score"]

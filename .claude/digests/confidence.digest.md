@@ -1,7 +1,7 @@
 # core/confidence.py — DIGEST
-# Purpose: Local 10-criteria confidence scorer. Gates AI escalation (score must be >=60%).
+# Purpose: Local 11-criteria confidence scorer. Gates AI escalation (score must be >=60%).
 # Bidirectional: LONG and SHORT criteria differ.
-# Updated 2026-03-02: 10-criteria (C9 volume, C10 4H EMA50); proportional scoring formula.
+# Updated 2026-03-02: 11-criteria (C9 volume, C10 4H EMA50, C11 HA alignment); proportional scoring formula.
 
 ## Constants
 BASE_SCORE=30  MAX_SCORE=100
@@ -15,9 +15,10 @@ SHORT_RSI_LOW/HIGH=55/75
 # Returns: {score, passed_criteria, total_criteria, criteria, reasons, direction,
 #           meets_threshold, min_threshold}
 # score = min(30 + int(passed * 70 / total_criteria), 100)
-# 10/10=100%, 9/10=93%, 8/10=86%, 7/10=79%, 6/10=72%, 5/10=65%, 4/10=58% (fails 60 gate)
+# 11/11=100%, 10/11=93%, 9/11=87%, 8/11=80%, 7/11=74%, 6/11=68% (fails 70 gate),
+# 5/11=61%, 4/11=55% (below 60% gate)
 
-# 10 criteria:
+# 11 criteria:
 # 1. daily_trend:        LONG=above EMA200 daily.  SHORT=below EMA200 daily.  (EMA50 fallback)
 # 2. entry_level:        LONG=near BB_mid (±150pts) OR EMA50 (±150pts) OR BB_lower (±80pts).
 #                        SHORT=near BB_upper or BB_mid or EMA50_from_below (price<=ema50).
@@ -34,11 +35,13 @@ SHORT_RSI_LOW/HIGH=55/75
 # 9. volume:             tf_15m.get("volume_signal","NORMAL") != "LOW". Defaults pass if missing.
 # 10. trend_4h:          LONG=4H above EMA50.  SHORT=4H below EMA50.
 #                        Defaults pass (True) if tf_4h.get("above_ema50") is None.
+# 11. ha_aligned:        LONG=tf_15m ha_bullish is True.  SHORT=ha_bullish is False.
+#                        Defaults pass (True) if ha_bullish is None (older data without HA).
 
 ## Thresholds
-# HAIKU_MIN_SCORE=60 → requires 5/10 criteria (5/10=65≥60).
-# MIN_CONFIDENCE_LONG=70 → requires 6/10 (6/10=72≥70).
-# MIN_CONFIDENCE_SHORT=75 → requires 7/10 (7/10=79≥75).
+# HAIKU_MIN_SCORE=60 → requires 5/11 criteria (5/11=61≥60).
+# MIN_CONFIDENCE_LONG=70 → requires 7/11 (7/11=74≥70).
+# MIN_CONFIDENCE_SHORT=75 → requires 8/11 (8/11=80≥75).
 
 ## format_confidence_breakdown(result: dict) -> str
 # Human-readable string for Telegram/logging. Shows ✓/✗ per criterion.

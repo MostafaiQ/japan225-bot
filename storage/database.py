@@ -513,8 +513,8 @@ class Storage:
             if key in d and isinstance(d[key], str):
                 try:
                     d[key] = json.loads(d[key])
-                except (json.JSONDecodeError, TypeError):
-                    pass
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning(f"JSON decode failed for field '{key}': {e}")
         return d
     
     # ==========================================

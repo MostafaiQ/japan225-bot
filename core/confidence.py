@@ -1,15 +1,16 @@
 """
-Local confidence scorer — bidirectional 10-criteria system.
+Local confidence scorer — bidirectional 11-criteria system.
 
 Computes a confidence score LOCALLY from indicator data before any AI call.
 Acts as a gate: only escalate to Haiku/Sonnet/Opus if local score >= HAIKU_MIN_SCORE (60%).
 
 Scoring (proportional):
   score = min(30 + int(passed * 70 / total_criteria), 100)
-  10/10 = 100%, 9/10 = 93%, 8/10 = 86%, 7/10 = 79%, 6/10 = 72%,
-  5/10 = 65%, 4/10 = 58% (below 60% gate), 3/10 = 51%
+  11/11=100%, 10/11=93%, 9/11=87%, 8/11=80%, 7/11=74%, 6/11=68% (fails 70 gate),
+  5/11=61%, 4/11=55% (below 60% gate)
+  LONG needs 7/11 (74%≥70), SHORT needs 8/11 (80%≥75).
 
-Criteria (10 total):
+Criteria (11 total):
   C1  daily_trend       — daily EMA200 agrees with direction
   C2  entry_level       — price at BB/EMA technical level
   C3  rsi_15m           — 15M RSI in valid entry zone
@@ -20,6 +21,7 @@ Criteria (10 total):
   C8  no_friday_monthend— not Friday blackout / month-end
   C9  volume            — 15M volume not critically low (signal != LOW)
   C10 trend_4h          — 4H EMA50 agrees with direction (HTF alignment)
+  C11 ha_aligned        — 15M Heiken Ashi candle aligned with direction
 """
 import logging
 from datetime import datetime, timezone
@@ -288,7 +290,21 @@ def compute_confidence(
         reasons["trend_4h"] = "4H EMA50 unavailable — defaulting pass"
     criteria["trend_4h"] = c10
 
-    # ---- Compute final score (proportional) ----
+    # ---- Criterion 11: Heiken Ashi Alignment ----
+    ha_bullish = tf_15m.get("ha_bullish")
+    if ha_bullish is not None:
+        if direction == "LONG":
+            c11 = bool(ha_bullish)
+            reasons["ha_aligned"] = f"HA 15M: {'bullish' if c11 else 'bearish'}"
+        else:
+            c11 = not bool(ha_bullish)
+            reasons["ha_aligned"] = f"HA 15M: {'bearish (aligned SHORT)' if c11 else 'bullish (counter-HA)'}"
+    else:
+        c11 = True  # default pass if HA unavailable (older candle data)
+        reasons["ha_aligned"] = "HA unavailable — defaulting pass"
+    criteria["ha_aligned"] = c11
+
+    # ---- Compute final score (proportional, 11 criteria) ----
     passed = sum(1 for v in criteria.values() if v)
     total = len(criteria)
     score = min(BASE_SCORE + int(passed * (MAX_SCORE - BASE_SCORE) / total), MAX_SCORE)

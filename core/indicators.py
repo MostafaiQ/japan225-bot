@@ -142,6 +142,41 @@ def vwap(
     return result
 
 
+def heiken_ashi(
+    opens: list[float],
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+) -> tuple[list, list, list, list]:
+    """
+    Heiken Ashi candle calculation.
+    Returns (ha_open, ha_high, ha_low, ha_close).
+    First candle seeded from raw OHLC. Subsequent candles use prior HA values.
+    """
+    n = len(closes)
+    if n < 1:
+        return [], [], [], []
+
+    ha_open  = [None] * n
+    ha_high  = [None] * n
+    ha_low   = [None] * n
+    ha_close = [None] * n
+
+    # Seed first candle
+    ha_close[0] = (opens[0] + highs[0] + lows[0] + closes[0]) / 4
+    ha_open[0]  = (opens[0] + closes[0]) / 2
+    ha_high[0]  = max(highs[0], ha_open[0], ha_close[0])
+    ha_low[0]   = min(lows[0],  ha_open[0], ha_close[0])
+
+    for i in range(1, n):
+        ha_close[i] = (opens[i] + highs[i] + lows[i] + closes[i]) / 4
+        ha_open[i]  = (ha_open[i - 1] + ha_close[i - 1]) / 2
+        ha_high[i]  = max(highs[i], ha_open[i], ha_close[i])
+        ha_low[i]   = min(lows[i],  ha_open[i], ha_close[i])
+
+    return ha_open, ha_high, ha_low, ha_close
+
+
 def analyze_timeframe(candles: list[dict]) -> dict:
     """
     Full indicator analysis for a single timeframe.
@@ -158,9 +193,10 @@ def analyze_timeframe(candles: list[dict]) -> dict:
             f"Using EMA50 as trend fallback where possible."
         )
     
-    closes = [c["close"] for c in candles]
-    highs = [c["high"] for c in candles]
-    lows = [c["low"] for c in candles]
+    closes  = [c["close"]  for c in candles]
+    highs   = [c["high"]   for c in candles]
+    lows    = [c["low"]    for c in candles]
+    opens   = [c["open"]   for c in candles]
     volumes = [c.get("volume", 0) for c in candles]
     
     # Calculate all indicators
@@ -239,6 +275,91 @@ def analyze_timeframe(candles: list[dict]) -> dict:
     result["swing_low_20"]  = round(swing_l, 1)
     result["dist_to_swing_high"] = round(swing_h - current_price, 1)
     result["dist_to_swing_low"]  = round(current_price - swing_l, 1)
+
+    # ── Heiken Ashi ───────────────────────────────────────────────────────────
+    ha_open_v, ha_high_v, ha_low_v, ha_close_v = heiken_ashi(opens, highs, lows, closes)
+    if ha_close_v and ha_close_v[-1] is not None:
+        ha_bull = ha_close_v[-1] > ha_open_v[-1]
+        result["ha_bullish"] = ha_bull
+        # Count consecutive HA candles in same direction (positive=bullish, negative=bearish)
+        streak = 0
+        for i in range(len(ha_close_v) - 1, -1, -1):
+            if ha_close_v[i] is None:
+                break
+            if (ha_close_v[i] > ha_open_v[i]) == ha_bull:
+                streak += 1
+            else:
+                break
+        result["ha_streak"] = streak if ha_bull else -streak
+    else:
+        result["ha_bullish"] = None
+        result["ha_streak"]  = None
+
+    # ── Fair Value Gap ────────────────────────────────────────────────────────
+    # 3-candle imbalance: bullish FVG = candles[i-2].high < candles[i].low
+    #                     bearish FVG = candles[i-2].low  > candles[i].high
+    result["fvg_bullish"] = False
+    result["fvg_bearish"] = False
+    result["fvg_level"]   = None
+    n_c = len(candles)
+    if n_c >= 3:
+        for i in range(n_c - 1, max(n_c - 6, 2), -1):
+            if highs[i - 2] < lows[i]:
+                result["fvg_bullish"] = True
+                result["fvg_level"]   = round((highs[i - 2] + lows[i]) / 2, 1)
+                break
+            if lows[i - 2] > highs[i]:
+                result["fvg_bearish"] = True
+                result["fvg_level"]   = round((lows[i - 2] + highs[i]) / 2, 1)
+                break
+
+    # ── Fibonacci Retracement ─────────────────────────────────────────────────
+    if result.get("swing_high_20") and result.get("swing_low_20"):
+        sh = result["swing_high_20"]
+        sl_f = result["swing_low_20"]
+        rng = sh - sl_f
+        fib_levels = {
+            "fib_236": round(sh - 0.236 * rng, 1),
+            "fib_382": round(sh - 0.382 * rng, 1),
+            "fib_500": round(sh - 0.500 * rng, 1),
+            "fib_618": round(sh - 0.618 * rng, 1),
+            "fib_786": round(sh - 0.786 * rng, 1),
+        }
+        result["fibonacci"] = fib_levels
+        # Nearest fib level within 50pts of current price
+        fib_near = None
+        min_dist = float("inf")
+        for name, level in fib_levels.items():
+            dist = abs(current_price - level)
+            if dist <= 50 and dist < min_dist:
+                min_dist = dist
+                fib_near = name
+        result["fib_near"] = fib_near
+    else:
+        result["fibonacci"] = {}
+        result["fib_near"]  = None
+
+    # ── PDH/PDL (previous candle high/low) ────────────────────────────────────
+    if len(candles) >= 2:
+        result["prev_candle_high"] = candles[-2]["high"]
+        result["prev_candle_low"]  = candles[-2]["low"]
+    else:
+        result["prev_candle_high"] = None
+        result["prev_candle_low"]  = None
+
+    # ── Liquidity Sweep ───────────────────────────────────────────────────────
+    # Previous 20-period swing excluding current candle, then check if current candle
+    # swept past it intrabar but closed on the other side (reversal signal).
+    if len(highs) >= 21:
+        prev_swing_high = max(highs[-21:-1])
+        prev_swing_low  = min(lows[-21:-1])
+        # Bullish sweep: low dips below prev swing low but close is above it
+        result["swept_low"]  = lows[-1] < prev_swing_low  and closes[-1] > prev_swing_low
+        # Bearish sweep: high pushes above prev swing high but close is below it
+        result["swept_high"] = highs[-1] > prev_swing_high and closes[-1] < prev_swing_high
+    else:
+        result["swept_low"]  = False
+        result["swept_high"] = False
 
     return result
 
@@ -375,164 +496,163 @@ def detect_setup(
         result["reasoning"] = "No price data available."
         return result
 
-    # ============================================================
-    # LONG SETUPS
-    # ============================================================
-    if daily_bullish:
-        # 4H RSI not overbought
-        if rsi_4h and rsi_4h > 75:
-            # Don't block entirely — still check, but note it
-            logger.debug(f"4H RSI overbought ({rsi_4h:.1f}) — LONG setup quality reduced")
+    # Note: daily_bullish informs reasoning/confidence but is no longer a hard gate.
+    # Counter-trend setups are penalized by C1 in confidence.py — AI makes the final call.
+    if rsi_4h and rsi_4h > 75:
+        logger.debug(f"4H RSI overbought ({rsi_4h:.1f}) — LONG setup quality reduced")
+    if rsi_4h and rsi_4h < 25:
+        logger.debug(f"4H RSI oversold ({rsi_4h:.1f}) — SHORT setup quality reduced")
 
-        # --- LONG Setup 1: Bollinger Mid Bounce ---
-        if bb_mid and rsi_15m:
-            near_mid_pts = abs(price - bb_mid) <= 150  # calibrated: 30pts was p11 at ~55k Nikkei
-            rsi_ok_long = 35 <= rsi_15m <= RSI_ENTRY_HIGH_BOUNCE  # 48: genuine oversold pullback
-            above_ema50 = tf_15m.get("above_ema50")
-            prev_close = tf_15m.get("prev_close")
-            bounce_starting = prev_close is not None and price > prev_close  # candle turning up
-
-            if near_mid_pts and rsi_ok_long and bounce_starting:
-                entry = price
-                sl = entry - DEFAULT_SL_DISTANCE
-                if ema50_15m:
-                    sl = max(sl, ema50_15m - 20)
-                tp = entry + DEFAULT_TP_DISTANCE
-
-                ema50_note = "above EMA50" if above_ema50 else "below EMA50 (AI to evaluate)"
-                result.update({
-                    "found": True,
-                    "type": "bollinger_mid_bounce",
-                    "direction": "LONG",
-                    "entry": round(entry, 1),
-                    "sl": round(sl, 1),
-                    "tp": round(tp, 1),
-                    "reasoning": (
-                        f"LONG: BB mid bounce on 15M. "
-                        f"Price {abs(price - bb_mid):.0f}pts from mid ({bb_mid:.0f}). "
-                        f"RSI {rsi_15m:.1f} in zone. {ema50_note}. Daily bullish."
-                    ),
-                })
-                return result
-
-        # --- LONG Setup 2: Bollinger Lower Band Bounce ---
-        # Deeply oversold within a bullish daily trend — strongest mean-reversion signal.
-        # No above_ema50 gate: price may be below EMA50 at the lower band (expected).
-        # AI evaluates EMA50 context from the reasoning string.
-        if bb_lower and rsi_15m:
-            near_lower_pts = abs(price - bb_lower) <= 80  # tighter: lower band is harder to reach
-            rsi_ok_lower = 20 <= rsi_15m <= 40            # deeply oversold zone
-            candle_open_l = tf_15m.get("open")
-            candle_low_l  = tf_15m.get("low")
-            if candle_open_l is not None and candle_low_l is not None:
-                lower_wick_l = min(candle_open_l, price) - candle_low_l
-                rejection_l = lower_wick_l >= 15  # any rejection wick counts at extreme oversold
-            else:
-                rejection_l = False
-
-            if near_lower_pts and rsi_ok_lower and rejection_l:
-                entry = price
-                sl = entry - DEFAULT_SL_DISTANCE
-                tp = entry + DEFAULT_TP_DISTANCE
-                macro_note = (
-                    f" 4H RSI {rsi_4h:.1f} — multi-TF oversold confluence."
-                    if rsi_4h and rsi_4h < 40 else ""
-                )
-                result.update({
-                    "found": True,
-                    "type": "bollinger_lower_bounce",
-                    "direction": "LONG",
-                    "entry": round(entry, 1),
-                    "sl": round(sl, 1),
-                    "tp": round(tp, 1),
-                    "reasoning": (
-                        f"LONG: BB lower band bounce on 15M. "
-                        f"Price {abs(price - bb_lower):.0f}pts from lower ({bb_lower:.0f}). "
-                        f"RSI {rsi_15m:.1f} deeply oversold. "
-                        f"Lower wick {lower_wick_l:.0f}pts rejection. "
-                        f"Daily bullish.{macro_note}"
-                    ),
-                })
-                return result
-
-        # --- LONG Setup 3: EMA50 Bounce (disabled until validated — see ENABLE_EMA50_BOUNCE_SETUP) ---
-        if ENABLE_EMA50_BOUNCE_SETUP and ema50_15m and rsi_15m:
-            dist_ema50 = abs(price - ema50_15m)
-            if dist_ema50 <= 150 and rsi_15m < 55 and price >= ema50_15m - 10:
-                entry = price
-                sl = entry - DEFAULT_SL_DISTANCE
-                tp = entry + DEFAULT_TP_DISTANCE
-
-                result.update({
-                    "found": True,
-                    "type": "ema50_bounce",
-                    "direction": "LONG",
-                    "entry": round(entry, 1),
-                    "sl": round(sl, 1),
-                    "tp": round(tp, 1),
-                    "reasoning": (
-                        f"LONG: EMA50 bounce on 15M. Price {dist_ema50:.0f}pts from EMA50 ({ema50_15m:.0f}). "
-                        f"RSI {rsi_15m:.1f}. Daily trend bullish."
-                    ),
-                })
-                return result
+    daily_str = "Daily bullish" if daily_bullish else ("Daily bearish (counter-trend)" if daily_bullish is False else "Daily N/A")
 
     # ============================================================
-    # SHORT SETUPS (daily bearish)
+    # LONG SETUPS (bidirectional — no daily gate, C1 in confidence penalizes counter-trend)
     # ============================================================
-    if not daily_bullish and daily_bullish is not None:
-        # 4H RSI not oversold
-        if rsi_4h and rsi_4h < 25:
-            logger.debug(f"4H RSI oversold ({rsi_4h:.1f}) — SHORT setup quality reduced")
+    # --- LONG Setup 1: Bollinger Mid Bounce ---
+    if bb_mid and rsi_15m:
+        near_mid_pts = abs(price - bb_mid) <= 150
+        rsi_ok_long = 35 <= rsi_15m <= RSI_ENTRY_HIGH_BOUNCE
+        above_ema50 = tf_15m.get("above_ema50")
+        prev_close = tf_15m.get("prev_close")
+        bounce_starting = prev_close is not None and price > prev_close
 
-        # --- SHORT Setup 1: Bollinger Upper Rejection ---
-        if bb_upper and bb_mid and rsi_15m:
-            near_upper_pts = abs(price - bb_upper) <= 150
-            rsi_ok_short = 55 <= rsi_15m <= 75
-            below_ema50 = not tf_15m.get("above_ema50")
+        if near_mid_pts and rsi_ok_long and bounce_starting:
+            entry = price
+            sl = entry - DEFAULT_SL_DISTANCE
+            if ema50_15m:
+                sl = max(sl, ema50_15m - 20)
+            tp = entry + DEFAULT_TP_DISTANCE
 
-            if near_upper_pts and rsi_ok_short and below_ema50:
-                entry = price
-                sl = entry + DEFAULT_SL_DISTANCE
-                tp = entry - DEFAULT_TP_DISTANCE
+            ema50_note = "above EMA50" if above_ema50 else "below EMA50 (AI to evaluate)"
+            result.update({
+                "found": True,
+                "type": "bollinger_mid_bounce",
+                "direction": "LONG",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": (
+                    f"LONG: BB mid bounce on 15M. "
+                    f"Price {abs(price - bb_mid):.0f}pts from mid ({bb_mid:.0f}). "
+                    f"RSI {rsi_15m:.1f} in zone. {ema50_note}. {daily_str}."
+                ),
+            })
+            return result
 
-                result.update({
-                    "found": True,
-                    "type": "bollinger_upper_rejection",
-                    "direction": "SHORT",
-                    "entry": round(entry, 1),
-                    "sl": round(sl, 1),
-                    "tp": round(tp, 1),
-                    "reasoning": (
-                        f"SHORT: BB upper rejection on 15M. Price {abs(price - bb_upper):.0f}pts from upper ({bb_upper:.0f}). "
-                        f"RSI {rsi_15m:.1f} in zone. Below EMA50. Daily bearish."
-                    ),
-                })
-                return result
+    # --- LONG Setup 2: Bollinger Lower Band Bounce ---
+    # Deeply oversold — strongest mean-reversion signal.
+    # No above_ema50 gate: price may be below EMA50 at the lower band (expected).
+    if bb_lower and rsi_15m:
+        near_lower_pts = abs(price - bb_lower) <= 80
+        rsi_ok_lower = 20 <= rsi_15m <= 40
+        candle_open_l = tf_15m.get("open")
+        candle_low_l  = tf_15m.get("low")
+        if candle_open_l is not None and candle_low_l is not None:
+            lower_wick_l = min(candle_open_l, price) - candle_low_l
+            rejection_l = lower_wick_l >= 15
+        else:
+            rejection_l = False
 
-        # --- SHORT Setup 2: EMA50 Rejection (rallied up to EMA50, getting turned away) ---
-        if ema50_15m and rsi_15m:
-            dist_ema50 = abs(price - ema50_15m)
-            # Price must be at or just below EMA50 (came up to test it)
-            at_ema50_from_below = price <= ema50_15m + 2 and dist_ema50 <= 150
-            if at_ema50_from_below and 50 <= rsi_15m <= 70:
-                entry = price
-                sl = entry + DEFAULT_SL_DISTANCE
-                tp = entry - DEFAULT_TP_DISTANCE
+        if near_lower_pts and rsi_ok_lower and rejection_l:
+            entry = price
+            sl = entry - DEFAULT_SL_DISTANCE
+            tp = entry + DEFAULT_TP_DISTANCE
+            macro_note = (
+                f" 4H RSI {rsi_4h:.1f} — multi-TF oversold confluence."
+                if rsi_4h and rsi_4h < 40 else ""
+            )
+            result.update({
+                "found": True,
+                "type": "bollinger_lower_bounce",
+                "direction": "LONG",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": (
+                    f"LONG: BB lower band bounce on 15M. "
+                    f"Price {abs(price - bb_lower):.0f}pts from lower ({bb_lower:.0f}). "
+                    f"RSI {rsi_15m:.1f} deeply oversold. "
+                    f"Lower wick {lower_wick_l:.0f}pts rejection. "
+                    f"{daily_str}.{macro_note}"
+                ),
+            })
+            return result
 
-                result.update({
-                    "found": True,
-                    "type": "ema50_rejection",
-                    "direction": "SHORT",
-                    "entry": round(entry, 1),
-                    "sl": round(sl, 1),
-                    "tp": round(tp, 1),
-                    "reasoning": (
-                        f"SHORT: EMA50 rejection on 15M. Price {dist_ema50:.0f}pts from EMA50 ({ema50_15m:.0f}), "
-                        f"testing from below. RSI {rsi_15m:.1f}. Daily trend bearish."
-                    ),
-                })
-                return result
+    # --- LONG Setup 3: EMA50 Bounce (disabled until validated — see ENABLE_EMA50_BOUNCE_SETUP) ---
+    if ENABLE_EMA50_BOUNCE_SETUP and ema50_15m and rsi_15m:
+        dist_ema50 = abs(price - ema50_15m)
+        if dist_ema50 <= 150 and rsi_15m < 55 and price >= ema50_15m - 10:
+            entry = price
+            sl = entry - DEFAULT_SL_DISTANCE
+            tp = entry + DEFAULT_TP_DISTANCE
+
+            result.update({
+                "found": True,
+                "type": "ema50_bounce",
+                "direction": "LONG",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": (
+                    f"LONG: EMA50 bounce on 15M. Price {dist_ema50:.0f}pts from EMA50 ({ema50_15m:.0f}). "
+                    f"RSI {rsi_15m:.1f}. {daily_str}."
+                ),
+            })
+            return result
+
+    # ============================================================
+    # SHORT SETUPS (bidirectional — no daily gate, C1 in confidence penalizes counter-trend)
+    # ============================================================
+    short_daily_str = "Daily bearish" if daily_bullish is False else ("Daily bullish (counter-trend SHORT)" if daily_bullish else "Daily N/A")
+
+    # --- SHORT Setup 1: Bollinger Upper Rejection ---
+    if bb_upper and bb_mid and rsi_15m:
+        near_upper_pts = abs(price - bb_upper) <= 150
+        rsi_ok_short = 55 <= rsi_15m <= 75
+        below_ema50 = not tf_15m.get("above_ema50")
+
+        if near_upper_pts and rsi_ok_short and below_ema50:
+            entry = price
+            sl = entry + DEFAULT_SL_DISTANCE
+            tp = entry - DEFAULT_TP_DISTANCE
+
+            result.update({
+                "found": True,
+                "type": "bollinger_upper_rejection",
+                "direction": "SHORT",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": (
+                    f"SHORT: BB upper rejection on 15M. "
+                    f"Price {abs(price - bb_upper):.0f}pts from upper ({bb_upper:.0f}). "
+                    f"RSI {rsi_15m:.1f} in zone. Below EMA50. {short_daily_str}."
+                ),
+            })
+            return result
+
+    # --- SHORT Setup 2: EMA50 Rejection (rallied up to EMA50, getting turned away) ---
+    if ema50_15m and rsi_15m:
+        dist_ema50 = abs(price - ema50_15m)
+        at_ema50_from_below = price <= ema50_15m + 2 and dist_ema50 <= 150
+        if at_ema50_from_below and 50 <= rsi_15m <= 70:
+            entry = price
+            sl = entry + DEFAULT_SL_DISTANCE
+            tp = entry - DEFAULT_TP_DISTANCE
+
+            result.update({
+                "found": True,
+                "type": "ema50_rejection",
+                "direction": "SHORT",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": (
+                    f"SHORT: EMA50 rejection on 15M. Price {dist_ema50:.0f}pts from EMA50 ({ema50_15m:.0f}), "
+                    f"testing from below. RSI {rsi_15m:.1f}. {short_daily_str}."
+                ),
+            })
+            return result
 
     rsi_str = f"{rsi_15m:.1f}" if rsi_15m is not None else "N/A"
     daily_str = "bullish" if daily_bullish else ("bearish" if daily_bullish is not None else "N/A")

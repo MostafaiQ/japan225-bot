@@ -777,12 +777,14 @@ const _actionLabels = {
   friday_block_short:  '🚫 Fri (S)',
   low_conf_long:       '📉 Low conf (L)',
   low_conf_short:      '📉 Low conf (S)',
-  haiku_rejected:      '🤖 Haiku ✗',
-  haiku_rejected_long: '🤖 Haiku ✗ (L)',
-  haiku_rejected_short:'🤖 Haiku ✗ (S)',
-  pending:             '📤 Alert sent',
-  pending_long:        '📤 Alert (L)',
-  pending_short:       '📤 Alert (S)',
+  haiku_rejected:       '🤖 Haiku ✗',
+  haiku_rejected_long:  '🤖 Haiku ✗ (L)',
+  haiku_rejected_short: '🤖 Haiku ✗ (S)',
+  ai_rejected_long:     '🤖 AI ✗ (L)',
+  ai_rejected_short:    '🤖 AI ✗ (S)',
+  pending:              '📤 Alert sent',
+  pending_long:         '📤 Alert (L)',
+  pending_short:        '📤 Alert (S)',
 };
 
 let _scansData = [];
@@ -835,7 +837,7 @@ function _renderScansTable(scans) {
       : '—';
     const action = _actionLabels[act] || (act ? esc(act) : '—');
     const cdAge = isCooldown && s.timestamp
-      ? (Date.now() - new Date(s.timestamp)) / 60000
+      ? (Date.now() - new Date(_utc(s.timestamp))) / 60000
       : Infinity;
     const escalateBtn = isCooldown && cdAge < 15
       ? ` <button class="btn btn-warn btn-sm" style="padding:2px 7px;font-size:11px;" onclick="escalateNow(this)" title="Clear cooldown and escalate to Haiku immediately">↑ Escalate</button>`
@@ -1188,7 +1190,7 @@ async function _refreshChatCost() {
   if (!S.url) return;
   try {
     const [chatD, statusD] = await Promise.all([
-      req('GET', '/api/chat/costs'),
+      req('GET', '/api/chat/costs').catch(() => ({})),
       req('GET', '/api/status').catch(() => ({})),
     ]);
     const badge = document.getElementById('chatCostBadge');
@@ -1275,13 +1277,14 @@ function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 function fmt1(v) { return v != null ? Number(v).toFixed(1) : '—'; }
+function _utc(iso) { return iso && !iso.endsWith('Z') && !iso.includes('+') ? iso + 'Z' : iso; }
 function ago(iso) {
-  const s = Math.floor((Date.now() - new Date(iso)) / 1000);
+  const s = Math.floor((Date.now() - new Date(_utc(iso))) / 1000);
   if (s < 60) return s + 's ago';
   if (s < 3600) return Math.floor(s/60) + 'm ago';
   return Math.floor(s/3600) + 'h ago';
 }
-function fmtTime(iso) { return iso ? new Date(iso).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '—'; }
+function fmtTime(iso) { return iso ? new Date(_utc(iso)).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '—'; }
 function fmtCountdown(secs) {
   if (secs == null || secs < 0) return '—';
   const s = Math.round(secs);
@@ -1311,7 +1314,7 @@ function _tickCountdown() {
 }
 function fmtDt(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
+  const d = new Date(_utc(iso));
   return d.toLocaleDateString([],{month:'short',day:'numeric'}) + ' ' +
          d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
 }

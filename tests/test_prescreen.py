@@ -120,13 +120,15 @@ class TestLongBollingerMidBounce:
         assert result["found"] is True
         assert result["type"] == "bollinger_mid_bounce"
 
-    def test_daily_bearish_no_long(self):
-        """No LONG setup when daily trend is bearish."""
+    def test_daily_bearish_still_finds_long(self):
+        """LONG setup found even when daily bearish — bidirectional (C1 penalizes counter-trend)."""
         tf_daily, tf_4h, tf_15m = self._make_long_bb()
         tf_daily["above_ema200_fallback"] = False
         result = detect_setup(tf_daily, tf_4h, tf_15m)
-        # Could find SHORT setup, but not a LONG
-        assert result.get("direction") != "LONG" or result["found"] is False
+        # detect_setup() no longer hard-gates on daily direction
+        assert result["found"] is True
+        assert result["direction"] == "LONG"
+        assert "counter-trend" in result["reasoning"].lower() or "bearish" in result["reasoning"].lower()
 
     def test_prev_close_higher_blocks(self):
         """If prev_close >= current price, bounce has not started — should not fire."""
@@ -224,11 +226,15 @@ class TestShortBollingerUpperRejection:
         if result["found"]:
             assert result["type"] != "bollinger_upper_rejection"
 
-    def test_daily_bullish_no_short(self):
+    def test_daily_bullish_still_finds_short(self):
+        """SHORT setup found even when daily bullish — bidirectional (C1 penalizes counter-trend)."""
         tf_daily, tf_4h, tf_15m = self._make_short_bb()
         tf_daily["above_ema200_fallback"] = True
         result = detect_setup(tf_daily, tf_4h, tf_15m)
-        assert result.get("direction") != "SHORT" or result["found"] is False
+        # detect_setup() no longer hard-gates on daily direction
+        assert result["found"] is True
+        assert result["direction"] == "SHORT"
+        assert "counter-trend" in result["reasoning"].lower() or "bullish" in result["reasoning"].lower()
 
 
 # ── SHORT Setup 2: EMA50 Rejection ───────────────────────────────────────────

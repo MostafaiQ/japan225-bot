@@ -34,10 +34,10 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 | `monitor.py` | Main process. TradingMonitor class. _scanning_cycle(), _monitoring_cycle(), _write_state(), _reload_overrides(), _check_force_scan_trigger() |
 | `config/settings.py` | ALL constants. Never scatter config. |
 | `core/ig_client.py` | IG REST API. connect/ensure_connected, get_prices, open/modify/close_position |
-| `core/indicators.py` | Pure math. analyze_timeframe(), detect_setup() (LONG+SHORT bidirectional), ema/rsi/bb/vwap |
+| `core/indicators.py` | Pure math. analyze_timeframe(), detect_setup() (LONG+SHORT bidirectional), ema/rsi/bb/vwap/heiken_ashi. Phase 1 indicators: HA, FVG, Fibonacci, PDH/PDL, liquidity sweep. |
 | `core/session.py` | get_current_session() UTC, is_no_trade_day(), is_weekend(), is_friday_blackout() |
 | `core/momentum.py` | MomentumTracker class. add_price(), should_alert(), is_stale(), milestone_alert() |
-| `core/confidence.py` | compute_confidence(direction, tf_daily, tf_4h, tf_15m, events, web) → score dict. 10-criteria proportional scoring. |
+| `core/confidence.py` | compute_confidence(direction, tf_daily, tf_4h, tf_15m, events, web) → score dict. 11-criteria proportional scoring (C11=HA alignment). |
 | `ai/analyzer.py` | AIAnalyzer. precheck_with_haiku(), scan_with_sonnet(), confirm_with_opus(). **CLI subprocess (OAuth/subscription, no API key)**. post_trade_analysis(), load_prompt_learnings(). |
 | `ai/context_writer.py` | write_context() — writes storage/context/*.md before each AI call. market_snapshot, recent_activity, macro, live_edge. Called by monitor.py before Haiku. |
 | `trading/risk_manager.py` | RiskManager.validate_trade() 11 checks. get_safe_lot_size() |
@@ -74,7 +74,7 @@ SCAN_INTERVAL_SECONDS = 300    MONITOR_INTERVAL_SECONDS = 2   OFFHOURS_INTERVAL_
 POSITION_CHECK_EVERY_N_CYCLES = 15  # 15 × 2s = 30s position existence check; position cycle REPLACES price cycle = exactly 30 calls/min
 ADVERSE_LOOKBACK_READINGS = 150     # 150 × 2s = 5-minute adverse window
 AI_COOLDOWN_MINUTES = 15       PRICE_DRIFT_ABORT_PTS = 20     SAFETY_CONSECUTIVE_EMPTY = 2
-HAIKU_MIN_SCORE = 60  # requires 5/10 criteria (floor=44 with proportional formula; 4/10=58 < 60)
+HAIKU_MIN_SCORE = 60  # requires 5/11 criteria (5/11=61≥60; 4/11=55 < 60)
 PRE_SCREEN_CANDLES = 220 (15M fetch)   AI_ESCALATION_CANDLES = 220 (4H fetch)   DAILY_EMA200_CANDLES = 250
 ADVERSE_MILD_PTS = 60          ADVERSE_MODERATE_PTS = 120     ADVERSE_SEVERE_PTS = 175
 PAPER_TRADING_SESSION_GATE = REMOVED. All sessions live.
@@ -88,7 +88,8 @@ Dashboard chat: Claude Code CLI (claude --print). No model constant needed.
 ---
 
 ## Known Bug
-*(none)*
+- monitor.py: naive vs UTC-aware datetime mismatch in duration calculation (MEDIUM)
+- dashboard chat: non-atomic _write_history() race condition on concurrent writes (MEDIUM)
 
 ## Critical Fixes Applied (2026-03-02)
 - ig_client.py: CRITICAL — Pandas 2.3.3 conv_resol() breaks on "MINUTE_15"/"DAY" strings. Added _PANDAS_RESOLUTIONS map to convert to "15min"/"D" etc before calling fetch_historical_prices_by_epic(). All price fetches were silently returning [] before this fix.
@@ -105,7 +106,7 @@ Dashboard chat: Claude Code CLI (claude --print). No model constant needed.
 - dashboard/services/config_manager.py: DEFAULTS dict replaced with _defaults() function that imports live from settings.py. Config page now always reflects actual settings values. Dashboard overrides still take precedence. Also fixed DEFAULT_SL_DISTANCE was hardcoded 200 (wrong) — now reads 150 from settings.py.
 - dashboard + telegram: COOLDOWN phase badge, sortable Recent Scans (click headers), "↑ Escalate" button on cooldown rows (clears cooldown + triggers scan). Telegram /status shows cooldown countdown + "Escalate to Haiku" inline button. _today_text() now shows time/dir/conf/emoji per scan. "No active position" centered.
 - monitor.py: Cooldown scans now compute approx confidence (tf_4h={}) so dashboard shows score instead of "—". clear_cooldown.trigger file added (dashboard writes it, monitor clears cooldown at next cycle).
-- core/confidence.py: 8-criteria → 10-criteria. Added C9 (volume_signal != LOW) and C10 (4H EMA50 agrees with direction). Scoring formula changed from linear (30+n×10) to proportional (30+int(n×70/10)) — 100% is now genuinely exceptional (10/10 only). LONG threshold 70% now requires 6/10, SHORT 75% requires 7/10. 243/243 tests pass.
+- core/confidence.py: 8→10→11-criteria. C9 volume, C10 4H EMA50, C11 HA alignment. Proportional formula: 30+int(n*70/11). LONG 70% needs 7/11, SHORT 75% needs 8/11. 264/264 tests pass.
 - monitor.py: Cooldown on Haiku reject only. Haiku reject → 15-min cooldown ("no setup" signal). Haiku approve (any further outcome) → no cooldown, bot free to catch next setup immediately.
 - monitor.py + status.py: Session "—" bug fixed — _current_session persists across write_state() calls. Next Scan In frozen bug fixed — bot stores next_scan_at (ISO datetime), status.py computes countdown dynamically on every API poll.
 
@@ -118,7 +119,7 @@ Dashboard chat: Claude Code CLI (claude --print). No model constant needed.
 
 ## Strategy History (archived — see high-chancellor-archive.md for full details)
 HC 6-fix redesign 2026-02-28: ADVERSE tiers widened, bounce confirmation added, RSI tuned,
-C4 redesigned, EMA50 bounce disabled, session gate removed. All 233 tests pass (now 243 with C9/C10).
+C4 redesigned, EMA50 bounce disabled, session gate removed. Tests: 264/264 passing (C9/C10/C11, new indicators).
 Live trading active 2026-03-01. Historical backtest (bad): 613 trades, 0.8% WR → fixed.
 
 ---
@@ -153,15 +154,21 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 - Haiku pre-gate: filters obvious rejects. Gate at HAIKU_MIN_SCORE=60%.
   C7/C8 (event/blackout) hard-blocked BEFORE Haiku. Cooldown ONLY on Haiku REJECT (15 min).
   Haiku approve (any outcome) → no cooldown — bot can catch next setup immediately.
-  Proportional formula: score=30+int(passed*70/10). 5/10=65 (passes gate), 4/10=58 (fails gate).
-  LONG needs 6/10 (72≥70), SHORT needs 7/10 (79≥75).
+  Proportional formula: score=30+int(passed*70/11). 11/11=100%, 7/11=74%, 8/11=80%.
+  LONG needs 7/11 (74≥70), SHORT needs 8/11 (80≥75).
 - Sonnet: prompt-based JSON output, robust regex parser with safe defaults ($0 subscription)
-- Opus: devil's advocate framing, called only if Sonnet 75–86%. ($0 subscription)
+- Opus: (1) devil's advocate if Sonnet 75–86%. (2) second opinion if Sonnet rejected but conf≥threshold-5. ($0 subscription)
+- U2: Sonnet reasoning logged (first 200 chars) after every call.
+- U4: 5-min short cooldown after Sonnet/Opus rejection (prevents same-setup re-scan).
+- U5: Warning logged when 4H fetch fails but bot still escalates.
 - _cost field always 0.0 (subscription). _tokens always zeros. Kept for interface compat.
 - prompt_learnings.json: auto-updated after each trade close, injected into future prompts
+- brier_scores.json: Brier score calibration tracking (updated by post_trade_analysis, read by /brier-check skill)
 - CLAUDE.md in project root: auto-loaded by all Claude Code sessions + dashboard subprocess
 - Dashboard chat: rolling history summary (capped ~650 tokens) + bot_state.json injection
-- Skills: ~/.claude/skills/ — 5 auto-drafted, more created when query type hits 5+ uses/week
+- Skills: ~/.claude/skills/ — 8 skills (session-brief, brier-check, cost-report, deploy-check, prompt-audit, strategy-health, trade-review, backtest-import)
+- Agents: ~/.claude/agents/ — market-analyst.md (read-only market analysis), trade-debugger.md (trade postmortem)
+- Hooks: PostToolUse on Edit|Write of .py → auto-runs pytest (catches regressions during dev)
 - HC retired for routine use. Use skills instead. HC = break-glass only.
 
 ## Important Behavioral Notes (hard-won, never forget)
@@ -172,7 +179,7 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 - **MomentumTracker** is None when flat. Created at trade open, reset at close. Reinitiated in startup_sync if position recovered.
 - **Local confidence pre-gate**: only escalates to AI if local score >= 50%. AI cooldown 30min regardless of result.
 - **WebResearcher.research()** is synchronous/blocking. Called in executor: `run_in_executor(None, self.researcher.research)`.
-- **detect_setup()** bidirectional. LONG requires daily_bullish. SHORT requires daily_bearish.
+- **detect_setup()** bidirectional. No daily hard gate — C1 penalizes counter-trend in confidence.py.
   RSI: bb_mid 35-55 | bb_lower 20-40 | bb_upper 55-75 | ema50_rej 50-70.
   BB_MID_THRESHOLD=150pts, BB_LOWER_THRESHOLD=80pts. bounce_starting=price>prev_close (mid bounce).
   lower_wick>=15pts (lower bounce). NO above_ema50 gate on mid bounce (EMA50 in reasoning for AI).
@@ -205,6 +212,7 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 | `storage/data/chat_costs.json` | N/A (Claude Code CLI, no cost tracking) | /api/chat/costs GET |
 | `storage/data/prompt_learnings.json` | post_trade_analysis() in analyzer.py | injected into AI prompts |
 | `storage/data/chat_usage.json` | claude_client._track_usage() | auto-skill drafting trigger |
+| `storage/data/brier_scores.json` | post_trade_analysis() in analyzer.py | /brier-check skill |
 
 ---
 

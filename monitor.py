@@ -92,6 +92,7 @@ class TradingMonitor:
         self._current_session: str | None = None   # persists across write_state calls
         self._current_price: float | None = None
         self._last_scan_detail: dict = {}  # dashboard: shows last scan outcome
+        self._ai_reject_until: datetime | None = None  # U4: short cooldown after Sonnet/Opus rejection
         # Paths for dashboard integration
         self._state_path   = Path(__file__).parent / "storage" / "data" / "bot_state.json"
         self._overrides_path = Path(__file__).parent / "storage" / "data" / "dashboard_overrides.json"
@@ -476,12 +477,37 @@ class TradingMonitor:
             })
             return SCAN_INTERVAL_SECONDS
 
+        # --- Short AI-reject cooldown (5 min after Sonnet/Opus rejection) ---
+        # Prevents re-calling AI immediately after a rejection of the same setup.
+        if not force_scan and self._ai_reject_until and datetime.now(timezone.utc) < self._ai_reject_until:
+            approx_conf = compute_confidence(
+                direction=prescreen_direction,
+                tf_daily=tf_daily,
+                tf_4h={},
+                tf_15m=tf_15m,
+            )
+            secs_left = int((self._ai_reject_until - datetime.now(timezone.utc)).total_seconds())
+            logger.info(f"Short AI-reject cooldown ({secs_left}s remaining). Conf≈{approx_conf['score']}%.")
+            self._last_scan_detail = {"outcome": "cooldown", "direction": prescreen_direction, "confidence": approx_conf["score"], "price": current_price, "setup_type": setup.get("type")}
+            self.storage.save_scan({
+                "timestamp": datetime.now().isoformat(), "session": session["name"],
+                "price": current_price, "indicators": {}, "market_context": {},
+                "analysis": {"setup_found": True, "reasoning": f"[Short cooldown] AI rejected {secs_left}s ago, conf≈{approx_conf['score']}%"},
+                "setup_found": False, "confidence": approx_conf["score"], "action_taken": f"cooldown_{prescreen_direction.lower()}", "api_cost": 0,
+            })
+            return SCAN_INTERVAL_SECONDS
+
         # --- Fetch 4H for full analysis (1 API call; daily already fetched above) ---
         candles_4h = await asyncio.get_event_loop().run_in_executor(
             None, lambda: self.ig.get_prices("HOUR_4", AI_ESCALATION_CANDLES)
         )
 
         tf_4h = analyze_timeframe(candles_4h) if candles_4h else {}
+        if not candles_4h:  # U5: warn when 4H unavailable — AI context incomplete
+            logger.warning(
+                "Failed to fetch 4H candles — C6/C10 will default gracefully. "
+                "AI context incomplete: HTF trend/RSI unavailable."
+            )
         # tf_daily already set from pre-screen fetch above
 
         # --- Local confidence score ---
@@ -632,12 +658,40 @@ class TradingMonitor:
         sonnet_confidence = sonnet_result.get("confidence", 0)
         sonnet_found = sonnet_result.get("setup_found", False)
         logger.info(f"Sonnet: found={sonnet_found}, confidence={sonnet_confidence}%")
+        logger.info(f"Sonnet reasoning: {sonnet_result.get('reasoning', 'N/A')[:200]}")  # U2
 
-        # Escalate to Opus only if Sonnet is in the 75–86% range:
-        # - Below 75%: Sonnet isn't confident enough, skip expensive Opus call
-        # - 87%+: Sonnet is very confident, skip Opus (no value in devil's advocate)
+        # Determine thresholds for Opus escalation logic
+        _min_conf_dir = MIN_CONFIDENCE_SHORT if prescreen_direction == "SHORT" else MIN_CONFIDENCE
+
+        # U1: Opus second opinion for near-threshold Sonnet rejections
+        # U: Original Opus devil's advocate for confident Sonnet approvals
         final_result = sonnet_result
-        if sonnet_found and 75 <= sonnet_confidence < 87:
+        if not sonnet_found and sonnet_confidence >= _min_conf_dir - 5:
+            # Sonnet said no but confidence is borderline — escalate to Opus for second opinion
+            logger.info(
+                f"Sonnet near-threshold rejection ({sonnet_confidence}% >= {_min_conf_dir - 5}%). "
+                f"Opus second opinion..."
+            )
+            opus_result = self.analyzer.confirm_with_opus(
+                indicators=indicators,
+                recent_scans=recent_scans,
+                market_context=market_context,
+                web_research=web_research,
+                sonnet_analysis=sonnet_result,
+                live_edge_block=live_edge,
+            )
+            final_result = opus_result
+            if opus_result.get("setup_found"):
+                logger.info(
+                    f"Opus overrode Sonnet rejection: "
+                    f"found=True, confidence={opus_result.get('confidence')}%"
+                )
+            else:
+                logger.info(
+                    f"Opus confirms Sonnet rejection. Confidence={opus_result.get('confidence')}%"
+                )
+        elif sonnet_found and 75 <= sonnet_confidence < 87:
+            # Sonnet confident → Opus devil's advocate
             logger.info(f"Sonnet at {sonnet_confidence}%. Escalating to Opus...")
             opus_result = self.analyzer.confirm_with_opus(
                 indicators=indicators,
@@ -653,6 +707,15 @@ class TradingMonitor:
                 f"confidence={opus_result.get('confidence')}%"
             )
 
+        # --- Determine final outcome before saving ---
+        direction = final_result.get("direction", prescreen_direction)
+        min_conf = MIN_CONFIDENCE_SHORT if direction == "SHORT" else MIN_CONFIDENCE
+        final_confidence = final_result.get("confidence", 0)
+        ai_confirmed = final_result.get("setup_found", False) and final_confidence >= min_conf
+
+        # U3: action_taken reflects actual outcome — not always "pending_*"
+        action_taken = f"pending_{direction.lower()}" if ai_confirmed else f"ai_rejected_{direction.lower()}"
+
         # --- Save scan ---
         scan_cost = (
             haiku_cost
@@ -667,23 +730,20 @@ class TradingMonitor:
             "market_context": web_research,
             "analysis": final_result,
             "setup_found": final_result.get("setup_found", False),
-            "confidence": final_result.get("confidence", 0),
-            "action_taken": f"pending_{prescreen_direction.lower()}",
+            "confidence": final_confidence,
+            "action_taken": action_taken,
             "api_cost": scan_cost,
         })
 
-        # --- Check if setup confirmed and meets threshold ---
-        direction = final_result.get("direction", prescreen_direction)
-        min_conf = MIN_CONFIDENCE_SHORT if direction == "SHORT" else MIN_CONFIDENCE
-        final_confidence = final_result.get("confidence", 0)
-
-        if not final_result.get("setup_found") or final_confidence < min_conf:
+        if not ai_confirmed:
             logger.info(
                 f"Setup not confirmed by AI. "
                 f"Found={final_result.get('setup_found')}, "
                 f"Confidence={final_confidence}% (need {min_conf}%)"
             )
             self._last_scan_detail = {"outcome": "ai_rejected", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
+            # U4: short cooldown after Sonnet/Opus rejection (5 min)
+            self._ai_reject_until = datetime.now(timezone.utc) + timedelta(seconds=300)
             return SCAN_INTERVAL_SECONDS
 
         # --- Risk validation ---

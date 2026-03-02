@@ -46,13 +46,14 @@ Logs warning if parse fails.
 Skip Opus if confidence >= 87% (certain) or <= threshold+2 (near-reject floor).
 
 ## build_system_prompt() -> str
-Compact reference card. ~195 tokens. Passed as <system> block in _run_claude.
+Compact reference card. ~230 tokens. Includes HA, FVG, Fibonacci, sweep signal guidance.
+11-criteria confidence breakdown. Passed as <system> block in _run_claude.
 
 ## build_scan_prompt(...) -> str
 Same compact format as before. Appends JSON schema template at end for model output.
 Includes path to storage/context/ files as a note (Claude can read them if needed).
 Key formatters:
-  _fmt_indicators(indicators)   → pipe-format table
+  _fmt_indicators(indicators)   → pipe-format table (includes HA, FVG, fib_near, sweep signals)
   _fmt_recent_scans(scans)      → 1-line per scan summary
   _fmt_web_research(web)        → 3 lines, HIGH-impact calendar only
 
@@ -61,6 +62,8 @@ Reads storage/data/prompt_learnings.json. Returns compact block (last 5 entries)
 
 ## post_trade_analysis(trade, ai_analysis, data_dir=None) -> None
 Rule-based (no LLM cost). Updates prompt_learnings.json (max 20 entries).
+Also computes and stores Brier score in storage/data/brier_scores.json (last 100 trades).
+Brier = (confidence/100 - outcome)^2. Summary: mean, by_setup, by_session.
 
 ## class WebResearcher
 research() -> dict  # Synchronous/blocking. Run via run_in_executor in async context.

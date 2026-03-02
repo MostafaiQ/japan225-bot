@@ -17,11 +17,12 @@
 | indicators | analyze_timeframe(), detect_setup(), all setup types |
 | session | get_current_session(), blackout rules |
 | momentum | MomentumTracker, adverse tier logic |
-| confidence | compute_confidence(), 8-criteria scoring |
+| confidence | compute_confidence(), 11-criteria scoring |
 | ig_client | IG REST API, connect, prices, open/modify/close |
 | risk_manager | validate_trade(), 11 checks, get_safe_lot_size() |
 | exit_manager | evaluate_position(), ExitPhase, trailing stop |
 | analyzer | AIAnalyzer, Haiku/Sonnet/Opus pipeline, tool use schema |
+| context_writer | write_context(), market_snapshot/recent_activity/macro/live_edge |
 | telegram_bot | Commands, buttons, alert flow |
 | dashboard | FastAPI routes, systemd units, ngrok |
 | claude_client | Dashboard chat, history summarizer, usage tracker |
@@ -57,6 +58,21 @@ When user asks about prompt performance → use `/prompt-audit` workflow:
   1. Read `storage/data/prompt_learnings.json` if it exists.
   2. Query last 5 losing trades and their ai_analysis field.
   3. Find patterns: what did Sonnet/Opus say that was wrong? What context was missing?
+
+When user asks for a market briefing → use `/session-brief` workflow:
+  1. Read `storage/context/market_snapshot.md` and `storage/context/macro.md`.
+  2. Query recent scans: `sqlite3 storage/data/trading.db "SELECT action_taken, confidence, direction FROM scans WHERE timestamp > datetime('now', '-8 hours') ORDER BY id DESC LIMIT 10"`
+  3. Summarize: active session, key indicators, recent scan outcomes, macro events.
+
+When user asks about AI calibration → use `/brier-check` workflow:
+  1. Read `storage/data/brier_scores.json`.
+  2. Report: mean Brier score, breakdown by setup type and session.
+  3. Interpret: <0.15 = well calibrated, 0.15-0.25 = moderate, >0.25 = overconfident/underconfident.
+
+When user asks to import backtest data → use `/backtest-import` workflow:
+  1. Read the CSV file provided by the user.
+  2. Parse columns: timestamp, direction, setup_type, entry, exit, pnl.
+  3. Update MEMORY.md Backtest Status section with new results.
 
 ## Handling Operational Questions (dashboard chat)
 User is a trader, not a developer. When they ask operational questions:

@@ -41,15 +41,15 @@ PRICING = {
 # ─── Prompt helpers (unchanged from original) ─────────────────────────────────
 
 def build_system_prompt() -> str:
-    """Compact reference-card system prompt. ~200 tokens."""
+    """Compact reference-card system prompt. ~230 tokens."""
     return """Japan 225 Cash CFD analyst. LONG+SHORT bidirectional. No directional bias.
 
-SETUPS — LONG (requires daily_bullish: price > EMA200_daily or EMA50 fallback):
+SETUPS — LONG (daily trend in reasoning; counter-trend allowed if strong confluence):
   bb_mid_bounce:     price ±150pts BB_mid | RSI15M 35-55 | bounce_starting=T
   bb_lower_bounce:   price ±80pts BB_lower | RSI15M 20-40 | lower_wick ≥15pts | EMA50 below OK
     → REJECT if vol=LOW (no buyers) or 4H sharply down with no RSI divergence
 
-SETUPS — SHORT (requires daily_bearish | min confidence 75% — BOJ risk):
+SETUPS — SHORT (min confidence 75% — BOJ risk; counter-trend allowed if strong confluence):
   bb_upper_rejection: price ±150pts BB_upper | RSI15M 55-75 | below EMA50
   ema50_rejection:    price ≤ EMA50+2 | dist ≤150pts | RSI15M 50-70
 
@@ -57,11 +57,15 @@ RULES: RR ≥ 1.5 after spread(7pts). No trade: HIGH event <60min. SL=150 TP=400
 VOLUME: HIGH(>1.5x)=conviction. LOW(<0.7x)=lean REJECT.
 SWING LEVELS: dist_swing_hi <200pts → TP obstacle, reduce confidence.
               dist_swing_lo <100pts → SL anchor, good for LONG.
+HA: ha_bullish=T → buying pressure confirmed. ha_streak≥3 → strong momentum.
+FVG: fvg_bullish → unfilled demand zone (support). fvg_bearish → unfilled supply zone (resistance).
+FIBO: fib_near = nearest fib level (key S/R). pdh/pdl = prev session high/low (key levels).
+SWEEP: swept_low=T → liquidity grab + bullish reversal. swept_high=T → bearish reversal.
 
-CONFIDENCE (10 criteria, proportional scoring, base 30, cap 100):
+CONFIDENCE (11 criteria, proportional scoring, base 30, cap 100):
   daily_trend | entry_at_tech_level | rsi_15m_in_range | tp_viable
   price_structure | macro_aligned | no_event_1hr | no_friday_monthend
-  volume (not LOW) | trend_4h (EMA50 aligned)
+  volume (not LOW) | trend_4h (EMA50 aligned) | ha_aligned (HA candle direction)
 
 EXIT: +150pts → SL to BE+10. TP=400pts. 75%TP in <2h → trail@150pts.
 EMA50_bounce setup: DISABLED — do not approve."""
@@ -95,6 +99,16 @@ def _fmt_indicators(indicators: dict) -> str:
         sh   = tf.get("swing_high_20", "")
         sl   = tf.get("swing_low_20", "")
         bnc  = tf.get("bounce_starting", "")
+        # New indicators
+        ha   = tf.get("ha_bullish")
+        hast = tf.get("ha_streak")
+        fibn = tf.get("fib_near")
+        swlo = tf.get("swept_low")
+        swhi = tf.get("swept_high")
+        fvg_bull = tf.get("fvg_bullish")
+        fvg_bear = tf.get("fvg_bearish")
+        fvg_lvl  = tf.get("fvg_level")
+
         parts = [f"{label}: p={p} rsi={rsi} ema50={e50}"]
         if e200:
             parts.append(f"ema200={e200}")
@@ -108,6 +122,15 @@ def _fmt_indicators(indicators: dict) -> str:
                 pass
         if bnc != "":
             parts.append(f"bounce={'T' if bnc else 'F'}")
+        if ha is not None:
+            parts.append(f"ha={'bull' if ha else 'bear'}({hast})")
+        if fvg_bull or fvg_bear:
+            fvg_type = "bull" if fvg_bull else "bear"
+            parts.append(f"fvg={fvg_type}" + (f"@{fvg_lvl}" if fvg_lvl else ""))
+        if fibn:
+            parts.append(f"fib={fibn}")
+        if swlo or swhi:
+            parts.append(f"sweep={'low' if swlo else 'high'}")
         lines.append(" | ".join(parts))
     return "\n".join(lines) if lines else "(no indicator data)"
 
@@ -279,10 +302,11 @@ class AIAnalyzer:
     def __init__(self):
         self.total_cost = 0.0  # Always $0 (subscription); kept for interface compat
 
-    def _run_claude(self, model: str, system_prompt: str, user_prompt: str, timeout: int = 180) -> str:
+    def _run_claude(self, model: str, system_prompt: str, user_prompt: str, timeout: int = 180) -> tuple[str, dict]:
         """
         Invoke Claude Code CLI with OAuth credentials (no API key).
         Combines system + user prompt so Claude has full context in --print mode.
+        Returns (output_text, token_estimates) — tokens are estimates from char count.
         """
         env = {**os.environ}
         env.pop("ANTHROPIC_API_KEY", None)   # strip key → force OAuth subscription
@@ -291,6 +315,8 @@ class AIAnalyzer:
             f"<system>\n{system_prompt}\n</system>\n\n"
             f"<task>\n{user_prompt}\n</task>"
         )
+        # Estimate input tokens: ~4 chars/token for English/structured data
+        est_input_tokens = len(full_prompt) // 4
 
         start = time.time()
         try:
@@ -305,16 +331,24 @@ class AIAnalyzer:
             )
             elapsed = time.time() - start
             output = (result.stdout or "").strip()
+            est_output_tokens = len(output) // 4
+            total_tokens = est_input_tokens + est_output_tokens
             if result.returncode != 0:
                 logger.warning(f"Claude CLI exit {result.returncode}: {(result.stderr or '')[:200]}")
-            logger.info(f"Claude CLI {model.split('-')[1]} ({elapsed:.1f}s) → {len(output)} chars")
-            return output
+            model_short = model.split('-')[1] if '-' in model else model[:8]
+            logger.info(
+                f"Claude CLI {model_short} ({elapsed:.1f}s) | "
+                f"~{est_input_tokens:,}in + {est_output_tokens:,}out = {total_tokens:,} tokens (est) | "
+                f"subscription (no cost)"
+            )
+            tokens = {"input": est_input_tokens, "output": est_output_tokens, "total": total_tokens}
+            return output, tokens
         except subprocess.TimeoutExpired:
             logger.error(f"Claude CLI timeout ({timeout}s) for model {model}")
-            return ""
+            return "", {"input": 0, "output": 0, "total": 0}
         except FileNotFoundError:
             logger.error(f"Claude binary not found at {CLAUDE_BIN}")
-            return ""
+            return "", {"input": 0, "output": 0, "total": 0}
 
     # ── Haiku pre-gate ─────────────────────────────────────────────────────────
 
@@ -365,7 +399,7 @@ class AIAnalyzer:
             f"Japan 225 pre-screen gate. Decide: escalate to full Sonnet analysis or reject?\n\n"
             f"Setup: {setup_type} | Direction: {direction} | Session: {session}\n"
             f"RSI 15M: {rsi_15m} | Volume: {volume_signal}\n"
-            f"Local score: {score}% ({passed}/10 technical criteria passed)\n"
+            f"Local score: {score}% ({passed}/11 technical criteria passed)\n"
             f"{failed_str}{ind_str}{web_str}{context_note}"
             f"{edge_str}\n\n"
             f"DECISION FRAMEWORK:\n"
@@ -385,9 +419,10 @@ class AIAnalyzer:
 
         system_prompt = "You are a Japan 225 CFD pre-screen filter. Output ONLY the JSON object requested. No explanations, no markdown, just the JSON."
 
-        raw = self._run_claude(HAIKU_MODEL, system_prompt, user_prompt, timeout=60)
+        raw, tokens = self._run_claude(HAIKU_MODEL, system_prompt, user_prompt, timeout=60)
         result = _parse_json(raw, default={"should_escalate": True, "reason": "Haiku parse error — defaulting to escalate"})
-        result["_cost"] = 0.0
+        result["_cost"]   = 0.0
+        result["_tokens"] = tokens
 
         if not result.get("should_escalate"):
             logger.info(f"Haiku filtered: {result.get('reason', '')}")
@@ -498,7 +533,7 @@ class AIAnalyzer:
             f'"trend_observation": "...", "warnings": [], "edge_factors": []}}'
         )
 
-        raw = self._run_claude(model, build_system_prompt(), user_prompt, timeout=180)
+        raw, tokens = self._run_claude(model, build_system_prompt(), user_prompt, timeout=180)
 
         default = {
             "setup_found": False,
@@ -511,7 +546,7 @@ class AIAnalyzer:
         result = _parse_json(raw, default)
         result["_model"]  = model
         result["_cost"]   = 0.0
-        result["_tokens"] = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+        result["_tokens"] = tokens
         return result
 
 
@@ -531,19 +566,61 @@ def load_prompt_learnings(data_dir: str = None) -> str:
         for entry in recent:
             lines.append(f"  - {entry.get('insight', '')}")
         return "\n".join(lines)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to load prompt learnings: {e}")
         return ""
 
 
 def post_trade_analysis(trade: dict, ai_analysis: dict, data_dir: str = None) -> None:
-    """Post-trade learning — pure rule-based, no LLM call."""
+    """Post-trade learning — pure rule-based, no LLM call. Also records Brier score."""
     from pathlib import Path
-    path = Path(data_dir or "storage/data") / "prompt_learnings.json"
+    data_path = Path(data_dir or "storage/data")
+    path = data_path / "prompt_learnings.json"
 
     pnl          = trade.get("pnl", 0) or 0
     setup_type   = trade.get("setup_type", "unknown")
     session      = trade.get("session", "unknown")
     confidence   = trade.get("confidence", 0) or 0
+
+    # ── Brier Score ───────────────────────────────────────────────────────────
+    # Measures calibration: (predicted_probability - actual_outcome)^2
+    # Perfect calibration = 0.0; worst = 1.0. Lower is better.
+    try:
+        brier_path = data_path / "brier_scores.json"
+        outcome = 1.0 if pnl > 0 else 0.0
+        brier_score = (confidence / 100 - outcome) ** 2
+
+        brier_data = {"scores": [], "summary": {}}
+        if brier_path.exists():
+            brier_data = json.loads(brier_path.read_text())
+        scores = brier_data.get("scores", [])
+        scores.append({
+            "timestamp": datetime.now().isoformat(),
+            "setup_type": setup_type,
+            "session": session,
+            "confidence": confidence,
+            "outcome": outcome,
+            "brier_score": round(brier_score, 4),
+        })
+        scores = scores[-100:]  # keep last 100
+
+        # Recompute summary
+        all_bs = [s["brier_score"] for s in scores]
+        by_setup, by_session = {}, {}
+        for s in scores:
+            by_setup.setdefault(s["setup_type"], []).append(s["brier_score"])
+            by_session.setdefault(s["session"], []).append(s["brier_score"])
+        summary = {
+            "mean": round(sum(all_bs) / len(all_bs), 4) if all_bs else 0.0,
+            "count": len(all_bs),
+            "by_setup": {k: round(sum(v) / len(v), 4) for k, v in by_setup.items()},
+            "by_session": {k: round(sum(v) / len(v), 4) for k, v in by_session.items()},
+        }
+        brier_path.parent.mkdir(parents=True, exist_ok=True)
+        brier_path.write_text(json.dumps({"scores": scores, "summary": summary}, indent=2))
+        logger.info(f"Brier score: {brier_score:.4f} (mean={summary['mean']:.4f}, n={summary['count']})")
+    except Exception as e:
+        logger.warning(f"Brier score save failed (non-fatal): {e}")
     direction    = trade.get("direction", "")
     duration_min = trade.get("duration_minutes", 0) or 0
     phase_close  = trade.get("phase_at_close", "")

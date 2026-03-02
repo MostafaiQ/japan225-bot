@@ -37,24 +37,27 @@ _scanning_cycle() -> int (sleep seconds):
   1. get_current_session() → skip if not active
   2. is_no_trade_day() → skip
   3. check scanning_paused
-  3b. PAPER_TRADING_SESSION_GATE check: if True and not force_scan → skip non-Tokyo hours (UTC 0-6)
+  3b. _ai_reject_until short cooldown (5min after Sonnet/Opus rejection, unless force_scan)
   4. ig.get_market_info() → 1 API call
   5. asyncio.gather(ig.get_prices("MINUTE_15", PRE_SCREEN_CANDLES=220), ig.get_prices("DAY", DAILY_EMA200_CANDLES=250)) → 2 parallel calls
   6. detect_setup(tf_daily, {}, tf_15m) — tf_daily is real (above_ema200_fallback is bool)
-  7. storage.is_ai_on_cooldown(30min)
+  7. storage.is_ai_on_cooldown(AI_COOLDOWN_MINUTES=15)
   8. fetch 4H candles (AI_ESCALATION_CANDLES=220) → 1 API call (daily already fetched in step 5, reused here)
   9. researcher.research() → web data
-  10. compute_confidence() → extract criteria dict
+  10. compute_confidence() → extract criteria dict (11 criteria, C1-C11)
   10b. HARD BLOCKS: C7(no_event_1hr) + C8(no_friday_monthend) fail → skip immediately (no cooldown)
-  10c. if score < HAIKU_MIN_SCORE (35%) → skip (true technical junk)
+  10c. if score < HAIKU_MIN_SCORE (60%) → skip (true technical junk)
   10d. precheck_with_haiku() with full context: web_research, failed_criteria, indicators, live_edge
-       → if Haiku rejects: save cheap scan record, return (NO cooldown burned)
-  10e. market_context["prescreen_setup"] = {type, reasoning, session} — injected before Sonnet call
-  11. set_ai_cooldown() ← moved here (after Haiku approves, not at local gate)
-      scan_with_sonnet() with live_edge_block
-  12. if Sonnet >=70%: confirm_with_opus()
-  13. save_scan(), risk.validate_trade()
-  14. set_pending_alert(), telegram.send_trade_alert()
+       → if Haiku rejects: set_ai_cooldown(15min), save scan record, return
+  10e. write_context() — generates storage/context/*.md for Claude CLI to read
+  10f. market_context["prescreen_setup"] = {type, reasoning, session} — injected before Sonnet call
+  11. scan_with_sonnet() with live_edge_block
+      → U2: log Sonnet reasoning (first 200 chars)
+  12. U1: if Sonnet rejected but conf >= threshold-5 → Opus second opinion
+      OR: if Sonnet found=True and 75≤conf<87 → Opus devil's advocate
+  13. save_scan(), action_taken = pending_* (if confirmed) or ai_rejected_* (if not)
+      U4: if rejected → set _ai_reject_until = now + 5min (short cooldown)
+  14. risk.validate_trade(), set_pending_alert(), telegram.send_trade_alert()
 
 _monitoring_cycle(pos_state):  # every 2s price check; position existence check every 15 cycles (30s)
   1. ig.get_open_positions() → check POSITIONS_API_ERROR sentinel

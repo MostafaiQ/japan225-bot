@@ -72,7 +72,7 @@ def _write_market_snapshot(
         lines += [
             "",
             f"**Local confidence:** {local_confidence.get('score', '?')}% "
-            f"({local_confidence.get('passed_criteria', '?')}/{local_confidence.get('total_criteria', 10)} criteria)",
+            f"({local_confidence.get('passed_criteria', '?')}/{local_confidence.get('total_criteria', 11)} criteria)",
             f"✓ Passed: {', '.join(passed) or 'none'}",
             f"✗ Failed: {', '.join(failed) or 'none'}",
         ]
@@ -85,19 +85,30 @@ def _write_market_snapshot(
         ("15 Minute (15M)",  ["15m", "tf_15m", "15min", "m15"]),
     ]
     FIELDS = [
-        ("price",           "Price"),
-        ("rsi",             "RSI"),
-        ("ema_50",          "EMA 50"),
-        ("ema_200",         "EMA 200"),
-        ("bb_upper",        "BB Upper"),
-        ("bb_mid",          "BB Mid"),
-        ("bb_lower",        "BB Lower"),
-        ("volume_signal",   "Volume Signal"),
-        ("volume_ratio",    "Volume Ratio"),
-        ("swing_high_20",   "Swing High (20)"),
-        ("swing_low_20",    "Swing Low (20)"),
-        ("bounce_starting", "Bounce Starting"),
-        ("above_ema50",     "Above EMA50"),
+        ("price",            "Price"),
+        ("rsi",              "RSI"),
+        ("ema_50",           "EMA 50"),
+        ("ema_200",          "EMA 200"),
+        ("bb_upper",         "BB Upper"),
+        ("bb_mid",           "BB Mid"),
+        ("bb_lower",         "BB Lower"),
+        ("volume_signal",    "Volume Signal"),
+        ("volume_ratio",     "Volume Ratio"),
+        ("swing_high_20",    "Swing High (20)"),
+        ("swing_low_20",     "Swing Low (20)"),
+        ("bounce_starting",  "Bounce Starting"),
+        ("above_ema50",      "Above EMA50"),
+        # New indicators (Phase 1)
+        ("ha_bullish",       "HA Bullish"),
+        ("ha_streak",        "HA Streak"),
+        ("fvg_bullish",      "FVG Bullish"),
+        ("fvg_bearish",      "FVG Bearish"),
+        ("fvg_level",        "FVG Level"),
+        ("fib_near",         "Fibonacci Near"),
+        ("prev_candle_high", "PDH"),
+        ("prev_candle_low",  "PDL"),
+        ("swept_low",        "Swept Low"),
+        ("swept_high",       "Swept High"),
     ]
 
     for tf_label, tf_keys in TF_KEYS:
