@@ -5,12 +5,14 @@
 
 ## Public API
 write_context(indicators, market_context, web_research, recent_scans, recent_trades,
-              live_edge_block="", local_confidence=None, prescreen_direction=None) -> None
+              live_edge_block="", local_confidence=None, prescreen_direction=None,
+              tf_5m=None) -> None
   # Writes 4 files. Non-fatal on error (logs warning, never crashes monitor).
+  # tf_5m: optional 5M timeframe data, added to market_snapshot.md via TF_KEYS lookup
 
 ## Files Written (storage/context/)
-market_snapshot.md  — session, mode, pre-screen setup, local confidence breakdown,
-                      indicators for D1 / 4H / 15M (all fields, readable format)
+market_snapshot.md  — session, mode, pre-screen setup (incl. Entry TF label), local confidence breakdown,
+                      indicators for D1 / 4H / 15M / 5M (all fields, readable format)
 recent_activity.md  — last 15 scans (timestamp, session, price, action, conf%)
                       last 10 closed trades (direction, setup, outcome, P&L, duration)
                       win rate summary by setup type

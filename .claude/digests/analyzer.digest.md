@@ -55,6 +55,7 @@ Compact reference card. ~230 tokens. Includes HA, FVG, Fibonacci, sweep signal g
 ## build_scan_prompt(..., haiku_reasoning=None) -> str
 Same compact format as before. Appends JSON schema template at end for model output.
 Includes path to storage/context/ files as a note (Claude can read them if needed).
+PRE-SCREEN line includes `Entry TF: {entry_tf}` from market_context["entry_timeframe"].
 **Cumulative AI reasoning chain**:
   - For Sonnet: haiku_reasoning → HAIKU PRE-GATE ASSESSMENT block (context, not confirmation bias)
   - For Opus: haiku_reasoning + sonnet analysis → PRIOR AI ASSESSMENTS block, then own assessment task

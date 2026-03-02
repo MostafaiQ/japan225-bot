@@ -9,7 +9,9 @@ Digests live in `.claude/digests/`. Read only the digest(s) relevant to your tas
 ```
 Oracle VM: monitor.py (24/7, systemd: japan225-bot)
   SCANNING (no position): every 5min active sessions, 30min off-hours
-    → fetch 15M+Daily in parallel → detect_setup() pre-screen → if found:
+    → fetch 15M+Daily+5M in parallel (3 API calls) → detect_setup() on 15M first
+    → if 15M no setup → 5M fallback (same detect_setup, 15M alignment guard)
+    → 5M setups tagged with _5m suffix. entry_timeframe passed to AI prompts.
     → NO cooldown ($0/call subscription) → fetch 4H → compute_confidence()
     → if score >= 50%: Haiku pre-gate → Sonnet (with Haiku reasoning) → Opus (with Haiku+Sonnet reasoning)
     → Cumulative AI chain: each tier's reasoning feeds into the next tier's prompt
@@ -77,6 +79,7 @@ ADVERSE_LOOKBACK_READINGS = 150     # 150 × 2s = 5-minute adverse window
 AI_COOLDOWN_MINUTES = 15       PRICE_DRIFT_ABORT_PTS = 20     SAFETY_CONSECUTIVE_EMPTY = 2
 HAIKU_MIN_SCORE = 60  # requires 5/11 criteria (5/11=61≥60; 4/11=55 < 60)
 PRE_SCREEN_CANDLES = 220 (15M fetch)   AI_ESCALATION_CANDLES = 220 (4H fetch)   DAILY_EMA200_CANDLES = 250
+MINUTE_5_CANDLES = 100 (5M fallback TF fetch, ~8h of 5M data)
 ADVERSE_MILD_PTS = 60          ADVERSE_MODERATE_PTS = 120     ADVERSE_SEVERE_PTS = 175
 PAPER_TRADING_SESSION_GATE = REMOVED. All sessions live.
 ENABLE_EMA50_BOUNCE_SETUP = False (disabled until validated)
@@ -120,7 +123,7 @@ Dashboard chat: Claude Code CLI (claude --print). No model constant needed.
 
 ## Strategy History (archived — see high-chancellor-archive.md for full details)
 HC 6-fix redesign 2026-02-28: ADVERSE tiers widened, bounce confirmation added, RSI tuned,
-C4 redesigned, EMA50 bounce disabled, session gate removed. Tests: 264/264 passing (C9/C10/C11, new indicators).
+C4 redesigned, EMA50 bounce disabled, session gate removed. Tests: 277/277 passing (C9/C10/C11, new indicators).
 Live trading active 2026-03-01. Historical backtest (bad): 613 trades, 0.8% WR → fixed.
 
 ---
@@ -134,6 +137,8 @@ Live trading active 2026-03-01. Historical backtest (bad): 613 trades, 0.8% WR �
 | ema50_rejection | SHORT | price ≤ema50+2, dist ≤150 | 50-70 | daily bearish |
 SL=150 (WFO-validated), TP=400 for all types.
 Note: above_ema50 gate REMOVED from bollinger_mid_bounce. EMA50 status shown in reasoning string for Sonnet/Opus to evaluate.
+5M fallback: all types can fire on 5M candles with `_5m` suffix (e.g. `bollinger_mid_bounce_5m`).
+  5M alignment guard: LONG needs 15M RSI<65 + price within 300pts of 15M BB mid/lower. SHORT needs 15M RSI>35 + price within 300pts of 15M BB upper.
 
 ## Backtest Status (2026-03-01, NKD=F, 42 days, all sessions)
 Data: NKD=F 15M + 1H, ^N225 daily. Sessions: Tokyo(00-06) + London(08-16) + NY(16-21 UTC).

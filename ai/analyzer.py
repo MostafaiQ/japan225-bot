@@ -195,8 +195,9 @@ def build_scan_prompt(
         setup_type   = market_context.get("prescreen_setup_type", "")
         setup_reason = market_context.get("prescreen_reasoning", "")
         session_name = market_context.get("session_name", "")
+        entry_tf = market_context.get("entry_timeframe", "15m")
         prescreen_block = (
-            f"\nPRE-SCREEN: {prescreen_direction} | {setup_type} | session={session_name}\n"
+            f"\nPRE-SCREEN: {prescreen_direction} | {setup_type} | session={session_name} | Entry TF: {entry_tf}\n"
             f"  {setup_reason}\n"
             f"  → Confirm or reject. You may suggest opposite direction or NO TRADE.\n"
         )

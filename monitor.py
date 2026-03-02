@@ -37,6 +37,7 @@ from config.settings import (
     calculate_margin, calculate_profit, SPREAD_ESTIMATE,
     MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, BREAKEVEN_BUFFER,
     ADVERSE_SEVERE_PTS, DAILY_EMA200_CANDLES, PRE_SCREEN_CANDLES, AI_ESCALATION_CANDLES,
+    MINUTE_5_CANDLES,
 )
 from core.ig_client import IGClient, POSITIONS_API_ERROR
 from core.indicators import analyze_timeframe, detect_setup
@@ -379,6 +380,38 @@ class TradingMonitor:
     # SCANNING MODE
     # ============================================================
 
+    @staticmethod
+    def _5m_aligns_with_15m(setup_5m: dict, tf_15m: dict) -> bool:
+        """Check that 5M setup aligns with 15M structure (lightweight guard).
+
+        LONG:  15M RSI < 65 (not overbought) AND price within 300pts of 15M BB mid or lower
+        SHORT: 15M RSI > 35 (not oversold)  AND price within 300pts of 15M BB upper
+        If 15M data missing → pass through (safe default).
+        """
+        if not tf_15m:
+            return True
+
+        rsi_15m = tf_15m.get("rsi")
+        direction = setup_5m.get("direction", "")
+        price = setup_5m.get("entry") or tf_15m.get("price")
+
+        if direction == "LONG":
+            if rsi_15m is not None and rsi_15m > 65:
+                return False
+            bb_mid = tf_15m.get("bollinger_mid")
+            bb_lower = tf_15m.get("bollinger_lower")
+            ref = bb_lower if bb_lower else bb_mid
+            if ref and price and abs(price - ref) > 300:
+                return False
+        elif direction == "SHORT":
+            if rsi_15m is not None and rsi_15m < 35:
+                return False
+            bb_upper = tf_15m.get("bollinger_upper")
+            if bb_upper and price and abs(price - bb_upper) > 300:
+                return False
+
+        return True
+
     async def _scanning_cycle(self) -> int:
         """
         Entry scanning cycle. Returns the sleep interval to use.
@@ -426,13 +459,16 @@ class TradingMonitor:
 
         current_price = market.get("bid", 0)
 
-        # --- Fetch 15M + Daily candles in parallel for pre-screen (2 API calls) ---
-        candles_15m, candles_daily = await asyncio.gather(
+        # --- Fetch 15M + Daily + 5M candles in parallel for pre-screen (3 API calls) ---
+        candles_15m, candles_daily, candles_5m = await asyncio.gather(
             asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.ig.get_prices("MINUTE_15", PRE_SCREEN_CANDLES)
             ),
             asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.ig.get_prices("DAY", DAILY_EMA200_CANDLES)
+            ),
+            asyncio.get_event_loop().run_in_executor(
+                None, lambda: self.ig.get_prices("MINUTE_5", MINUTE_5_CANDLES)
             ),
         )
         if not candles_15m:
@@ -441,6 +477,7 @@ class TradingMonitor:
 
         tf_15m = analyze_timeframe(candles_15m)
         tf_daily = analyze_timeframe(candles_daily) if candles_daily else {}
+        tf_5m = analyze_timeframe(candles_5m) if candles_5m else {}
 
         # --- Local pre-screen (zero AI cost) ---
         # detect_setup() requires above_ema200_fallback to be bool (True=bullish, False=bearish).
@@ -450,6 +487,16 @@ class TradingMonitor:
             tf_4h={},
             tf_15m=tf_15m,
         )
+        entry_timeframe = "15m"
+
+        # --- 5M fallback: if 15M finds nothing, try 5M with 15M structure alignment ---
+        if not setup["found"] and tf_5m:
+            setup_5m = detect_setup(tf_daily=tf_daily, tf_4h={}, tf_15m=tf_5m)
+            if setup_5m["found"] and self._5m_aligns_with_15m(setup_5m, tf_15m):
+                setup = setup_5m
+                setup["type"] += "_5m"
+                entry_timeframe = "5m"
+                logger.info(f"5M fallback: {setup['direction']} {setup['type']} detected")
 
         if not setup["found"]:
             logger.info(f"Pre-screen: no setup. {setup['reasoning'][:80]}")
@@ -463,7 +510,7 @@ class TradingMonitor:
             return SCAN_INTERVAL_SECONDS
 
         prescreen_direction = setup["direction"]
-        logger.info(f"Pre-screen: {prescreen_direction} setup detected. Checking local confidence...")
+        logger.info(f"Pre-screen: {prescreen_direction} {setup['type']} ({entry_timeframe}) detected. Checking local confidence...")
 
         # No AI cooldown — subscription is $0/call, always escalate if setup found
 
@@ -542,6 +589,8 @@ class TradingMonitor:
                            and k not in ("no_event_1hr", "no_friday_monthend")]
         live_edge = self.storage.get_ai_context_block()
         indicators = {"m15": tf_15m, "h4": tf_4h, "daily": tf_daily}
+        if tf_5m:
+            indicators["m5"] = tf_5m
 
         # Write context files before AI call — gives Claude richer, auditable context
         recent_scans_ctx = self.storage.get_recent_scans(15)
@@ -553,7 +602,9 @@ class TradingMonitor:
                 "trading_mode": "live",
                 "prescreen_setup_type": setup.get("type", ""),
                 "prescreen_reasoning": setup.get("reason", ""),
+                "entry_timeframe": entry_timeframe,
             },
+            tf_5m=tf_5m,
             web_research=web_research,
             recent_scans=recent_scans_ctx,
             recent_trades=recent_trades_ctx,
@@ -562,11 +613,12 @@ class TradingMonitor:
             prescreen_direction=prescreen_direction,
         )
 
+        entry_tf = tf_5m if entry_timeframe == "5m" else tf_15m
         haiku_result = self.analyzer.precheck_with_haiku(
             setup_type=setup.get("type", ""),
             direction=prescreen_direction,
-            rsi_15m=tf_15m.get("rsi", 0),
-            volume_signal=tf_15m.get("volume_signal", "NORMAL"),
+            rsi_15m=entry_tf.get("rsi", 0),
+            volume_signal=entry_tf.get("volume_signal", "NORMAL"),
             session=session.get("name", ""),
             live_edge_block=live_edge,
             local_confidence=local_conf,
@@ -613,6 +665,7 @@ class TradingMonitor:
         market_context["prescreen_setup_type"] = setup.get("type", "")
         market_context["prescreen_reasoning"]  = setup.get("reasoning", "")
         market_context["session_name"]         = session.get("name", "")
+        market_context["entry_timeframe"]      = entry_timeframe
 
         sonnet_result = self.analyzer.scan_with_sonnet(
             indicators=indicators,

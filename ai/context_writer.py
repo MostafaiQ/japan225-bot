@@ -29,11 +29,12 @@ def write_context(
     live_edge_block: str = "",
     local_confidence: dict = None,
     prescreen_direction: str = None,
+    tf_5m: dict = None,
 ) -> None:
     """Write all context files. Called once before the Haiku pre-gate."""
     try:
         CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
-        _write_market_snapshot(indicators, market_context, local_confidence, prescreen_direction)
+        _write_market_snapshot(indicators, market_context, local_confidence, prescreen_direction, tf_5m)
         _write_recent_activity(recent_scans, recent_trades)
         _write_macro(web_research)
         _write_live_edge(live_edge_block)
@@ -49,6 +50,7 @@ def _write_market_snapshot(
     market_context: dict,
     local_confidence: dict,
     prescreen_direction: str,
+    tf_5m: dict = None,
 ) -> None:
     now = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
     lines = [
@@ -61,7 +63,8 @@ def _write_market_snapshot(
     if prescreen_direction:
         setup_type = market_context.get("prescreen_setup_type", "")
         reason = market_context.get("prescreen_reasoning", "")
-        lines.append(f"**Pre-screen:** {prescreen_direction} {setup_type}")
+        entry_tf = market_context.get("entry_timeframe", "15m")
+        lines.append(f"**Pre-screen:** {prescreen_direction} {setup_type} (Entry TF: {entry_tf})")
         if reason:
             lines.append(f"> {reason}")
 
@@ -83,6 +86,7 @@ def _write_market_snapshot(
         ("Daily (D1)",       ["daily", "d1", "1d"]),
         ("4 Hour (4H)",      ["4h", "tf_4h", "4hour", "h4"]),
         ("15 Minute (15M)",  ["15m", "tf_15m", "15min", "m15"]),
+        ("5 Minute (5M)",    ["5m", "tf_5m", "5min", "m5"]),
     ]
     FIELDS = [
         ("price",            "Price"),

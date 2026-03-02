@@ -161,7 +161,7 @@ SESSION_HOURS_UTC = {
     # 06-08 UTC: skip — chaotic Tokyo-close / London-open crossover
     # 21-00 UTC: skip — thin volume, avoid
 }
-MINUTE_5_CANDLES = 30  # 5M lookback for confirm_5m_entry (covers EMA9 + RSI14 + BB20)
+MINUTE_5_CANDLES = 100  # 5M lookback for fallback entry TF (~8h of 5M data, covers BB20 + EMA50)
 
 # ============================================
 # AI MODELS

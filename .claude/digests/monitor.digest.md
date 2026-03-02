@@ -39,8 +39,13 @@ _scanning_cycle() -> int (sleep seconds):
   2. is_no_trade_day() → skip
   3. check scanning_paused
   4. ig.get_market_info() → 1 API call
-  5. asyncio.gather(ig.get_prices("MINUTE_15", PRE_SCREEN_CANDLES=220), ig.get_prices("DAY", DAILY_EMA200_CANDLES=250)) → 2 parallel calls
-  6. detect_setup(tf_daily, {}, tf_15m) — tf_daily is real (above_ema200_fallback is bool)
+  5. asyncio.gather(15M, Daily, 5M) → 3 parallel calls (PRE_SCREEN_CANDLES=220, DAILY_EMA200_CANDLES=250, MINUTE_5_CANDLES=100)
+  6. detect_setup(tf_daily, {}, tf_15m) — 15M tried first
+  6b. 5M FALLBACK: if 15M no setup + tf_5m available → detect_setup(tf_daily, {}, tf_5m)
+      → _5m_aligns_with_15m() guard: LONG needs 15M RSI<65 + price within 300pts of 15M BB mid/lower
+        SHORT needs 15M RSI>35 + price within 300pts of 15M BB upper. Missing data → pass through.
+      → setup["type"] += "_5m", entry_timeframe="5m". Logged: "5M fallback: LONG bollinger_mid_bounce_5m"
+      → entry_tf for Haiku RSI/volume = tf_5m when entry_timeframe="5m", else tf_15m
   7. fetch 4H candles (AI_ESCALATION_CANDLES=220) → 1 API call (daily already fetched in step 5, reused here)
   8. researcher.research() → web data
   9. compute_confidence() → extract criteria dict (11 criteria, C1-C11)
