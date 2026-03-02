@@ -836,8 +836,11 @@ function _renderScansTable(scans) {
       ? `<span class="${s.confidence >= 70 ? 'c-long' : s.confidence >= 40 ? 'c-warn' : 'c-dim'}">${s.confidence}%</span>`
       : '—';
     const action = _actionLabels[act] || (act ? esc(act) : '—');
-    const escalateBtn = isCooldown
-      ? ` <button class="btn btn-warn btn-sm" style="padding:2px 7px;font-size:11px;" onclick="escalateNow()" title="Clear cooldown and scan now">↑ Escalate</button>`
+    const cdAge = isCooldown && s.timestamp
+      ? (Date.now() - new Date(s.timestamp)) / 60000
+      : Infinity;
+    const escalateBtn = isCooldown && cdAge < 15
+      ? ` <button class="btn btn-warn btn-sm" style="padding:2px 7px;font-size:11px;" onclick="escalateNow(this)" title="Clear cooldown and escalate to Haiku immediately">↑ Escalate</button>`
       : '';
     return `<tr>
       <td>${fmtTime(s.timestamp)}</td>
@@ -850,12 +853,19 @@ function _renderScansTable(scans) {
   }).join('');
 }
 
-async function escalateNow() {
+async function escalateNow(btn) {
+  btn.disabled = true;
+  btn.textContent = '⏳ Sending…';
   try {
     await req('POST', '/api/controls/clear-cooldown');
-    alert2('ctrlAlert', 'ok', '✓ Cooldown cleared — escalating to Haiku on next scan.');
+    btn.textContent = '✓ Escalating!';
+    btn.className = 'btn btn-success btn-sm';
+    btn.style.cssText = 'padding:2px 7px;font-size:11px;';
     setTimeout(loadOverview, 2500);
-  } catch(e) { alert2('ctrlAlert', 'err', '✗ ' + e.message); }
+  } catch(e) {
+    btn.textContent = '✗ Failed';
+    btn.disabled = false;
+  }
 }
 
 function showNotConfigured() {
