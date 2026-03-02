@@ -9,7 +9,8 @@ Digests live in `.claude/digests/`. Read only the digest(s) relevant to your tas
 ```
 Oracle VM: monitor.py (24/7, systemd: japan225-bot)
   SCANNING (no position): every 5min active sessions, 30min off-hours
-    → fetch 15M+Daily+5M in parallel (3 API calls) → detect_setup() on 15M first
+    → fetch 15M+5M parallel, then Daily sequential (cached, delta fetches after 1st)
+    → detect_setup() on 15M first
     → if 15M no setup → 5M fallback (same detect_setup, 15M alignment guard)
     → 5M setups tagged with _5m suffix. entry_timeframe passed to AI prompts.
     → NO cooldown ($0/call subscription) → fetch 4H → compute_confidence()

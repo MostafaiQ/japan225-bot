@@ -187,10 +187,9 @@ def analyze_timeframe(candles: list[dict]) -> dict:
     Output: dict with all indicator values for the latest candle.
     """
     if len(candles) < 200:
-        logger.warning(
-            f"analyze_timeframe: only {len(candles)} candles available "
-            f"(need 200 for EMA200). EMA200 will be None. "
-            f"Using EMA50 as trend fallback where possible."
+        logger.debug(
+            f"analyze_timeframe: {len(candles)} candles (EMA200 needs 200). "
+            f"Using EMA50 fallback."
         )
     
     closes  = [c["close"]  for c in candles]

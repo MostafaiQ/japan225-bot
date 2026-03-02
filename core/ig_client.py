@@ -37,6 +37,8 @@ class IGClient:
         self.last_auth_time = None
         self._request_count = 0
         self._last_request_time = 0
+        self._candle_cache: dict[str, list[dict]] = {}  # resolution -> candles
+        self._cache_full_fetch_done: dict[str, bool] = {}  # resolution -> True after first full fetch
     
     def connect(self) -> bool:
         """Authenticate with IG Markets API."""
@@ -139,31 +141,71 @@ class IGClient:
         "WEEK":      "W",
     }
 
+    _data_allowance_blocked_until: float = 0  # timestamp; class-level backoff
+    _last_delta_ts: dict = {}  # resolution -> timestamp of last delta fetch
+
+    # Delta fetch sizes: only fetch new candles after first full fetch
+    _DELTA_POINTS = {
+        "MINUTE_5": 2,    # 2 candles = 10min buffer (every scan)
+        "MINUTE_15": 2,   # 2 candles = 30min buffer (gated to every 15min)
+        "MINUTE_30": 3,
+        "HOUR_2": 3,
+        "HOUR_4": 3,
+        "DAY": 3,
+    }
+
     def get_prices(self, resolution: str = "HOUR_4", num_points: int = 200) -> list[dict]:
         """
-        Fetch historical price data.
+        Fetch historical price data with caching.
 
-        Pass IG-style resolution strings: MINUTE_5, MINUTE_15, HOUR_4, DAY, etc.
-        They are automatically converted to Pandas-compatible strings before the API call.
+        First call: full fetch (num_points candles). Subsequent calls: delta fetch
+        (only new candles), merged with cache. Saves ~99% of data allowance.
         """
+        import time as _time
+        if _time.time() < IGClient._data_allowance_blocked_until:
+            # Return cached data if available during backoff
+            cached = self._candle_cache.get(resolution, [])
+            return cached[-num_points:] if cached else []
         if not self.ensure_connected():
             return []
+
+        # Determine fetch size: full on first call, delta on subsequent
+        # Time-gating: don't refetch faster than the candle interval
+        _MIN_DELTA_SECS = {
+            "MINUTE_5": 240,     # every ~4min (just under candle close)
+            "MINUTE_15": 840,    # every ~14min
+            "MINUTE_30": 1740,
+            "HOUR_2": 7000,
+            "HOUR_4": 14000,
+            "DAY": 86400,        # once per day
+        }
+        if self._cache_full_fetch_done.get(resolution):
+            min_interval = _MIN_DELTA_SECS.get(resolution, 300)
+            last_ts = IGClient._last_delta_ts.get(resolution, 0)
+            if _time.time() - last_ts < min_interval:
+                cached = self._candle_cache.get(resolution, [])
+                if cached:
+                    return cached[-num_points:]
+            fetch_n = self._DELTA_POINTS.get(resolution, 5)
+        else:
+            fetch_n = num_points
+
         try:
             pandas_res = self._PANDAS_RESOLUTIONS.get(resolution, resolution)
             result = self.ig.fetch_historical_prices_by_epic(
                 epic=EPIC,
                 resolution=pandas_res,
-                numpoints=num_points,
+                numpoints=fetch_n,
             )
-            
+
             prices_df = result.get("prices", None)
             if prices_df is None or prices_df.empty:
-                return []
-            
-            candles = []
+                # Return cache on empty response
+                cached = self._candle_cache.get(resolution, [])
+                return cached[-num_points:] if cached else []
+
+            new_candles = []
             for idx, row in prices_df.iterrows():
-                # trading-ig returns multi-level columns: bid/ask/last + OHLC
-                # Use 'bid' prices for analysis (what we'd buy at)
                 try:
                     candle = {
                         "timestamp": str(idx),
@@ -173,18 +215,56 @@ class IGClient:
                         "close": float(row.get(("bid", "Close"), row.get(("last", "Close"), 0))),
                         "volume": float(row.get(("last", "Volume"), 0)),
                     }
-                    candles.append(candle)
+                    new_candles.append(candle)
                 except (KeyError, TypeError) as e:
                     logger.warning(f"Skipping malformed candle at {idx}: {e}")
                     continue
-            
-            logger.info(f"Fetched {len(candles)} candles ({resolution})")
-            return candles
-            
+
+            IGClient._last_delta_ts[resolution] = _time.time()
+
+            if not self._cache_full_fetch_done.get(resolution):
+                # First fetch: store as full cache
+                self._candle_cache[resolution] = new_candles
+                self._cache_full_fetch_done[resolution] = True
+                logger.info(f"Fetched {len(new_candles)} candles ({resolution}) [full, cached]")
+            else:
+                # Delta fetch: merge with cache (deduplicate by timestamp)
+                cached = self._candle_cache.get(resolution, [])
+                existing_ts = {c["timestamp"] for c in cached}
+                added = 0
+                for c in new_candles:
+                    if c["timestamp"] not in existing_ts:
+                        cached.append(c)
+                        existing_ts.add(c["timestamp"])
+                        added += 1
+                    else:
+                        # Update latest candle (may still be forming)
+                        for i in range(len(cached) - 1, -1, -1):
+                            if cached[i]["timestamp"] == c["timestamp"]:
+                                cached[i] = c
+                                break
+                # Trim cache to 2x requested size (prevent memory growth)
+                max_cache = num_points * 2
+                if len(cached) > max_cache:
+                    cached = cached[-max_cache:]
+                self._candle_cache[resolution] = cached
+                if added > 0:
+                    logger.info(f"Delta fetch: +{added} new candles ({resolution}), cache={len(cached)}")
+
+            return self._candle_cache[resolution][-num_points:]
+
         except Exception as e:
             self._check_auth_error(e)
+            err_str = str(e)
+            if "exceeded-account-historical-data-allowance" in err_str:
+                IGClient._data_allowance_blocked_until = _time.time() + 3600
+                logger.error(f"IG data allowance exceeded — using cache for 1 hour")
+                cached = self._candle_cache.get(resolution, [])
+                return cached[-num_points:] if cached else []
             logger.error(f"Failed to fetch prices ({resolution}): {e}")
-            return []
+            # Return cache on error
+            cached = self._candle_cache.get(resolution, [])
+            return cached[-num_points:] if cached else []
     
     def get_all_timeframes(self) -> dict:
         """Fetch price data for all 4 analysis timeframes."""

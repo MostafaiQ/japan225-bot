@@ -459,13 +459,10 @@ class TradingMonitor:
 
         current_price = market.get("bid", 0)
 
-        # --- Fetch 15M + Daily + 5M candles in parallel for pre-screen (3 API calls) ---
-        candles_15m, candles_daily, candles_5m = await asyncio.gather(
+        # --- Fetch candles: 5M+15M first, then Daily (sequential to avoid rate-limit bursts) ---
+        candles_15m, candles_5m = await asyncio.gather(
             asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.ig.get_prices("MINUTE_15", PRE_SCREEN_CANDLES)
-            ),
-            asyncio.get_event_loop().run_in_executor(
-                None, lambda: self.ig.get_prices("DAY", DAILY_EMA200_CANDLES)
             ),
             asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.ig.get_prices("MINUTE_5", MINUTE_5_CANDLES)
@@ -474,6 +471,11 @@ class TradingMonitor:
         if not candles_15m:
             logger.warning("Failed to fetch 15M candles")
             return SCAN_INTERVAL_SECONDS
+        # Daily fetched after 15M/5M with delay to avoid 28 req/min rate-limit collision
+        await asyncio.sleep(5)
+        candles_daily = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: self.ig.get_prices("DAY", DAILY_EMA200_CANDLES)
+        )
 
         tf_15m = analyze_timeframe(candles_15m)
         tf_daily = analyze_timeframe(candles_daily) if candles_daily else {}
