@@ -681,6 +681,7 @@ async function loadOverview() {
     const d = await req('GET', '/api/status');
     setConn('ok', 'Connected');
     touchUpdate();
+    _seedCountdown(d.next_scan_in);
     renderStatus(d);
     renderPos(d.position);
     renderScans(d.recent_scans || []);
@@ -723,7 +724,7 @@ function renderStatus(d) {
       : '<span class="badge b-long">ACTIVE</span>'],
     ['Last Scan',      d.last_scan    ? ago(d.last_scan) : '—'],
     ['Last Result',    lastScanHtml],
-    ['Next Scan In',   d.next_scan_in != null ? d.next_scan_in + 's' : '—'],
+    ['Next Scan In',   `<span id="nextScanVal">${fmtCountdown(d.next_scan_in)}</span>`],
     ['AI Calls Today', d.ai_calls_today ?? '—'],
     ['Scan Cost',      d.cost_today   != null ? '$' + d.cost_today.toFixed(4) : '—'],
     ['Uptime',         d.uptime       || '—'],
@@ -1279,6 +1280,27 @@ function ago(iso) {
   return Math.floor(s/3600) + 'h ago';
 }
 function fmtTime(iso) { return iso ? new Date(iso).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '—'; }
+function fmtCountdown(secs) {
+  if (secs == null || secs < 0) return '—';
+  const s = Math.round(secs);
+  if (s <= 0) return '0s';
+  const m = Math.floor(s / 60), r = s % 60;
+  return m > 0 ? `${m}m ${r.toString().padStart(2,'0')}s` : `${r}s`;
+}
+
+// Live countdown ticker — updated every second, seeded by API value
+let _cdSecs = null, _cdAt = null;
+function _seedCountdown(secs) {
+  _cdSecs = secs != null ? secs : null;
+  _cdAt   = secs != null ? Date.now() : null;
+}
+function _tickCountdown() {
+  const el = document.getElementById('nextScanVal');
+  if (!el || _cdSecs == null) return;
+  const elapsed  = (Date.now() - _cdAt) / 1000;
+  const remaining = Math.max(0, _cdSecs - elapsed);
+  el.textContent = fmtCountdown(remaining);
+}
 function fmtDt(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -1310,6 +1332,7 @@ function fmtDt(iso) {
     } catch(_) { localStorage.removeItem('pendingJob'); }
   }
   setInterval(() => { if (S.tab === 'overview' && S.url) loadOverview(); }, 15000);  // overview auto-refresh
+  setInterval(_tickCountdown, 1000);                                   // live countdown ticker
   setInterval(_pollHistory, 5000);                                     // cross-device chat sync
   setInterval(_refreshChatCost, 30000);                               // chat cost badge refresh
 })();
