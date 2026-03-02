@@ -828,9 +828,11 @@ function renderStatus(d) {
     lastScanHtml = badge + `<span style="font-size:12px;color:var(--text-muted);margin-left:6px;">${esc(dir + conf)}</span>`;
   }
   const phaseHtml = {
-    MONITORING: '<span class="badge b-long">📊 MONITORING</span>',
-    COOLDOWN:   '<span class="badge b-warn">⏳ COOLDOWN</span>',
-    SCANNING:   '<span class="badge b-neutral">🔍 SCANNING</span>',
+    MONITORING:      '<span class="badge b-long">📊 MONITORING</span>',
+    COOLDOWN:        '<span class="badge b-warn">⏳ COOLDOWN</span>',
+    SCANNING:        '<span class="badge b-neutral">🔍 SCANNING</span>',
+    STARTING:        '<span class="badge b-blue">⏳ STARTING</span>',
+    IG_DISCONNECTED: '<span class="badge b-warn">⚠ IG OFFLINE</span>',
   }[d.phase] || `<span class="badge b-neutral">${esc(d.phase||'—')}</span>`;
   const rows = [
     ['Session',        d.session      || '—'],

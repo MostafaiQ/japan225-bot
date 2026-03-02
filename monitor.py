@@ -116,6 +116,9 @@ class TradingMonitor:
         self.telegram.on_force_scan = self._on_force_scan
         await self.telegram.start_polling()
 
+        # Write initial bot_state.json so dashboard has fresh data immediately
+        self._write_state(phase="STARTING")
+
         # Connect to IG — 3 fast retries, then retry every 5 min until IG recovers
         connected = False
         for attempt in range(3):
@@ -133,6 +136,7 @@ class TradingMonitor:
                 "Use /status for updates."
             )
             while not connected:
+                self._write_state(phase="IG_DISCONNECTED")
                 await asyncio.sleep(60)
                 logger.info("Retrying IG connection...")
                 if self.ig.connect():
