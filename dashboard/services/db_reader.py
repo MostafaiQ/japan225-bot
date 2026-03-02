@@ -73,7 +73,7 @@ def get_recent_scans(limit: int = 10) -> list[dict]:
         with _conn() as conn:
             rows = conn.execute(
                 "SELECT timestamp, session, price, setup_found, confidence, action_taken "
-                "FROM scans ORDER BY id DESC LIMIT ?", (limit,)
+                "FROM scans WHERE action_taken != 'no_setup' ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
         result = []
         for r in rows:

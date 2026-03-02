@@ -26,7 +26,7 @@ import json
 import logging
 import signal
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from config.settings import (
@@ -36,7 +36,7 @@ from config.settings import (
     AI_COOLDOWN_MINUTES, HAIKU_MIN_SCORE, PRICE_DRIFT_ABORT_PTS, SAFETY_CONSECUTIVE_EMPTY,
     calculate_margin, calculate_profit, SPREAD_ESTIMATE,
     MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, BREAKEVEN_BUFFER,
-    ADVERSE_SEVERE_PTS, DAILY_EMA200_CANDLES,
+    ADVERSE_SEVERE_PTS, DAILY_EMA200_CANDLES, PRE_SCREEN_CANDLES, AI_ESCALATION_CANDLES,
 )
 from core.ig_client import IGClient, POSITIONS_API_ERROR
 from core.indicators import analyze_timeframe, detect_setup
@@ -87,7 +87,7 @@ class TradingMonitor:
         self._force_scan_event = asyncio.Event()
         self._started_at = datetime.now(timezone.utc)
         self._last_scan_time: datetime | None = None
-        self._next_scan_in: int | None = None
+        self._next_scan_at: datetime | None = None
         self._current_price: float | None = None
         self._last_scan_detail: dict = {}  # dashboard: shows last scan outcome
         # Paths for dashboard integration
@@ -280,7 +280,7 @@ class TradingMonitor:
                 "phase":          phase or ("MONITORING" if self.storage.get_position_state().get("has_open") else "SCANNING"),
                 "scanning_paused": self.scanning_paused,
                 "last_scan":      self._last_scan_time.isoformat() if self._last_scan_time else None,
-                "next_scan_in":   self._next_scan_in,
+                "next_scan_in":   max(0, int((self._next_scan_at - datetime.now(timezone.utc)).total_seconds())) if self._next_scan_at else None,
                 "current_price":  self._current_price,
                 "uptime":         f"{h}h {m}m",
                 "started_at":     self._started_at.isoformat(),
@@ -335,11 +335,14 @@ class TradingMonitor:
                 await asyncio.sleep(MONITOR_INTERVAL_SECONDS)
             else:
                 interval = await self._scanning_cycle()
+                self._next_scan_at = datetime.now(timezone.utc) + timedelta(seconds=interval)
+                self._write_state()
                 try:
                     await asyncio.wait_for(self._force_scan_event.wait(), timeout=interval)
                     self._force_scan_event.clear()
                 except asyncio.TimeoutError:
                     pass
+                self._next_scan_at = None
 
         except Exception as e:
             logger.error(f"Main cycle error: {e}", exc_info=True)
@@ -403,7 +406,7 @@ class TradingMonitor:
         # --- Fetch 15M + Daily candles in parallel for pre-screen (2 API calls) ---
         candles_15m, candles_daily = await asyncio.gather(
             asyncio.get_event_loop().run_in_executor(
-                None, lambda: self.ig.get_prices("MINUTE_15", 50)
+                None, lambda: self.ig.get_prices("MINUTE_15", PRE_SCREEN_CANDLES)
             ),
             asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.ig.get_prices("DAY", DAILY_EMA200_CANDLES)
@@ -453,7 +456,7 @@ class TradingMonitor:
 
         # --- Fetch 4H for full analysis (1 API call; daily already fetched above) ---
         candles_4h = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: self.ig.get_prices("HOUR_4", 100)
+            None, lambda: self.ig.get_prices("HOUR_4", AI_ESCALATION_CANDLES)
         )
 
         tf_4h = analyze_timeframe(candles_4h) if candles_4h else {}
@@ -551,13 +554,14 @@ class TradingMonitor:
                 },
                 "setup_found": False,
                 "confidence": local_conf["score"],
-                "action_taken": "haiku_rejected",
+                "action_taken": f"haiku_rejected_{prescreen_direction.lower()}",
                 "api_cost": haiku_cost,
             })
+            # Set cooldown on Haiku reject — avoids re-calling Haiku every 5min for the same setup.
+            self.storage.set_ai_cooldown(prescreen_direction)
             return SCAN_INTERVAL_SECONDS
 
-        # Haiku approved → NOW set cooldown and escalate to Sonnet.
-        # Cooldown placed here (not at local gate) so Haiku rejections don't burn the 30-min window.
+        # Haiku approved → set cooldown and escalate to Sonnet.
         logger.info(
             f"Haiku gate: APPROVED (local={local_conf['score']}%). Escalating to Sonnet..."
         )
@@ -623,7 +627,7 @@ class TradingMonitor:
             "analysis": final_result,
             "setup_found": final_result.get("setup_found", False),
             "confidence": final_result.get("confidence", 0),
-            "action_taken": "pending",
+            "action_taken": f"pending_{prescreen_direction.lower()}",
             "api_cost": scan_cost,
         })
 

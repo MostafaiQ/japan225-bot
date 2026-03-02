@@ -6,8 +6,8 @@ Two-tier system:
 """
 import json
 import os
-import tempfile
 from pathlib import Path
+from config import settings as S
 
 OVERRIDES_PATH = Path(__file__).parent.parent.parent / "storage" / "data" / "dashboard_overrides.json"
 
@@ -23,25 +23,27 @@ RESTART_KEYS = {
     "MAX_MARGIN_PERCENT", "TRADING_MODE",
 }
 
-# Default values (mirrors settings.py)
-DEFAULTS = {
-    "MIN_CONFIDENCE":         70,
-    "MIN_CONFIDENCE_SHORT":   75,
-    "AI_COOLDOWN_MINUTES":    30,
-    "SCAN_INTERVAL_SECONDS":  300,
-    "DEBUG":                  False,
-    "scanning_paused":        False,
-    "BREAKEVEN_TRIGGER":      150,
-    "TRAILING_STOP_DISTANCE": 150,
-    "DEFAULT_SL_DISTANCE":    200,
-    "DEFAULT_TP_DISTANCE":    400,
-    "MAX_MARGIN_PERCENT":     0.50,
-    "TRADING_MODE":           "live",
-}
+
+def _defaults() -> dict:
+    """Read baseline values live from settings.py — never a stale hardcoded copy."""
+    return {
+        "MIN_CONFIDENCE":         S.MIN_CONFIDENCE,
+        "MIN_CONFIDENCE_SHORT":   S.MIN_CONFIDENCE_SHORT,
+        "AI_COOLDOWN_MINUTES":    S.AI_COOLDOWN_MINUTES,
+        "SCAN_INTERVAL_SECONDS":  S.SCAN_INTERVAL_SECONDS,
+        "DEBUG":                  False,
+        "scanning_paused":        False,
+        "BREAKEVEN_TRIGGER":      S.BREAKEVEN_TRIGGER,
+        "TRAILING_STOP_DISTANCE": S.TRAILING_STOP_DISTANCE,
+        "DEFAULT_SL_DISTANCE":    S.DEFAULT_SL_DISTANCE,
+        "DEFAULT_TP_DISTANCE":    S.DEFAULT_TP_DISTANCE,
+        "MAX_MARGIN_PERCENT":     S.MAX_MARGIN_PERCENT,
+        "TRADING_MODE":           S.TRADING_MODE,
+    }
 
 
 def read_overrides() -> dict:
-    """Read current overrides, merged with defaults."""
+    """Return settings.py values as base, with dashboard_overrides.json on top."""
     overrides = {}
     try:
         if OVERRIDES_PATH.exists():
@@ -49,7 +51,7 @@ def read_overrides() -> dict:
                 overrides = json.load(f)
     except Exception:
         pass
-    return {**DEFAULTS, **overrides}
+    return {**_defaults(), **overrides}
 
 
 def write_overrides(updates: dict, tier: str) -> dict:

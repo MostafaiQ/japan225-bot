@@ -22,8 +22,9 @@ Routers: status, config, history, logs, chat, controls
 ### routers/status.py
 GET /api/health       → {"status":"ok"} — no auth
 GET /api/status       → session, phase, scanning_paused, last_scan, next_scan_in,
-                        ai_calls_today, cost_today, uptime, position, recent_scans, db_connected
+                        last_scan_detail, ai_calls_today, cost_today, uptime, position, recent_scans, db_connected
 Reads: bot_state.json (written by monitor._write_state()) + db_reader
+NOTE: last_scan_detail is passed from bot_state.json — contains outcome, direction, confidence, price, setup_type, reason
 
 ### routers/config.py
 GET  /api/config      → merged DEFAULTS + overrides

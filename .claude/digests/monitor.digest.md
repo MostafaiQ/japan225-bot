@@ -19,13 +19,18 @@ startup_sync(): reconciles DB ↔ IG on every restart. 4 cases:
 
 _main_cycle(): dispatches to _monitoring_cycle or _scanning_cycle based on DB position state.
   Scanning sleep uses asyncio.wait_for(_force_scan_event.wait(), timeout=interval) — interruptible.
+  After _scanning_cycle() returns: sets self._next_scan_at = now + timedelta(seconds=interval), calls _write_state().
+  Clears _next_scan_at after sleep completes.
 
-self._last_scan_detail: dict — set at every _scanning_cycle outcome. Included in bot_state.json.
+self._last_scan_detail: dict — set at every _scanning_cycle outcome. Included in bot_state.json AND /api/status.
   Keys: outcome (no_setup|cooldown|low_conf|event_block|friday_block|haiku_rejected|ai_rejected|trade_alert),
         direction, confidence, price, setup_type, reason (haiku only)
+self._next_scan_at: datetime | None — set before sleep, cleared after. _write_state() computes next_scan_in from this.
 
-_scanning_cycle() now writes save_scan() for: no_setup, cooldown, low_conf, event_block, friday_block.
-  (previously only haiku_rejected and full Sonnet/Opus runs wrote to DB)
+_scanning_cycle() writes save_scan() for all active-session outcomes.
+  action_taken values always include direction suffix where applicable:
+    haiku_rejected_{long|short}, pending_{long|short}, cooldown_{long|short},
+    event_block_{long|short}, friday_block_{long|short}, low_conf_{long|short}, no_setup
   off_hours early return does NOT write scan records (no analysis done).
 
 _scanning_cycle() -> int (sleep seconds):
@@ -34,10 +39,10 @@ _scanning_cycle() -> int (sleep seconds):
   3. check scanning_paused
   3b. PAPER_TRADING_SESSION_GATE check: if True and not force_scan → skip non-Tokyo hours (UTC 0-6)
   4. ig.get_market_info() → 1 API call
-  5. asyncio.gather(ig.get_prices("MINUTE_15", 50), ig.get_prices("DAY", 100)) → 2 parallel calls
+  5. asyncio.gather(ig.get_prices("MINUTE_15", PRE_SCREEN_CANDLES=220), ig.get_prices("DAY", DAILY_EMA200_CANDLES=250)) → 2 parallel calls
   6. detect_setup(tf_daily, {}, tf_15m) — tf_daily is real (above_ema200_fallback is bool)
   7. storage.is_ai_on_cooldown(30min)
-  8. fetch 4H candles → 1 API call (daily already fetched in step 5, reused here)
+  8. fetch 4H candles (AI_ESCALATION_CANDLES=220) → 1 API call (daily already fetched in step 5, reused here)
   9. researcher.research() → web data
   10. compute_confidence() → extract criteria dict
   10b. HARD BLOCKS: C7(no_event_1hr) + C8(no_friday_monthend) fail → skip immediately (no cooldown)

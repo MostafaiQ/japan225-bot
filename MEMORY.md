@@ -37,7 +37,7 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 | `core/indicators.py` | Pure math. analyze_timeframe(), detect_setup() (LONG+SHORT bidirectional), ema/rsi/bb/vwap |
 | `core/session.py` | get_current_session() UTC, is_no_trade_day(), is_weekend(), is_friday_blackout() |
 | `core/momentum.py` | MomentumTracker class. add_price(), should_alert(), is_stale(), milestone_alert() |
-| `core/confidence.py` | compute_confidence(direction, tf_daily, tf_4h, tf_15m, events, web) → score dict |
+| `core/confidence.py` | compute_confidence(direction, tf_daily, tf_4h, tf_15m, events, web) → score dict. 10-criteria proportional scoring. |
 | `ai/analyzer.py` | AIAnalyzer. precheck_with_haiku(), scan_with_sonnet(), confirm_with_opus(). Tool use. Prompt caching. post_trade_analysis(), load_prompt_learnings(). |
 | `trading/risk_manager.py` | RiskManager.validate_trade() 11 checks. get_safe_lot_size() |
 | `trading/exit_manager.py` | ExitManager. evaluate_position(), execute_action(), manual_trail_update() |
@@ -72,8 +72,9 @@ BREAKEVEN_TRIGGER = 150        BREAKEVEN_BUFFER = 10          TRAILING_STOP_DIST
 SCAN_INTERVAL_SECONDS = 300    MONITOR_INTERVAL_SECONDS = 2   OFFHOURS_INTERVAL_SECONDS = 1800
 POSITION_CHECK_EVERY_N_CYCLES = 15  # 15 × 2s = 30s position existence check; position cycle REPLACES price cycle = exactly 30 calls/min
 ADVERSE_LOOKBACK_READINGS = 150     # 150 × 2s = 5-minute adverse window
-AI_COOLDOWN_MINUTES = 30       PRICE_DRIFT_ABORT_PTS = 20     SAFETY_CONSECUTIVE_EMPTY = 2
-HAIKU_MIN_SCORE = 60  # first meaningful threshold (50 = effective floor already, C7+C8 always pass)
+AI_COOLDOWN_MINUTES = 15       PRICE_DRIFT_ABORT_PTS = 20     SAFETY_CONSECUTIVE_EMPTY = 2
+HAIKU_MIN_SCORE = 60  # requires 5/10 criteria (floor=44 with proportional formula; 4/10=58 < 60)
+PRE_SCREEN_CANDLES = 220 (15M fetch)   AI_ESCALATION_CANDLES = 220 (4H fetch)   DAILY_EMA200_CANDLES = 250
 ADVERSE_MILD_PTS = 60          ADVERSE_MODERATE_PTS = 120     ADVERSE_SEVERE_PTS = 175
 PAPER_TRADING_SESSION_GATE = REMOVED. All sessions live.
 ENABLE_EMA50_BOUNCE_SETUP = False (disabled until validated)
@@ -93,6 +94,16 @@ Dashboard chat: Claude Code CLI (claude --print). No model constant needed.
 - monitor.py: _secs_to_next_session() helper. Off_hours sleep now exact-timed to session open (capped 30 min). Prevents missing session start when bot restarts near midnight UTC.
 - ig_client.py: get_market_info() now retries up to 3× on 503 (15s between). IG returns 503 for ~60s at cash CFD session open — previously killed every scan at Tokyo/London/NY start.
 - ig_client.py: get_all_timeframes() had "HOUR4" (wrong) → fixed to "HOUR_4" to match _PANDAS_RESOLUTIONS map.
+- settings.py + monitor.py: PRE_SCREEN_CANDLES 50→220, AI_ESCALATION_CANDLES 100→220. Both now imported/used in monitor.py (were previously dead — hardcoded values used). EMA200 now computed correctly on 15M and 4H, giving AI accurate long-term trend context.
+- settings.py: AI_COOLDOWN_MINUTES 30→15. More scan opportunities (~2x), cost still ~$2/month.
+- dashboard/routers/status.py: last_scan_detail was missing from /api/status response. Dashboard "Last Result" row was always showing '—'. Now passes last_scan_detail from bot_state.json.
+- monitor.py: _next_scan_in → _next_scan_at (datetime). next_scan_in now computed dynamically in _write_state() as live countdown. Dashboard "Next Scan In" now shows real value.
+- monitor.py: action_taken for haiku_rejected and pending now include direction suffix (_long/_short). Frontend could not derive direction without this → setup column in Recent Scans was blank.
+- docs/index.html: Added haiku_rejected_long, haiku_rejected_short, pending_long, pending_short to _actionLabels.
+- dashboard/services/db_reader.py: get_recent_scans() now filters out no_setup rows. Overview Recent Scans table only shows meaningful events (AI involved, blocked, cooldown, etc.).
+- dashboard/services/config_manager.py: DEFAULTS dict replaced with _defaults() function that imports live from settings.py. Config page now always reflects actual settings values. Dashboard overrides still take precedence. Also fixed DEFAULT_SL_DISTANCE was hardcoded 200 (wrong) — now reads 150 from settings.py.
+- core/confidence.py: 8-criteria → 10-criteria. Added C9 (volume_signal != LOW) and C10 (4H EMA50 agrees with direction). Scoring formula changed from linear (30+n×10) to proportional (30+int(n×70/10)) — 100% is now genuinely exceptional (10/10 only). LONG threshold 70% now requires 6/10, SHORT 75% requires 7/10. 243/243 tests pass.
+- monitor.py: Haiku reject now also sets AI cooldown (AI_COOLDOWN_MINUTES). Previously only Haiku approve set cooldown — caused Haiku to re-fire every 5min for repeated setups at same price.
 
 ## Dashboard Fixes Applied (2026-03-01)
 - monitor.py: _last_scan_detail added to bot_state.json. Scan records written for ALL active-session outcomes (no_setup, cooldown, low_conf, event_block, friday_block). Previously only Haiku-rejected and Sonnet/Opus scans wrote records.
@@ -103,7 +114,7 @@ Dashboard chat: Claude Code CLI (claude --print). No model constant needed.
 
 ## Strategy History (archived — see high-chancellor-archive.md for full details)
 HC 6-fix redesign 2026-02-28: ADVERSE tiers widened, bounce confirmation added, RSI tuned,
-C4 redesigned, EMA50 bounce disabled, session gate removed. All 233 tests pass.
+C4 redesigned, EMA50 bounce disabled, session gate removed. All 233 tests pass (now 243 with C9/C10).
 Live trading active 2026-03-01. Historical backtest (bad): 613 trades, 0.8% WR → fixed.
 
 ---
@@ -131,7 +142,8 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 ## AI Pipeline (updated 2026-03-01) — 3-tier: Haiku → Sonnet → Opus
 - Haiku pre-gate: ~$0.0013/call, filters obvious rejects before Sonnet. Gate at HAIKU_MIN_SCORE=60%.
   C7/C8 (event/blackout) hard-blocked BEFORE Haiku. Cooldown set AFTER Haiku approves (not at gate).
-  C7+C8 always pass → effective score floor = 50. HAIKU_MIN_SCORE=60 requires ≥1 tech criterion.
+  Proportional formula: score=30+int(passed*70/10). 5/10=65 (passes gate), 4/10=58 (fails gate).
+  LONG needs 6/10 (72≥70), SHORT needs 7/10 (79≥75).
 - Sonnet: tool use structured output, prompt caching, compact pipe-format inputs (~$0.004/call)
 - Opus: devil's advocate framing, called only if Sonnet 75–86%. Skipped if <75% (low conf) or ≥87% (very high conf). (~$0.010/call)
 - prompt_learnings.json: auto-updated after each trade close, injected into future prompts

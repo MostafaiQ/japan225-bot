@@ -1,22 +1,25 @@
 """
-Local confidence scorer — bidirectional 8-criteria system.
+Local confidence scorer — bidirectional 10-criteria system.
 
-Computes the 8-point confidence score LOCALLY from indicator data
-before any AI call. This acts as a gate: only escalate to AI if
-local score is promising. The AI then performs its own independent
-scoring, but the local score is included in the prompt for context.
+Computes a confidence score LOCALLY from indicator data before any AI call.
+Acts as a gate: only escalate to Haiku/Sonnet/Opus if local score >= HAIKU_MIN_SCORE (60%).
 
-Scoring:
-  Base: 30%
-  Each criterion: +10%
-  Max: 30 + 8×10 = 110%, capped at 100%
+Scoring (proportional):
+  score = min(30 + int(passed * 70 / total_criteria), 100)
+  10/10 = 100%, 9/10 = 93%, 8/10 = 86%, 7/10 = 79%, 6/10 = 72%,
+  5/10 = 65%, 4/10 = 58% (below 60% gate), 3/10 = 51%
 
-Minimum to trade:
-  LONG:  70%  (4/8 criteria + base)
-  SHORT: 75%  (5/8 criteria - but 4/8 + base = 70%, so 75% needs partial overlap)
-
-Note: 75% = base(30) + 4.5 criteria → in practice, 5 criteria gives 80%, 4 gives 70%.
-The SHORT threshold is a calibration gate, not a hard floor on criteria count.
+Criteria (10 total):
+  C1  daily_trend       — daily EMA200 agrees with direction
+  C2  entry_level       — price at BB/EMA technical level
+  C3  rsi_15m           — 15M RSI in valid entry zone
+  C4  tp_viable         — price below/above BB mid (room for TP)
+  C5  structure         — 15M EMA50 structure agrees with direction
+  C6  macro             — 4H RSI in healthy range
+  C7  no_event_1hr      — no HIGH-impact event within 60 min
+  C8  no_friday_monthend— not Friday blackout / month-end
+  C9  volume            — 15M volume not critically low (signal != LOW)
+  C10 trend_4h          — 4H EMA50 agrees with direction (HTF alignment)
 """
 import logging
 from datetime import datetime, timezone
@@ -265,9 +268,30 @@ def compute_confidence(
         reasons["no_friday_monthend"] = "Calendar clear"
     criteria["no_friday_monthend"] = c8
 
-    # ---- Compute final score ----
+    # ---- Criterion 9: Volume Not Critically Low ----
+    volume_signal = tf_15m.get("volume_signal", "NORMAL")
+    c9 = (volume_signal != "LOW")
+    reasons["volume"] = f"15M volume signal: {volume_signal}"
+    criteria["volume"] = c9
+
+    # ---- Criterion 10: 4H EMA50 Alignment (HTF confirmation) ----
+    above_ema50_4h = tf_4h.get("above_ema50")
+    if above_ema50_4h is not None:
+        if direction == "LONG":
+            c10 = bool(above_ema50_4h)
+            reasons["trend_4h"] = f"4H EMA50: {'above (bullish)' if c10 else 'below (bearish)'}"
+        else:
+            c10 = not bool(above_ema50_4h)
+            reasons["trend_4h"] = f"4H EMA50: {'below (bearish)' if c10 else 'above (not bearish)'}"
+    else:
+        c10 = True  # default pass if 4H data unavailable
+        reasons["trend_4h"] = "4H EMA50 unavailable — defaulting pass"
+    criteria["trend_4h"] = c10
+
+    # ---- Compute final score (proportional) ----
     passed = sum(1 for v in criteria.values() if v)
-    score = min(BASE_SCORE + passed * CRITERIA_WEIGHT, MAX_SCORE)
+    total = len(criteria)
+    score = min(BASE_SCORE + int(passed * (MAX_SCORE - BASE_SCORE) / total), MAX_SCORE)
 
     min_threshold = MIN_CONFIDENCE_SHORT if direction == "SHORT" else MIN_CONFIDENCE_LONG
     meets_threshold = score >= min_threshold

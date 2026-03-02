@@ -63,6 +63,7 @@ async def status():
         "scanning_paused":  state.get("scanning_paused", False),
         "last_scan":        state.get("last_scan"),
         "next_scan_in":     state.get("next_scan_in"),
+        "last_scan_detail": state.get("last_scan_detail"),
         "ai_calls_today":   db_reader.get_ai_calls_today(),
         "cost_today":       db_reader.get_cost_today(),
         "uptime":           uptime,

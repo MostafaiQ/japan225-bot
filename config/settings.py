@@ -184,7 +184,7 @@ MONITOR_USE_STREAMING = False       # Start with REST polling, upgrade later
 # ============================================
 # ENTRY SCANNING
 # ============================================
-AI_COOLDOWN_MINUTES = 30            # Suppress duplicate AI escalations (set AFTER Haiku approves)
+AI_COOLDOWN_MINUTES = 15            # Suppress duplicate AI escalations (set AFTER Haiku approves)
 HAIKU_MIN_SCORE = 60                # Minimum local score to reach Haiku gate
                                     # CONFIDENCE_BASE=30, criteria add 10pts each → scores are discrete: 30,40,50,...
                                     # C7/C8 (event/blackout) are always True when Haiku is reached (hard-blocked before)
@@ -193,8 +193,8 @@ HAIKU_MIN_SCORE = 60                # Minimum local score to reach Haiku gate
 PRICE_DRIFT_ABORT_PTS = 20          # Abort trade if price moved this far during analysis
 STALE_DATA_THRESHOLD = 10           # Identical price readings = stale data alert
 ADVERSE_LOOKBACK_READINGS = 150     # Readings to look back for adverse_move (150 × 2s = 5min window)
-PRE_SCREEN_CANDLES = 50             # Candles for 15M pre-screen (enough for BB20 + EMA50)
-AI_ESCALATION_CANDLES = 100         # Candles for 4H when escalating to AI (RSI only, EMA50 ok)
+PRE_SCREEN_CANDLES = 220            # Candles for 15M pre-screen — MUST be >200 to compute EMA200
+AI_ESCALATION_CANDLES = 220         # Candles for 4H full scan — MUST be >200 to compute EMA200
 DAILY_EMA200_CANDLES = 250          # Candles for Daily — MUST be >200 to compute EMA200
 
 # ============================================

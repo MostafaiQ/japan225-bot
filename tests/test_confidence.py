@@ -1,12 +1,12 @@
 """
-Tests for core/confidence.py — bidirectional 8-criteria local scoring.
+Tests for core/confidence.py — bidirectional 10-criteria local scoring.
 All tests use synthetic indicator data; no API calls needed.
 """
 import pytest
 from core.confidence import (
     compute_confidence,
     format_confidence_breakdown,
-    BASE_SCORE, CRITERIA_WEIGHT, MIN_CONFIDENCE_LONG, MIN_CONFIDENCE_SHORT,
+    BASE_SCORE, MIN_CONFIDENCE_LONG, MIN_CONFIDENCE_SHORT,
     BB_MID_THRESHOLD_PTS, EMA50_THRESHOLD_PTS,
 )
 
@@ -23,6 +23,7 @@ def make_tf(
     ema200=37500,
     above_ema50=True,
     above_ema200=True,
+    volume_signal="NORMAL",
 ):
     """Build a synthetic analyze_timeframe() output dict."""
     return {
@@ -35,6 +36,7 @@ def make_tf(
         "ema200": ema200,
         "above_ema50": above_ema50,
         "above_ema200": above_ema200,
+        "volume_signal": volume_signal,
     }
 
 
@@ -80,7 +82,7 @@ class TestScoreComputation:
     def test_all_criteria_pass_gives_100(self):
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
-        # 8 criteria passed → 30 + 8×10 = 110, capped at 100
+        # 10/10 criteria → 30 + int(10 * 70 / 10) = 100
         assert result["score"] == 100
 
     def test_base_score_with_zero_criteria(self):
@@ -105,15 +107,17 @@ class TestScoreComputation:
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         assert result["score"] <= 100
 
-    def test_total_criteria_is_8(self):
+    def test_total_criteria_is_10(self):
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
-        assert result["total_criteria"] == 8
+        assert result["total_criteria"] == 10
 
     def test_passed_criteria_matches_score(self):
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
-        expected_score = min(BASE_SCORE + result["passed_criteria"] * CRITERIA_WEIGHT, 100)
+        n = result["passed_criteria"]
+        total = result["total_criteria"]
+        expected_score = min(BASE_SCORE + int(n * (100 - BASE_SCORE) / total), 100)
         assert result["score"] == expected_score
 
 
@@ -187,6 +191,68 @@ class TestLongCriteria:
         tf_15m["above_ema50"] = False
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         assert result["criteria"]["structure"] is False
+
+
+# ── C9: Volume ────────────────────────────────────────────────────────────────
+
+class TestVolumeC9:
+    def test_normal_volume_passes(self):
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m["volume_signal"] = "NORMAL"
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["volume"] is True
+
+    def test_high_volume_passes(self):
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m["volume_signal"] = "HIGH"
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["volume"] is True
+
+    def test_low_volume_fails(self):
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m["volume_signal"] = "LOW"
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["volume"] is False
+
+    def test_missing_volume_signal_defaults_pass(self):
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m.pop("volume_signal", None)
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["volume"] is True
+
+
+# ── C10: 4H EMA50 Alignment ───────────────────────────────────────────────────
+
+class TestTrend4hC10:
+    def test_4h_above_ema50_passes_for_long(self):
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_4h["above_ema50"] = True
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["trend_4h"] is True
+
+    def test_4h_below_ema50_fails_for_long(self):
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_4h["above_ema50"] = False
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["trend_4h"] is False
+
+    def test_4h_below_ema50_passes_for_short(self):
+        tf_daily, tf_4h, tf_15m = ideal_short_setup()
+        tf_4h["above_ema50"] = False
+        result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["trend_4h"] is True
+
+    def test_4h_above_ema50_fails_for_short(self):
+        tf_daily, tf_4h, tf_15m = ideal_short_setup()
+        tf_4h["above_ema50"] = True
+        result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["trend_4h"] is False
+
+    def test_4h_ema50_unavailable_defaults_pass(self):
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_4h["above_ema50"] = None
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["trend_4h"] is True
 
 
 # ── SHORT Criteria ────────────────────────────────────────────────────────────
