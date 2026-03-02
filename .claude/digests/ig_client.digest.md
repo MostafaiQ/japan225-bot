@@ -18,7 +18,10 @@ get_market_info() -> Optional[dict]
   # GET /markets/{EPIC}. Returns: bid, offer, mid, market_status, epic, instrument_name
 
 get_prices(resolution: str, num_points: int) -> list[dict]
-  # Resolutions: "MINUTE_5", "MINUTE_15", "HOUR_4", "DAY"
+  # Pass IG-style strings: "MINUTE_5", "MINUTE_15", "HOUR_4", "DAY"
+  # INTERNALLY converted via _PANDAS_RESOLUTIONS dict to Pandas-compatible strings
+  # ("15min", "4h", "D") before calling fetch_historical_prices_by_epic().
+  # Pandas 2.x conv_resol() breaks on IG-style strings — never pass them directly.
   # Returns list of {open, high, low, close, volume, timestamp}
 
 get_all_timeframes() -> dict
