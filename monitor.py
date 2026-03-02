@@ -588,9 +588,11 @@ class TradingMonitor:
         sonnet_found = sonnet_result.get("setup_found", False)
         logger.info(f"Sonnet: found={sonnet_found}, confidence={sonnet_confidence}%")
 
-        # Escalate to Opus only if Sonnet >= 70%
+        # Escalate to Opus only if Sonnet is in the 75–86% range:
+        # - Below 75%: Sonnet isn't confident enough, skip expensive Opus call
+        # - 87%+: Sonnet is very confident, skip Opus (no value in devil's advocate)
         final_result = sonnet_result
-        if sonnet_found and sonnet_confidence >= 70:
+        if sonnet_found and 75 <= sonnet_confidence < 87:
             logger.info(f"Sonnet at {sonnet_confidence}%. Escalating to Opus...")
             opus_result = self.analyzer.confirm_with_opus(
                 indicators=indicators,

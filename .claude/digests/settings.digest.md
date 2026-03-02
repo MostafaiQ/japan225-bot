@@ -43,8 +43,8 @@ AI_MAX_TOKENS=2000  AI_TEMPERATURE=0.1
 MONITOR_INTERVAL_SECONDS=2   SCAN_INTERVAL_SECONDS=300  OFFHOURS_INTERVAL_SECONDS=1800
 POSITION_CHECK_EVERY_N_CYCLES=15  # 15 × 2s = 30s position check (2 calls/min to positions endpoint)
 AI_COOLDOWN_MINUTES=30  # Set AFTER Haiku approves, not at local gate
-HAIKU_MIN_SCORE=40      # Minimum 1 technical criterion must pass (base=30 + 1 criterion=40)
-                        # Scores are discrete: 30,40,50,... — 35 was unreachable. C7/C8 hard-blocked before Haiku.
+HAIKU_MIN_SCORE=60      # Effective floor already 50 (C7+C8 always True → 30+2×10=50). 60 = first real filter.
+                        # Requires ≥1 technical criterion beyond C7/C8. Scores discrete: 30,40,50,60,...
 PRICE_DRIFT_ABORT_PTS=20  STALE_DATA_THRESHOLD=10
 ADVERSE_LOOKBACK_READINGS=150  # 150 × 2s = 5min adverse window
 PRE_SCREEN_CANDLES=50  AI_ESCALATION_CANDLES=100  SAFETY_CONSECUTIVE_EMPTY=2

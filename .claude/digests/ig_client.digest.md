@@ -15,7 +15,8 @@ ensure_connected() -> bool
   # Checks token validity, reconnects if needed. Call at start of each cycle.
 
 get_market_info() -> Optional[dict]
-  # GET /markets/{EPIC}. Returns: bid, offer, mid, market_status, epic, instrument_name
+  # GET /markets/{EPIC}. Returns: bid, offer, high, low, spread, market_status, update_time, etc.
+  # Retries up to 3× on 503 (15s delay each) — IG has a ~60s unavailable window at session open.
 
 get_prices(resolution: str, num_points: int) -> list[dict]
   # Pass IG-style strings: "MINUTE_5", "MINUTE_15", "HOUR_4", "DAY"

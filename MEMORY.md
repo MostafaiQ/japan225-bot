@@ -73,7 +73,7 @@ SCAN_INTERVAL_SECONDS = 300    MONITOR_INTERVAL_SECONDS = 2   OFFHOURS_INTERVAL_
 POSITION_CHECK_EVERY_N_CYCLES = 15  # 15 × 2s = 30s position existence check; position cycle REPLACES price cycle = exactly 30 calls/min
 ADVERSE_LOOKBACK_READINGS = 150     # 150 × 2s = 5-minute adverse window
 AI_COOLDOWN_MINUTES = 30       PRICE_DRIFT_ABORT_PTS = 20     SAFETY_CONSECUTIVE_EMPTY = 2
-HAIKU_MIN_SCORE = 40  # "at least 1 criterion must pass" — scores discrete: 30,40,50... (35 was unreachable)
+HAIKU_MIN_SCORE = 60  # first meaningful threshold (50 = effective floor already, C7+C8 always pass)
 ADVERSE_MILD_PTS = 60          ADVERSE_MODERATE_PTS = 120     ADVERSE_SEVERE_PTS = 175
 PAPER_TRADING_SESSION_GATE = REMOVED. All sessions live.
 ENABLE_EMA50_BOUNCE_SETUP = False (disabled until validated)
@@ -91,6 +91,8 @@ Dashboard chat: Claude Code CLI (claude --print). No model constant needed.
 ## Critical Fixes Applied (2026-03-02)
 - ig_client.py: CRITICAL — Pandas 2.3.3 conv_resol() breaks on "MINUTE_15"/"DAY" strings. Added _PANDAS_RESOLUTIONS map to convert to "15min"/"D" etc before calling fetch_historical_prices_by_epic(). All price fetches were silently returning [] before this fix.
 - monitor.py: _secs_to_next_session() helper. Off_hours sleep now exact-timed to session open (capped 30 min). Prevents missing session start when bot restarts near midnight UTC.
+- ig_client.py: get_market_info() now retries up to 3× on 503 (15s between). IG returns 503 for ~60s at cash CFD session open — previously killed every scan at Tokyo/London/NY start.
+- ig_client.py: get_all_timeframes() had "HOUR4" (wrong) → fixed to "HOUR_4" to match _PANDAS_RESOLUTIONS map.
 
 ## Dashboard Fixes Applied (2026-03-01)
 - monitor.py: _last_scan_detail added to bot_state.json. Scan records written for ALL active-session outcomes (no_setup, cooldown, low_conf, event_block, friday_block). Previously only Haiku-rejected and Sonnet/Opus scans wrote records.
@@ -127,11 +129,11 @@ Results WITHOUT AI filter (worst case):
 PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 
 ## AI Pipeline (updated 2026-03-01) — 3-tier: Haiku → Sonnet → Opus
-- Haiku pre-gate: ~$0.0013/call, filters obvious rejects before Sonnet. Gate at HAIKU_MIN_SCORE=35%.
+- Haiku pre-gate: ~$0.0013/call, filters obvious rejects before Sonnet. Gate at HAIKU_MIN_SCORE=60%.
   C7/C8 (event/blackout) hard-blocked BEFORE Haiku. Cooldown set AFTER Haiku approves (not at gate).
-  Setups scoring 35-49%: Haiku sees web_research+failed_criteria+indicators — can override static code.
+  C7+C8 always pass → effective score floor = 50. HAIKU_MIN_SCORE=60 requires ≥1 tech criterion.
 - Sonnet: tool use structured output, prompt caching, compact pipe-format inputs (~$0.004/call)
-- Opus: devil's advocate framing, skipped if Sonnet >=87% or <=threshold+2 (~$0.010/call)
+- Opus: devil's advocate framing, called only if Sonnet 75–86%. Skipped if <75% (low conf) or ≥87% (very high conf). (~$0.010/call)
 - prompt_learnings.json: auto-updated after each trade close, injected into future prompts
 - CLAUDE.md in project root: auto-loaded by all sessions + dashboard subprocess (deadlock fix)
 - Dashboard chat: rolling history summary (capped ~650 tokens) + bot_state.json injection

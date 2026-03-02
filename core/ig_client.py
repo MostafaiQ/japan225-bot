@@ -72,32 +72,44 @@ class IGClient:
     # ==========================================
     
     def get_market_info(self) -> Optional[dict]:
-        """Get current market snapshot: price, spread, status, dealing rules."""
+        """Get current market snapshot: price, spread, status, dealing rules.
+
+        Retries up to 3 times on 503 (IG has a ~30-60s unavailable window at
+        session open before the cash CFD becomes tradeable).
+        """
         if not self.ensure_connected():
             return None
-        try:
-            info = self.ig.fetch_market_by_epic(EPIC)
-            if info is None:
+        for attempt in range(3):
+            try:
+                info = self.ig.fetch_market_by_epic(EPIC)
+                if info is None:
+                    return None
+                snapshot = info.get("snapshot", {})
+                dealing = info.get("dealingRules", {})
+                instrument = info.get("instrument", {})
+
+                return {
+                    "bid": snapshot.get("bid"),
+                    "offer": snapshot.get("offer"),
+                    "high": snapshot.get("high"),
+                    "low": snapshot.get("low"),
+                    "spread": (snapshot.get("offer") or 0) - (snapshot.get("bid") or 0),
+                    "market_status": snapshot.get("marketStatus"),
+                    "update_time": snapshot.get("updateTime"),
+                    "min_stop_distance": (dealing.get("minNormalStopOrLimitDistance") or {}).get("value"),
+                    "trailing_stops_available": dealing.get("trailingStopsPreference") != "NOT_AVAILABLE",
+                    "currency": instrument.get("currencies", [{}])[0].get("code", CURRENCY),
+                }
+            except Exception as e:
+                if "503" in str(e) and attempt < 2:
+                    logger.warning(
+                        f"Market info 503 (session startup delay, attempt {attempt + 1}/3) — retrying in 15s"
+                    )
+                    time.sleep(15)
+                    continue
+                logger.error(f"Failed to get market info: {e}")
                 return None
-            snapshot = info.get("snapshot", {})
-            dealing = info.get("dealingRules", {})
-            instrument = info.get("instrument", {})
-            
-            return {
-                "bid": snapshot.get("bid"),
-                "offer": snapshot.get("offer"),
-                "high": snapshot.get("high"),
-                "low": snapshot.get("low"),
-                "spread": (snapshot.get("offer") or 0) - (snapshot.get("bid") or 0),
-                "market_status": snapshot.get("marketStatus"),
-                "update_time": snapshot.get("updateTime"),
-                "min_stop_distance": (dealing.get("minNormalStopOrLimitDistance") or {}).get("value"),
-                "trailing_stops_available": dealing.get("trailingStopsPreference") != "NOT_AVAILABLE",
-                "currency": instrument.get("currencies", [{}])[0].get("code", CURRENCY),
-            }
-        except Exception as e:
-            logger.error(f"Failed to get market info: {e}")
-            return None
+        return None
     
     # trading_ig conv_resol() expects Pandas-compatible offset strings (e.g. "15min", "4h", "D").
     # Passing IG-style strings ("MINUTE_15", "DAY") causes ValueError in Pandas 2.x.
@@ -162,7 +174,7 @@ class IGClient:
         """Fetch price data for all 4 analysis timeframes."""
         return {
             "daily": self.get_prices("DAY", 200),
-            "h4": self.get_prices("HOUR4", 200),
+            "h4": self.get_prices("HOUR_4", 200),
             "m15": self.get_prices("MINUTE_15", 200),
             "m5": self.get_prices("MINUTE_5", 100),
         }
