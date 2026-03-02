@@ -66,7 +66,7 @@ def _no_setup_tf(price=38000):
     but keeps BB levels reasonable for alignment checks."""
     return make_tf(
         price=price,
-        rsi=60,                   # outside LONG range (35-55) and SHORT range needs other conditions
+        rsi=60,                   # in LONG RSI range but BB distances too far for any setup
         bb_mid=price - 500,       # too far for bb_mid_bounce
         bb_lower=price - 200,     # reasonable 15M BB lower for alignment (within 300pts of price)
         bb_upper=price + 500,     # too far for bb_upper_rejection

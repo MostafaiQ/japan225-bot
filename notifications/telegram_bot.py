@@ -473,7 +473,7 @@ class TelegramBot:
             # Append an Escalate button when bot is on cooldown
             kb = InlineKeyboardMarkup(
                 list(kb.inline_keyboard) + [[
-                    InlineKeyboardButton("⚡ Escalate to Haiku now", callback_data="force_escalate")
+                    InlineKeyboardButton("⚡ Escalate to AI now", callback_data="force_escalate")
                 ]]
             )
         await update.message.reply_text(
@@ -598,7 +598,7 @@ class TelegramBot:
             if self.storage.is_ai_on_cooldown(AI_COOLDOWN_MINUTES):
                 kb = InlineKeyboardMarkup(
                     list(kb.inline_keyboard) + [[
-                        InlineKeyboardButton("⚡ Escalate to Haiku now", callback_data="force_escalate")
+                        InlineKeyboardButton("⚡ Escalate to AI now", callback_data="force_escalate")
                     ]]
                 )
             await msg.reply_text(
@@ -780,7 +780,7 @@ class TelegramBot:
             if self.on_force_scan:
                 await self.on_force_scan()
             await query.edit_message_text(
-                query.message.text + "\n\n⚡ <b>Cooldown cleared — escalating to Haiku on next scan.</b>",
+                query.message.text + "\n\n⚡ <b>Cooldown cleared — escalating to AI on next scan.</b>",
                 parse_mode=ParseMode.HTML,
             )
 

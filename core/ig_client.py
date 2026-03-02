@@ -92,9 +92,11 @@ class IGClient:
 
         Retries up to 3 times on 503 (IG has a ~30-60s unavailable window at
         session open before the cash CFD becomes tradeable).
+        If all 3 fail with 503, logs out, re-authenticates, and tries once more.
         """
         if not self.ensure_connected():
             return None
+        all_503 = False
         for attempt in range(3):
             try:
                 info = self.ig.fetch_market_by_epic(EPIC)
@@ -117,15 +119,53 @@ class IGClient:
                     "currency": instrument.get("currencies", [{}])[0].get("code", CURRENCY),
                 }
             except Exception as e:
-                if "503" in str(e) and attempt < 2:
-                    logger.warning(
-                        f"Market info 503 (session startup delay, attempt {attempt + 1}/3) — retrying in 15s"
-                    )
-                    time.sleep(15)
-                    continue
+                if "503" in str(e):
+                    if attempt < 2:
+                        logger.warning(
+                            f"Market info 503 (session startup delay, attempt {attempt + 1}/3) — retrying in 15s"
+                        )
+                        time.sleep(15)
+                        continue
+                    all_503 = True
+                    break
                 self._check_auth_error(e)
                 logger.error(f"Failed to get market info: {e}")
                 return None
+
+        if all_503:
+            logger.warning("Market info 503 persisted after 3 attempts — logging out and re-authenticating")
+            try:
+                self.ig.logout()
+            except Exception:
+                pass
+            self.authenticated = False
+            if not self.connect():
+                logger.error("Re-authentication failed after 503 exhaustion")
+                return None
+            try:
+                info = self.ig.fetch_market_by_epic(EPIC)
+                if info is None:
+                    return None
+                snapshot = info.get("snapshot", {})
+                dealing = info.get("dealingRules", {})
+                instrument = info.get("instrument", {})
+                logger.info("Market info recovered after re-authentication")
+                return {
+                    "bid": snapshot.get("bid"),
+                    "offer": snapshot.get("offer"),
+                    "high": snapshot.get("high"),
+                    "low": snapshot.get("low"),
+                    "spread": (snapshot.get("offer") or 0) - (snapshot.get("bid") or 0),
+                    "market_status": snapshot.get("marketStatus"),
+                    "update_time": snapshot.get("updateTime"),
+                    "min_stop_distance": (dealing.get("minNormalStopOrLimitDistance") or {}).get("value"),
+                    "trailing_stops_available": dealing.get("trailingStopsPreference") != "NOT_AVAILABLE",
+                    "currency": instrument.get("currencies", [{}])[0].get("code", CURRENCY),
+                }
+            except Exception as e:
+                logger.error(f"Market info still failing after re-auth: {e}")
+                return None
+
         return None
     
     # trading_ig conv_resol() expects Pandas-compatible offset strings (e.g. "15min", "4h", "D").
@@ -190,81 +230,88 @@ class IGClient:
         else:
             fetch_n = num_points
 
-        try:
-            pandas_res = self._PANDAS_RESOLUTIONS.get(resolution, resolution)
-            result = self.ig.fetch_historical_prices_by_epic(
-                epic=EPIC,
-                resolution=pandas_res,
-                numpoints=fetch_n,
-            )
+        from trading_ig.rest import ApiExceededException
 
-            prices_df = result.get("prices", None)
-            if prices_df is None or prices_df.empty:
-                # Return cache on empty response
-                cached = self._candle_cache.get(resolution, [])
-                return cached[-num_points:] if cached else []
+        for attempt in range(3):
+            try:
+                pandas_res = self._PANDAS_RESOLUTIONS.get(resolution, resolution)
+                result = self.ig.fetch_historical_prices_by_epic(
+                    epic=EPIC,
+                    resolution=pandas_res,
+                    numpoints=fetch_n,
+                )
 
-            new_candles = []
-            for idx, row in prices_df.iterrows():
-                try:
-                    candle = {
-                        "timestamp": str(idx),
-                        "open": float(row.get(("bid", "Open"), row.get(("last", "Open"), 0))),
-                        "high": float(row.get(("bid", "High"), row.get(("last", "High"), 0))),
-                        "low": float(row.get(("bid", "Low"), row.get(("last", "Low"), 0))),
-                        "close": float(row.get(("bid", "Close"), row.get(("last", "Close"), 0))),
-                        "volume": float(row.get(("last", "Volume"), 0)),
-                    }
-                    new_candles.append(candle)
-                except (KeyError, TypeError) as e:
-                    logger.warning(f"Skipping malformed candle at {idx}: {e}")
+                prices_df = result.get("prices", None)
+                if prices_df is None or prices_df.empty:
+                    cached = self._candle_cache.get(resolution, [])
+                    return cached[-num_points:] if cached else []
+
+                new_candles = []
+                for idx, row in prices_df.iterrows():
+                    try:
+                        candle = {
+                            "timestamp": str(idx),
+                            "open": float(row.get(("bid", "Open"), row.get(("last", "Open"), 0))),
+                            "high": float(row.get(("bid", "High"), row.get(("last", "High"), 0))),
+                            "low": float(row.get(("bid", "Low"), row.get(("last", "Low"), 0))),
+                            "close": float(row.get(("bid", "Close"), row.get(("last", "Close"), 0))),
+                            "volume": float(row.get(("last", "Volume"), 0)),
+                        }
+                        new_candles.append(candle)
+                    except (KeyError, TypeError) as e:
+                        logger.warning(f"Skipping malformed candle at {idx}: {e}")
+                        continue
+
+                IGClient._last_delta_ts[resolution] = _time.time()
+
+                if not self._cache_full_fetch_done.get(resolution):
+                    self._candle_cache[resolution] = new_candles
+                    self._cache_full_fetch_done[resolution] = True
+                    logger.info(f"Fetched {len(new_candles)} candles ({resolution}) [full, cached]")
+                else:
+                    cached = self._candle_cache.get(resolution, [])
+                    existing_ts = {c["timestamp"] for c in cached}
+                    added = 0
+                    for c in new_candles:
+                        if c["timestamp"] not in existing_ts:
+                            cached.append(c)
+                            existing_ts.add(c["timestamp"])
+                            added += 1
+                        else:
+                            for i in range(len(cached) - 1, -1, -1):
+                                if cached[i]["timestamp"] == c["timestamp"]:
+                                    cached[i] = c
+                                    break
+                    max_cache = num_points * 2
+                    if len(cached) > max_cache:
+                        cached = cached[-max_cache:]
+                    self._candle_cache[resolution] = cached
+                    if added > 0:
+                        logger.info(f"Delta fetch: +{added} new candles ({resolution}), cache={len(cached)}")
+
+                return self._candle_cache[resolution][-num_points:]
+
+            except ApiExceededException:
+                if attempt < 2:
+                    wait = 30 * (attempt + 1)
+                    logger.warning(f"Rate limit on {resolution} (attempt {attempt+1}/3) — retrying in {wait}s")
+                    _time.sleep(wait)
                     continue
-
-            IGClient._last_delta_ts[resolution] = _time.time()
-
-            if not self._cache_full_fetch_done.get(resolution):
-                # First fetch: store as full cache
-                self._candle_cache[resolution] = new_candles
-                self._cache_full_fetch_done[resolution] = True
-                logger.info(f"Fetched {len(new_candles)} candles ({resolution}) [full, cached]")
-            else:
-                # Delta fetch: merge with cache (deduplicate by timestamp)
-                cached = self._candle_cache.get(resolution, [])
-                existing_ts = {c["timestamp"] for c in cached}
-                added = 0
-                for c in new_candles:
-                    if c["timestamp"] not in existing_ts:
-                        cached.append(c)
-                        existing_ts.add(c["timestamp"])
-                        added += 1
-                    else:
-                        # Update latest candle (may still be forming)
-                        for i in range(len(cached) - 1, -1, -1):
-                            if cached[i]["timestamp"] == c["timestamp"]:
-                                cached[i] = c
-                                break
-                # Trim cache to 2x requested size (prevent memory growth)
-                max_cache = num_points * 2
-                if len(cached) > max_cache:
-                    cached = cached[-max_cache:]
-                self._candle_cache[resolution] = cached
-                if added > 0:
-                    logger.info(f"Delta fetch: +{added} new candles ({resolution}), cache={len(cached)}")
-
-            return self._candle_cache[resolution][-num_points:]
-
-        except Exception as e:
-            self._check_auth_error(e)
-            err_str = str(e)
-            if "exceeded-account-historical-data-allowance" in err_str:
-                IGClient._data_allowance_blocked_until = _time.time() + 3600
-                logger.error(f"IG data allowance exceeded — using cache for 1 hour")
+                logger.error(f"Rate limit on {resolution} after 3 attempts")
                 cached = self._candle_cache.get(resolution, [])
                 return cached[-num_points:] if cached else []
-            logger.error(f"Failed to fetch prices ({resolution}): {e}")
-            # Return cache on error
-            cached = self._candle_cache.get(resolution, [])
-            return cached[-num_points:] if cached else []
+            except Exception as e:
+                self._check_auth_error(e)
+                err_str = str(e)
+                if "exceeded-account-historical-data-allowance" in err_str:
+                    IGClient._data_allowance_blocked_until = _time.time() + 3600
+                    logger.error(f"IG data allowance exceeded — using cache for 1 hour")
+                    cached = self._candle_cache.get(resolution, [])
+                    return cached[-num_points:] if cached else []
+                logger.error(f"Failed to fetch prices ({resolution}): {type(e).__name__}: {e}")
+                cached = self._candle_cache.get(resolution, [])
+                return cached[-num_points:] if cached else []
+        return []
     
     def get_all_timeframes(self) -> dict:
         """Fetch price data for all 4 analysis timeframes."""

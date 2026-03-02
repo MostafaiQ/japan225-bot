@@ -19,7 +19,8 @@ ensure_connected() -> bool
 
 get_market_info() -> Optional[dict]
   # GET /markets/{EPIC}. Returns bid, offer, high, low, spread, market_status, etc.
-  # Retries 3× on 503 (15s delay each). Does NOT use data allowance.
+  # Retries 3× on 503 (15s delay each). If all 3 fail: logout → re-auth → one final attempt.
+  # Does NOT use data allowance.
 
 ## CANDLE CACHING (added 2026-03-02)
 get_prices(resolution, num_points) uses a 2-phase caching strategy:
@@ -46,6 +47,7 @@ get_prices(resolution: str, num_points: int) -> list[dict]
   # Pass IG-style strings: "MINUTE_5", "MINUTE_15", "HOUR_4", "DAY"
   # INTERNALLY converted via _PANDAS_RESOLUTIONS to Pandas strings ("15min", "4h", "D")
   # Returns list of {open, high, low, close, volume, timestamp}
+  # RATE LIMIT RETRY: catches ApiExceededException, retries up to 3× with 30s/60s backoff
 
 get_all_timeframes() -> dict
   # Returns {daily, h4, m15, m5}

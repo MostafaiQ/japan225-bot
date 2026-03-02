@@ -1,5 +1,6 @@
 """
-AI Analysis Module - 3-tier pipeline: Haiku pre-gate → Sonnet scan → Opus confirm.
+AI Analysis Module - Single-subprocess pipeline: Sonnet 4.6 with adaptive thinking.
+Sonnet does analysis + built-in devil's advocate self-review in one call.
 Uses Claude Code CLI subprocess (OAuth / subscription billing, not API key).
 Context files at storage/context/ are written before each call for full transparency.
 JSON output enforced via prompt schema + robust parser with safe fallbacks.
@@ -17,7 +18,7 @@ from typing import Optional
 import httpx
 
 from config.settings import (
-    SONNET_MODEL, OPUS_MODEL,
+    SONNET_MODEL,
     AI_MAX_TOKENS, AI_TEMPERATURE,
     CONFIDENCE_BASE, CONFIDENCE_CRITERIA, MIN_CONFIDENCE,
     DEFAULT_SL_DISTANCE, DEFAULT_TP_DISTANCE, SPREAD_ESTIMATE,
@@ -25,7 +26,6 @@ from config.settings import (
 
 logger = logging.getLogger(__name__)
 
-HAIKU_MODEL   = "claude-haiku-4-5-20251001"
 CLAUDE_BIN    = "/home/ubuntu/.local/bin/claude"
 PROJECT_ROOT  = Path(__file__).parent.parent
 CONTEXT_DIR   = PROJECT_ROOT / "storage" / "context"
@@ -33,8 +33,6 @@ CONTEXT_DIR   = PROJECT_ROOT / "storage" / "context"
 # Cost is $0 for subscription; keep structure for compat with save_scan()
 PRICING = {
     SONNET_MODEL: {"input": 0.0, "output": 0.0},
-    OPUS_MODEL:   {"input": 0.0, "output": 0.0},
-    HAIKU_MODEL:  {"input": 0.0, "output": 0.0},
 }
 
 
@@ -47,25 +45,38 @@ def build_system_prompt() -> str:
 SETUPS — LONG (daily trend in reasoning; counter-trend allowed if strong confluence):
   bb_mid_bounce:     price ±150pts BB_mid | RSI15M 35-55 | bounce_starting=T
   bb_lower_bounce:   price ±80pts BB_lower | RSI15M 20-40 | lower_wick ≥15pts | EMA50 below OK
-    → REJECT if vol=LOW (no buyers) or 4H sharply down with no RSI divergence
+    → Caution if vol=LOW, but not auto-reject (late session vol naturally lower)
 
 SETUPS — SHORT (min confidence 75% — BOJ risk; counter-trend allowed if strong confluence):
   bb_upper_rejection: price ±150pts BB_upper | RSI15M 55-75 | below EMA50
   ema50_rejection:    price ≤ EMA50+2 | dist ≤150pts | RSI15M 50-70
 
 RULES: RR ≥ 1.5 after spread(7pts). No trade: HIGH event <60min. SL=150 TP=400.
-VOLUME: HIGH(>1.5x)=conviction. LOW(<0.7x)=lean REJECT.
+VOLUME: HIGH(>1.5x)=conviction. LOW(<0.7x)=caution, weigh alongside other criteria. Not auto-reject.
 SWING LEVELS: dist_swing_hi <200pts → TP obstacle, reduce confidence.
               dist_swing_lo <100pts → SL anchor, good for LONG.
 HA: ha_bullish=T → buying pressure confirmed. ha_streak≥3 → strong momentum.
 FVG: fvg_bullish → unfilled demand zone (support). fvg_bearish → unfilled supply zone (resistance).
-FIBO: fib_near = nearest fib level (key S/R). pdh/pdl = prev session high/low (key levels).
+VWAP: above = premium (SHORT bias), below = discount (LONG bias). Key intraday mean-reversion level.
+FIBO: fib_near = nearest fib level (key S/R). pdh/pdl = prev candle high/low (key levels).
 SWEEP: swept_low=T → liquidity grab + bullish reversal. swept_high=T → bearish reversal.
+PIVOT: PP/R1-R3/S1-S3 from daily. Near S1/S2=support (LONG). Near R1/R2=resistance (SHORT).
+CANDLE: hammer/engulfing/morning_star etc. Direction + strength. Strong pattern at key level = high conviction.
+BODY: expanding=momentum, contracting=exhaustion. |consec|>=4=overextended. wick_ratio>2=indecision.
 
 CONFIDENCE (11 criteria, proportional scoring, base 30, cap 100):
   daily_trend | entry_at_tech_level | rsi_15m_in_range | tp_viable
   price_structure | macro_aligned | no_event_1hr | no_friday_monthend
-  volume (not LOW) | trend_4h (EMA50 aligned) | ha_aligned (HA candle direction)
+  volume (prefer NORMAL+) | trend_4h (EMA50 aligned) | ha_aligned (HA candle direction)
+
+QUICK REJECT: If ≥4 technical criteria fail AND volume is LOW AND no macro catalyst → set setup_found=false immediately.
+  Do not spend analysis time on junk setups. Volume=LOW alone is NOT a reject (Tokyo session inherently lower).
+
+OPUS REVIEW: If your initial confidence lands in the 72-86% range (borderline zone),
+  you MUST use the Agent tool to spawn the "opus_reviewer" sub-agent. Pass it your full analysis
+  (direction, confidence, reasoning, indicator snapshot, risks) and ask it to challenge your case.
+  Incorporate Opus's feedback — if it finds a concrete disqualifying risk, reduce confidence or reject.
+  If your confidence is >=87% (clear approve) or <=71% (clear reject), skip Opus review.
 
 EXIT: +150pts → SL to BE+10. TP=400pts. 75%TP in <2h → trail@150pts.
 EMA50_bounce setup: DISABLED — do not approve."""
@@ -109,10 +120,22 @@ def _fmt_indicators(indicators: dict) -> str:
         fvg_bear = tf.get("fvg_bearish")
         fvg_lvl  = tf.get("fvg_level")
 
+        # VWAP
+        vwap_val = tf.get("vwap")
+        above_vwap = tf.get("above_vwap")
+        # PDH/PDL
+        pdh = tf.get("prev_candle_high")
+        pdl = tf.get("prev_candle_low")
+
         parts = [f"{label}: p={p} rsi={rsi} ema50={e50}"]
         if e200:
             parts.append(f"ema200={e200}")
         parts.append(f"bb={bbl}/{bbm}/{bbu}")
+        if vwap_val is not None:
+            vwap_side = "above" if above_vwap else "below" if above_vwap is False else "?"
+            parts.append(f"vwap={vwap_val:.0f}({vwap_side})" if isinstance(vwap_val, (int, float)) else f"vwap={vwap_val}({vwap_side})")
+        if pdh is not None and pdl is not None:
+            parts.append(f"pdh/pdl={pdh:.0f}/{pdl:.0f}" if isinstance(pdh, (int, float)) else f"pdh/pdl={pdh}/{pdl}")
         if vol:
             parts.append(f"vol={vol}({vrat}x)" if vrat else f"vol={vol}")
         if sh and sl and p and p != "?":
@@ -131,7 +154,51 @@ def _fmt_indicators(indicators: dict) -> str:
             parts.append(f"fib={fibn}")
         if swlo or swhi:
             parts.append(f"sweep={'low' if swlo else 'high'}")
+        # Candlestick pattern
+        cp_name = tf.get("candlestick_pattern")
+        cp_dir  = tf.get("candlestick_direction")
+        cp_str  = tf.get("candlestick_strength")
+        if cp_name:
+            parts.append(f"candle={cp_name}({cp_dir},{cp_str})")
+        # Body trend
+        bt = tf.get("body_trend")
+        consec = tf.get("consecutive_direction")
+        wr = tf.get("wick_ratio")
+        if bt and bt != "neutral":
+            parts.append(f"bodies={bt}(consec={consec})")
+        if wr and isinstance(wr, (int, float)) and wr > 1.5:
+            parts.append(f"wick_ratio={wr:.1f}")
+
         lines.append(" | ".join(parts))
+
+    # Pivot points — top-level key, rendered once (from 15M detect_setup snapshot)
+    pvt = indicators.get("pivots")
+    if pvt and isinstance(pvt, dict) and pvt.get("pp"):
+        pp = pvt["pp"]
+        # Find nearest S below and R above current price (use 15M price if available)
+        m15 = None
+        for k in ["15m", "tf_15m", "15min", "m15"]:
+            if k in indicators and isinstance(indicators[k], dict):
+                m15 = indicators[k]
+                break
+        cur_price = m15.get("price") if m15 else None
+        s_near = None
+        r_near = None
+        if cur_price:
+            for lvl in ("s1", "s2", "s3"):
+                val = pvt.get(lvl)
+                if val and val < cur_price:
+                    s_near = f"{lvl.upper()}={val:.0f}"
+                    break
+            for lvl in ("r1", "r2", "r3"):
+                val = pvt.get(lvl)
+                if val and val > cur_price:
+                    r_near = f"{lvl.upper()}={val:.0f}"
+                    break
+        s_str = s_near or f"S1={pvt.get('s1', '?')}"
+        r_str = r_near or f"R1={pvt.get('r1', '?')}"
+        lines.append(f"PIVOT: PP={pp:.0f} {s_str} {r_str}")
+
     return "\n".join(lines) if lines else "(no indicator data)"
 
 
@@ -184,9 +251,7 @@ def build_scan_prompt(
     prescreen_direction: str = None,
     local_confidence: dict = None,
     live_edge_block: str = None,
-    is_opus: bool = False,
-    sonnet_analysis: dict = None,
-    haiku_reasoning: str = None,
+    failed_criteria: list = None,
 ) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
@@ -213,45 +278,25 @@ def build_scan_prompt(
             f"✓{','.join(passed)} ✗{','.join(failed)}\n"
         )
 
-    # --- Build cumulative AI reasoning chain ---
-    haiku_block = ""
-    if haiku_reasoning:
-        haiku_block = (
-            f"\nHAIKU PRE-GATE ASSESSMENT (approved escalation):\n"
-            f"  {haiku_reasoning}\n"
+    # --- Build failed criteria block ---
+    failed_block = ""
+    if failed_criteria:
+        failed_block = (
+            f"\nFAILED LOCAL CRITERIA (technical code only — you may override with macro):\n"
+            + "\n".join(f"  ✗ {c}" for c in failed_criteria) + "\n"
         )
 
-    if is_opus and sonnet_analysis:
-        sonnet_conf   = sonnet_analysis.get("confidence", "?")
-        sonnet_warn   = sonnet_analysis.get("warnings", [])
-        sonnet_reason = sonnet_analysis.get("reasoning", "")
-        role_block = (
-            f"\n--- PRIOR AI ASSESSMENTS (cumulative chain) ---\n"
-            f"{haiku_block}"
-            f"\nSONNET ANALYSIS at {sonnet_conf}% confidence:\n"
-            f"  Reasoning: {sonnet_reason}\n"
-            f"  Warnings flagged: {sonnet_warn}\n"
-            f"\n--- YOUR TASK ---\n"
-            f"Two prior models have analyzed this setup. You have their reasoning above\n"
-            f"plus the raw indicator data below. Make your OWN independent assessment:\n"
-            f"  1. VERIFY the technical case: Do the actual indicator values (RSI, EMA, BB, HA, FVG)\n"
-            f"     support the direction? Cite specific numbers.\n"
-            f"  2. FIND RISKS the prior models missed: What concrete scenario causes a 150pt loss?\n"
-            f"     (news event, technical breakdown, liquidity gap — be specific)\n"
-            f"  3. EVALUATE EDGE: Given live edge stats, does this setup type have positive EV?\n"
-            f"  4. DECISION: Weigh the cumulative evidence. If the technical case is sound and\n"
-            f"     no disqualifying risk exists, approve. If you find a concrete reason to reject,\n"
-            f"     reject with that specific reason.\n"
-        )
-    else:
-        role_block = (
-            f"{haiku_block}"
-            "\nBefore outputting JSON, reason through:\n"
-            "  1. STRUCTURE: Are D1/4H/15M aligned? (cite specific RSI/EMA/BB values)\n"
-            "  2. SETUP QUALITY: Is the technical trigger clean? (price distance, volume, HA, FVG)\n"
-            "  3. RISK: What specific scenario causes a 150pt loss? (be concrete)\n"
-            "  4. EDGE: Given live edge stats, does this setup type have positive EV now?\n"
-        )
+    role_block = (
+        f"{failed_block}"
+        "\nBefore outputting JSON, reason through these steps IN ORDER:\n"
+        "  1. STRUCTURE: Are D1/4H/15M aligned? (cite specific RSI/EMA/BB values)\n"
+        "  2. SETUP QUALITY: Is the technical trigger clean? (price distance, volume, HA, FVG)\n"
+        "  3. RISK: What specific scenario causes a 150pt loss? (be concrete)\n"
+        "  4. EDGE: Given live edge stats, does this setup type have positive EV now?\n"
+        "  5. OPUS REVIEW (if borderline 72-86%): Spawn the opus_reviewer agent.\n"
+        "     Pass it your analysis and ask it to find risks you missed.\n"
+        "     Incorporate its feedback before outputting final JSON.\n"
+    )
 
     context_note = ""
     if CONTEXT_DIR.exists():
@@ -273,18 +318,6 @@ def build_scan_prompt(
         + "\n"
         + role_block
     )
-
-
-def _should_call_opus(sonnet_confidence: int, direction: str) -> bool:
-    from config.settings import MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT
-    threshold = MIN_CONFIDENCE_SHORT if direction == "SHORT" else MIN_CONFIDENCE
-    if sonnet_confidence >= 87:
-        logger.info(f"Opus skipped: Sonnet very high confidence ({sonnet_confidence}%) — certain approval")
-        return False
-    if sonnet_confidence <= threshold + 2:
-        logger.info(f"Opus skipped: Sonnet near-floor ({sonnet_confidence}%, floor={threshold}%) — not worth cost")
-        return False
-    return True
 
 
 # ─── JSON parsing ─────────────────────────────────────────────────────────────
@@ -313,8 +346,9 @@ def _parse_json(text: str, default: dict) -> dict:
 
 class AIAnalyzer:
     """
-    3-tier pipeline: Haiku → Sonnet → Opus.
-    All calls via Claude Code CLI subprocess — OAuth subscription billing, not API key.
+    Single-subprocess pipeline: Sonnet 4.6 with Opus sub-agent.
+    Sonnet analyzes, delegates to Opus sub-agent for devil's advocate on borderline calls.
+    All within one Claude Code CLI subprocess — OAuth subscription billing, not API key.
     """
 
     def __init__(self):
@@ -324,6 +358,7 @@ class AIAnalyzer:
         """
         Invoke Claude Code CLI with OAuth credentials (no API key).
         Combines system + user prompt so Claude has full context in --print mode.
+        Includes Opus sub-agent definition so Sonnet can delegate devil's advocate review.
         Returns (output_text, token_estimates) — tokens are estimates from char count.
         """
         env = {**os.environ}
@@ -336,10 +371,23 @@ class AIAnalyzer:
         # Estimate input tokens: ~4 chars/token for English/structured data
         est_input_tokens = len(full_prompt) // 4
 
+        # Define Opus sub-agent for devil's advocate review within the same subprocess
+        from config.settings import OPUS_MODEL
+        agents_json = json.dumps({
+            "opus_reviewer": {
+                "description": "Devil's advocate trade setup reviewer. Challenges the analysis, finds risks, verifies technical case. Use when your confidence is 72-86% (borderline zone).",
+                "model": OPUS_MODEL,
+            }
+        })
+
         start = time.time()
         try:
             result = subprocess.run(
-                [CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions"],
+                [
+                    CLAUDE_BIN, "--model", model, "--print",
+                    "--dangerously-skip-permissions",
+                    "--agents", agents_json,
+                ],
                 input=full_prompt,
                 capture_output=True,
                 text=True,
@@ -368,84 +416,6 @@ class AIAnalyzer:
             logger.error(f"Claude binary not found at {CLAUDE_BIN}")
             return "", {"input": 0, "output": 0, "total": 0}
 
-    # ── Haiku pre-gate ─────────────────────────────────────────────────────────
-
-    def precheck_with_haiku(
-        self,
-        setup_type: str,
-        direction: str,
-        rsi_15m: float,
-        volume_signal: str,
-        session: str,
-        live_edge_block: str = None,
-        local_confidence: dict = None,
-        web_research: dict = None,
-        failed_criteria: list = None,
-        indicators: dict = None,
-    ) -> dict:
-        """
-        Haiku pre-gate: cheap filter before Sonnet analysis.
-        Returns {should_escalate: bool, reason: str, _cost: float}.
-        """
-        edge_str = live_edge_block or "(no live edge data yet — bot is new)"
-        score  = local_confidence.get("score", "?")  if local_confidence else "?"
-        passed = local_confidence.get("passed_criteria", "?") if local_confidence else "?"
-
-        failed_str = ""
-        if failed_criteria:
-            failed_str = (
-                "\nFAILED LOCAL CRITERIA (technical code only — you may override with macro):\n"
-                + "\n".join(f"  ✗ {c}" for c in failed_criteria) + "\n"
-            )
-
-        ind_str = ""
-        if indicators:
-            ind_str = "\nINDICATOR SNAPSHOT:\n" + _fmt_indicators(indicators) + "\n"
-
-        web_str = ""
-        if web_research:
-            web_str = "\nMACRO CONTEXT:\n" + _fmt_web_research(web_research) + "\n"
-
-        context_note = ""
-        if CONTEXT_DIR.exists():
-            context_note = (
-                f"\nDetailed context files are at {CONTEXT_DIR}/ — "
-                f"read market_snapshot.md, macro.md, live_edge.md if you need more detail.\n"
-            )
-
-        user_prompt = (
-            f"Japan 225 pre-screen gate. Decide: escalate to full Sonnet analysis or reject?\n\n"
-            f"Setup: {setup_type} | Direction: {direction} | Session: {session}\n"
-            f"RSI 15M: {rsi_15m} | Volume: {volume_signal}\n"
-            f"Local score: {score}% ({passed}/11 technical criteria passed)\n"
-            f"{failed_str}{ind_str}{web_str}{context_note}"
-            f"{edge_str}\n\n"
-            f"DECISION FRAMEWORK:\n"
-            f"REJECT (should_escalate=false) if:\n"
-            f"  - volume=LOW on bollinger_mid_bounce (thin bounce, no real buyers)\n"
-            f"  - This setup type + session WR <35% with no macro override\n"
-            f"  - RSI badly outside valid range AND no macro support\n"
-            f"  - Multiple technical failures AND macro is neutral/negative\n\n"
-            f"ESCALATE (should_escalate=true) if:\n"
-            f"  - Soft criteria failed (C5 price structure, C4 tp_viable) AND macro strongly supports\n"
-            f"  - Volume is HIGH or NORMAL with supportive macro\n"
-            f"  - Live edge shows setup type WR >40%\n"
-            f"  - Genuinely uncertain → escalate (Sonnet makes the final call)\n\n"
-            f"Output ONLY a JSON object — no other text:\n"
-            f'{{"should_escalate": true, "reason": "one sentence reason"}}'
-        )
-
-        system_prompt = "You are a Japan 225 CFD pre-screen filter. Output ONLY the JSON object requested. No explanations, no markdown, just the JSON."
-
-        raw, tokens = self._run_claude(HAIKU_MODEL, system_prompt, user_prompt, timeout=60)
-        result = _parse_json(raw, default={"should_escalate": True, "reason": "Haiku parse error — defaulting to escalate"})
-        result["_cost"]   = 0.0
-        result["_tokens"] = tokens
-
-        if not result.get("should_escalate"):
-            logger.info(f"Haiku filtered: {result.get('reason', '')}")
-        return result
-
     # ── Sonnet scan ────────────────────────────────────────────────────────────
 
     def scan_with_sonnet(
@@ -457,7 +427,7 @@ class AIAnalyzer:
         prescreen_direction: str = None,
         local_confidence: dict = None,
         live_edge_block: str = None,
-        haiku_reasoning: str = None,
+        failed_criteria: list = None,
     ) -> dict:
         return self._analyze(
             model=SONNET_MODEL,
@@ -468,51 +438,8 @@ class AIAnalyzer:
             prescreen_direction=prescreen_direction,
             local_confidence=local_confidence,
             live_edge_block=live_edge_block,
-            haiku_reasoning=haiku_reasoning,
+            failed_criteria=failed_criteria,
         )
-
-    # ── Opus confirmation ──────────────────────────────────────────────────────
-
-    def confirm_with_opus(
-        self,
-        indicators: dict,
-        recent_scans: list,
-        market_context: dict,
-        web_research: dict,
-        sonnet_analysis: dict,
-        live_edge_block: str = None,
-        haiku_reasoning: str = None,
-    ) -> dict:
-        direction = sonnet_analysis.get("direction", "LONG") or "LONG"
-
-        if not _should_call_opus(sonnet_analysis.get("confidence", 0), direction):
-            result = dict(sonnet_analysis)
-            result["_opus_skipped"] = True
-            return result
-
-        result = self._analyze(
-            model=OPUS_MODEL,
-            indicators=indicators,
-            recent_scans=recent_scans,
-            market_context=market_context,
-            web_research=web_research,
-            live_edge_block=live_edge_block,
-            is_opus=True,
-            sonnet_analysis=sonnet_analysis,
-            haiku_reasoning=haiku_reasoning,
-        )
-
-        from config.settings import MIN_CONFIDENCE_SHORT
-        threshold = MIN_CONFIDENCE_SHORT if direction == "SHORT" else MIN_CONFIDENCE
-        if result.get("confidence", 0) < threshold:
-            result["setup_found"] = False
-            result["reasoning"] = (
-                f"Opus rejected: confidence {result.get('confidence', 0)}% "
-                f"below {threshold}% for {direction}. "
-                f"Original: {result.get('reasoning', '')}"
-            )
-
-        return result
 
     # ── Core analysis ──────────────────────────────────────────────────────────
 
@@ -526,18 +453,14 @@ class AIAnalyzer:
         prescreen_direction: str = None,
         local_confidence: dict = None,
         live_edge_block: str = None,
-        is_opus: bool = False,
-        sonnet_analysis: dict = None,
-        haiku_reasoning: str = None,
+        failed_criteria: list = None,
     ) -> dict:
         user_prompt = build_scan_prompt(
             indicators, recent_scans, market_context, web_research,
             prescreen_direction=prescreen_direction,
             local_confidence=local_confidence,
             live_edge_block=live_edge_block,
-            is_opus=is_opus,
-            sonnet_analysis=sonnet_analysis,
-            haiku_reasoning=haiku_reasoning,
+            failed_criteria=failed_criteria,
         )
 
         schema_comment = (

@@ -1,42 +1,34 @@
 # ai/analyzer.py — DIGEST (updated 2026-03-02)
-# 3-tier AI pipeline: Haiku pre-gate → Sonnet scan → Opus confirm.
+# Single-subprocess pipeline: Sonnet 4.6 with Opus sub-agent for borderline calls.
+# Haiku pre-gate REMOVED. Separate Opus subprocess REMOVED. All in one `claude` invocation.
 # AUTH: Claude Code CLI subprocess (OAuth/subscription). No ANTHROPIC_API_KEY used.
 # JSON output via prompt schema + regex parser. No tool use schemas.
 # Context files written to storage/context/ by ai/context_writer.py before each call.
 
-## Models (all via CLI --model flag, subscription billing = $0/call)
-HAIKU_MODEL  = "claude-haiku-4-5-20251001"
-SONNET_MODEL = "claude-sonnet-4-5-20250929"
-OPUS_MODEL   = "claude-opus-4-6"
+## Models (subscription billing = $0/call)
+SONNET_MODEL = "claude-sonnet-4-6"  (adaptive thinking on by default)
+OPUS_MODEL   = "claude-opus-4-6"    (used as sub-agent via --agents flag, not a separate subprocess)
 _cost always 0.0. _tokens always zeros. Kept for interface compat with save_scan().
 
 ## class AIAnalyzer
 __init__(): total_cost=0.0 (subscription, always zero)
 
 _run_claude(model, system_prompt, user_prompt, timeout=180) -> str
-  # subprocess.run([CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions"])
+  # subprocess.run([CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions", "--agents", agents_json])
+  # agents_json defines "opus_reviewer" sub-agent (model=OPUS_MODEL)
+  # Sonnet can spawn this sub-agent internally for borderline 72-86% calls
   # Strips ANTHROPIC_API_KEY from env to force OAuth.
   # Returns stdout string. Returns "" on timeout or binary not found.
 
-precheck_with_haiku(setup_type, direction, rsi_15m, volume_signal, session,
-                    live_edge_block=None, local_confidence=None, web_research=None,
-                    failed_criteria=None, indicators=None) -> dict
-  # Returns {should_escalate, reason, _cost}
-  # Default on parse error: {should_escalate: True, reason: "Haiku parse error..."} — safe fail-open
-
 scan_with_sonnet(indicators, recent_scans, market_context, web_research,
                  prescreen_direction=None, local_confidence=None, live_edge_block=None,
-                 haiku_reasoning=None) -> dict
-  # haiku_reasoning: Haiku's reason string, injected into Sonnet's prompt as prior context
-
-confirm_with_opus(indicators, recent_scans, market_context, web_research,
-                  sonnet_analysis, live_edge_block=None, haiku_reasoning=None) -> dict
-  # Calls _should_call_opus() first — may return Sonnet result directly (opus_skipped=True)
-  # haiku_reasoning: threaded to Opus prompt alongside Sonnet's full analysis (cumulative chain)
+                 failed_criteria=None) -> dict
+  # Only public analysis method. Calls _analyze() with SONNET_MODEL.
+  # Sonnet handles everything: analysis, quick-reject, and Opus delegation when needed.
 
 _analyze(model, indicators, recent_scans, market_context, web_research,
          prescreen_direction=None, local_confidence=None, live_edge_block=None,
-         is_opus=False, sonnet_analysis=None, haiku_reasoning=None) -> dict
+         failed_criteria=None) -> dict
   # Builds prompt via build_scan_prompt() + JSON schema trailer
   # Calls _run_claude() → _parse_json() → returns dict + _model, _cost, _tokens
   # Safe default on parse failure: {setup_found: False, confidence: 0, ...}
@@ -45,23 +37,21 @@ _analyze(model, indicators, recent_scans, market_context, web_research,
 Tries fenced ```json...``` block first, then any {…} in text, then returns default.
 Logs warning if parse fails.
 
-## _should_call_opus(sonnet_confidence, direction) -> bool
-Skip Opus if confidence >= 87% (certain) or <= threshold+2 (near-reject floor).
-
 ## build_system_prompt() -> str
-Compact reference card. ~230 tokens. Includes HA, FVG, Fibonacci, sweep signal guidance.
-11-criteria confidence breakdown. Passed as <system> block in _run_claude.
+Compact reference card. ~280 tokens. Includes HA, FVG, Fibonacci, sweep signal guidance.
+VWAP guidance: above=premium (SHORT), below=discount (LONG). PDH/PDL.
+11-criteria confidence breakdown. Quick-reject guidance for junk setups.
+OPUS REVIEW instruction: spawn opus_reviewer agent for borderline 72-86% confidence.
+Passed as <system> block in _run_claude.
 
-## build_scan_prompt(..., haiku_reasoning=None) -> str
-Same compact format as before. Appends JSON schema template at end for model output.
-Includes path to storage/context/ files as a note (Claude can read them if needed).
-PRE-SCREEN line includes `Entry TF: {entry_tf}` from market_context["entry_timeframe"].
-**Cumulative AI reasoning chain**:
-  - For Sonnet: haiku_reasoning → HAIKU PRE-GATE ASSESSMENT block (context, not confirmation bias)
-  - For Opus: haiku_reasoning + sonnet analysis → PRIOR AI ASSESSMENTS block, then own assessment task
-  - Opus is told to verify technical case, find risks prior models missed, and make independent decision
+## build_scan_prompt(..., failed_criteria=None) -> str
+Compact format. Appends JSON schema template at end.
+Includes path to storage/context/ files as a note.
+PRE-SCREEN line includes `Entry TF: {entry_tf}`.
+failed_criteria → FAILED LOCAL CRITERIA block.
+Role block: 5-step analysis (structure → quality → risk → edge → opus review if borderline).
 Key formatters:
-  _fmt_indicators(indicators)   → pipe-format table (includes HA, FVG, fib_near, sweep signals)
+  _fmt_indicators(indicators)   → pipe-format table (HA, FVG, fib_near, sweep, VWAP, PDH/PDL)
   _fmt_recent_scans(scans)      → 1-line per scan summary
   _fmt_web_research(web)        → 3 lines, HIGH-impact calendar only
 
@@ -70,10 +60,8 @@ Reads storage/data/prompt_learnings.json. Returns compact block (last 5 entries)
 
 ## post_trade_analysis(trade, ai_analysis, data_dir=None) -> None
 Rule-based (no LLM cost). Updates prompt_learnings.json (max 20 entries).
-Also computes and stores Brier score in storage/data/brier_scores.json (last 100 trades).
-Brier = (confidence/100 - outcome)^2. Summary: mean, by_setup, by_session.
+Also computes Brier score in storage/data/brier_scores.json (last 100 trades).
 
 ## class WebResearcher
-research() -> dict  # Synchronous/blocking. Run via run_in_executor in async context.
+research() -> dict  # Synchronous/blocking. Run via run_in_executor.
 Returns: {timestamp, nikkei_news, economic_calendar, vix, usd_jpy, fear_greed}
-usd_jpy: from frankfurter.app (free). vix: from yfinance ^VIX.

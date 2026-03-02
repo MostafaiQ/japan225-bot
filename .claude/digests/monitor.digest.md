@@ -23,13 +23,13 @@ _main_cycle(): dispatches to _monitoring_cycle or _scanning_cycle based on DB po
   Clears _next_scan_at after sleep completes.
 
 self._last_scan_detail: dict — set at every _scanning_cycle outcome. Included in bot_state.json AND /api/status.
-  Keys: outcome (no_setup|low_conf|event_block|friday_block|haiku_rejected|ai_rejected|trade_alert),
-        direction, confidence, price, setup_type, reason (haiku only)
+  Keys: outcome (no_setup|low_conf|event_block|friday_block|ai_rejected|trade_alert),
+        direction, confidence, price, setup_type
 self._next_scan_at: datetime | None — set before sleep, cleared after. _write_state() computes next_scan_in from this.
 
 _scanning_cycle() writes save_scan() for all active-session outcomes.
   action_taken values always include direction suffix where applicable:
-    haiku_rejected_{long|short}, pending_{long|short},
+    pending_{long|short}, ai_rejected_{long|short},
     event_block_{long|short}, friday_block_{long|short}, low_conf_{long|short}, no_setup
   off_hours early return does NOT write scan records (no analysis done).
   NO COOLDOWNS — subscription is $0/call, always scan every 5 min.
@@ -40,27 +40,24 @@ _scanning_cycle() -> int (sleep seconds):
   3. check scanning_paused
   4. ig.get_market_info() → 1 API call
   5. asyncio.gather(15M, 5M) parallel → then await Daily sequential with 5s delay (avoids 28 req/min burst)
+     Cold start: all 3 sequential (rate limit). Warm: 5M+15M parallel, Daily time-gated.
      All 3 use candle caching: full fetch on first call, delta on subsequent (see ig_client.digest.md)
   6. detect_setup(tf_daily, {}, tf_15m) — 15M tried first
   6b. 5M FALLBACK: if 15M no setup + tf_5m available → detect_setup(tf_daily, {}, tf_5m)
       → _5m_aligns_with_15m() guard: LONG needs 15M RSI<65 + price within 300pts of 15M BB mid/lower
         SHORT needs 15M RSI>35 + price within 300pts of 15M BB upper. Missing data → pass through.
       → setup["type"] += "_5m", entry_timeframe="5m". Logged: "5M fallback: LONG bollinger_mid_bounce_5m"
-      → entry_tf for Haiku RSI/volume = tf_5m when entry_timeframe="5m", else tf_15m
+      → entry_tf for volume logging = tf_5m when entry_timeframe="5m", else tf_15m
   7. fetch 4H candles (AI_ESCALATION_CANDLES=220) → 1 API call (daily already fetched in step 5, reused here)
   8. researcher.research() → web data
   9. compute_confidence() → extract criteria dict (11 criteria, C1-C11)
   9b. HARD BLOCKS: C7(no_event_1hr) + C8(no_friday_monthend) fail → skip immediately
   9c. if score < HAIKU_MIN_SCORE (60%) → skip (true technical junk)
-  9d. precheck_with_haiku() with full context: web_research, failed_criteria, indicators, live_edge
-       → if Haiku rejects: save scan record, return (no cooldown)
-  9e. write_context() — generates storage/context/*.md for Claude CLI to read
-  9f. market_context["prescreen_setup"] = {type, reasoning, session} — injected before Sonnet call
-  10. scan_with_sonnet(haiku_reasoning=...) — Haiku's reason injected into Sonnet prompt
-      → U2: log Sonnet reasoning (first 200 chars)
-  11. U1: if Sonnet rejected but conf >= threshold-5 → Opus second opinion (with Haiku+Sonnet reasoning)
-      OR: if Sonnet found=True and 75≤conf<87 → Opus devil's advocate (with Haiku+Sonnet reasoning)
-      **Cumulative chain**: Opus sees both Haiku and Sonnet reasoning in PRIOR AI ASSESSMENTS block
+  9d. write_context() — generates storage/context/*.md for Claude CLI to read
+  9e. market_context["prescreen_setup"] = {type, reasoning, session} — injected before Sonnet call
+  10. scan_with_sonnet(failed_criteria=...) — single subprocess, Sonnet 4.6 + Opus sub-agent
+      Sonnet handles everything: analysis + Opus delegation for borderline 72-86% (internally)
+      → logs: AI reasoning (first 200 chars)
   12. save_scan(), action_taken = pending_* (if confirmed) or ai_rejected_* (if not)
   13. risk.validate_trade(), set_pending_alert(), telegram.send_trade_alert()
 

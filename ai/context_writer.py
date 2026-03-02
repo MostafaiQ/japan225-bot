@@ -5,8 +5,8 @@ These files give the Claude Code CLI subprocess richer, inspectable context
 than raw inline JSON. They also serve as a human-readable audit trail of
 exactly what information each AI tier had when it made its decision.
 
-Updated by monitor.py immediately before the Haiku pre-gate call.
-All three tiers (Haiku, Sonnet, Opus) benefit from the same snapshot.
+Updated by monitor.py immediately before the Sonnet call.
+Both tiers (Sonnet, Opus) benefit from the same snapshot.
 """
 import json
 import logging
@@ -31,7 +31,7 @@ def write_context(
     prescreen_direction: str = None,
     tf_5m: dict = None,
 ) -> None:
-    """Write all context files. Called once before the Haiku pre-gate."""
+    """Write all context files. Called once before the Sonnet call."""
     try:
         CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
         _write_market_snapshot(indicators, market_context, local_confidence, prescreen_direction, tf_5m)
@@ -102,6 +102,8 @@ def _write_market_snapshot(
         ("swing_low_20",     "Swing Low (20)"),
         ("bounce_starting",  "Bounce Starting"),
         ("above_ema50",      "Above EMA50"),
+        ("vwap",             "VWAP"),
+        ("above_vwap",       "Above VWAP"),
         # New indicators (Phase 1)
         ("ha_bullish",       "HA Bullish"),
         ("ha_streak",        "HA Streak"),

@@ -41,7 +41,7 @@ async def clear_cooldown():
     CLEAR_CD_PATH.parent.mkdir(parents=True, exist_ok=True)
     CLEAR_CD_PATH.touch()
     TRIGGER_PATH.touch()   # also force-scan so it takes effect immediately
-    return {"ok": True, "message": "Cooldown cleared. Escalating to Haiku on next scan."}
+    return {"ok": True, "message": "Cooldown cleared. Escalating to AI on next scan."}
 
 
 @router.post("/api/controls/restart")

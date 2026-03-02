@@ -2,6 +2,7 @@
 # Purpose: Local 11-criteria confidence scorer. Gates AI escalation (score must be >=60%).
 # Bidirectional: LONG and SHORT criteria differ.
 # Updated 2026-03-02: 11-criteria (C9 volume, C10 4H EMA50, C11 HA alignment); proportional scoring formula.
+# Updated 2026-03-02: C2 VWAP fallback (tertiary after BB+EMA50). C11 ha_streak in reason string.
 
 ## Constants
 BASE_SCORE=30  MAX_SCORE=100
@@ -20,8 +21,9 @@ SHORT_RSI_LOW/HIGH=55/75
 
 # 11 criteria:
 # 1. daily_trend:        LONG=above EMA200 daily.  SHORT=below EMA200 daily.  (EMA50 fallback)
-# 2. entry_level:        LONG=near BB_mid (±150pts) OR EMA50 (±150pts) OR BB_lower (±80pts).
-#                        SHORT=near BB_upper or BB_mid or EMA50_from_below (price<=ema50).
+# 2. entry_level:        LONG=near BB_mid (±150pts) OR EMA50 (±150pts) OR BB_lower (±80pts) OR VWAP below (±150pts).
+#                        SHORT=near BB_upper or BB_mid or EMA50_from_below (price<=ema50) OR VWAP above (±150pts).
+#                        VWAP is tertiary fallback — only fires when all BB/EMA50 checks miss.
 # 3. rsi_15m:            LONG standard=RSI 35-55.  LONG at BB lower=RSI 20-40 (deeply oversold).
 #                        SHORT=RSI 55-75.
 #                        Setup-aware: if price within 80pts of bb_lower → uses 20-40 zone.
@@ -37,6 +39,7 @@ SHORT_RSI_LOW/HIGH=55/75
 #                        Defaults pass (True) if tf_4h.get("above_ema50") is None.
 # 11. ha_aligned:        LONG=tf_15m ha_bullish is True.  SHORT=ha_bullish is False.
 #                        Defaults pass (True) if ha_bullish is None (older data without HA).
+#                        Reason string now includes ha_streak: "HA 15M: bullish, streak=4"
 
 ## Thresholds
 # HAIKU_MIN_SCORE=60 → requires 5/11 criteria (5/11=61≥60).

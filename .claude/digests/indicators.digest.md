@@ -1,6 +1,7 @@
 # core/indicators.py — DIGEST
 # Purpose: Pure math. No API calls, no side effects. Fully testable.
 # Updated 2026-03-02: Phase 1 indicators (HA, FVG, Fibonacci, PDH/PDL, liquidity sweep)
+# Updated 2026-03-02: _build_confluence() wired into all 4 setup paths. indicators_snapshot expanded with Phase 1 keys.
 
 ## Functions
 
@@ -29,6 +30,7 @@ analyze_timeframe(candles: list[dict]) -> dict
   #              ema200_available, above_ema200_fallback, bollinger_percentile,
   #              prev_close,
   #              volume_ratio, volume_signal ("HIGH"|"NORMAL"|"LOW"),
+  #              NOTE: volume uses prev completed candle if current < 20% of avg (partial candle guard)
   #              swing_high_20, swing_low_20,
   #              dist_to_swing_high, dist_to_swing_low,
   #   --- Phase 1 indicators ---
@@ -44,14 +46,22 @@ confirm_5m_entry(tf_5m: dict, direction: str) -> bool
   # LONG: price > EMA9, green candle, RSI > 45
   # SHORT: price < EMA9, red candle, RSI < 55
 
+_build_confluence(tf_15m: dict, direction: str) -> (list[str], list[str])
+  # Returns (confluence_list, counter_list) from Phase 1 indicators.
+  # Checks: fib_near, swept_low/high, fvg_bullish/bearish, VWAP above/below, ha_streak.
+  # Direction-aware: same signal can be confluence for LONG but counter for SHORT.
+
 detect_setup(tf_daily, tf_4h, tf_15m, tf_5m=None) -> dict
   # Bidirectional — NO daily hard gate. C1 in confidence.py penalizes counter-trend.
   # Returns: found, type, direction, entry, sl, tp, reasoning, indicators_snapshot
   # indicators_snapshot includes: price, rsi_15m, bb_mid/upper/lower, ema50_15m,
-  #   daily_bullish, rsi_4h, volume_signal, volume_ratio, swing_high/low_20, dist_to_swing_*
+  #   daily_bullish, rsi_4h, volume_signal, volume_ratio, swing_high/low_20, dist_to_swing_*,
+  #   vwap, above_vwap, ha_bullish, ha_streak, fib_near, fvg_bullish/bearish, fvg_level,
+  #   swept_low/high, prev_candle_high/low
+  # Reasoning now includes "Confluence: ..." and "Caution: ..." from _build_confluence().
   #
   # LONG paths:
-  #   bollinger_mid_bounce:   near_mid ±150pts, RSI 35-55, bounce_starting (price>prev_close)
+  #   bollinger_mid_bounce:   near_mid ±150pts, RSI 35-65, bounce_starting (price>prev_close)
   #                           above_ema50 gate REMOVED. EMA50 status in reasoning string for AI.
   #   bollinger_lower_bounce: near_lower ±80pts, RSI 20-40, lower_wick >=15pts
   #   ema50_bounce:           DISABLED (ENABLE_EMA50_BOUNCE_SETUP=False)

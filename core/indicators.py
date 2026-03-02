@@ -177,6 +177,205 @@ def heiken_ashi(
     return ha_open, ha_high, ha_low, ha_close
 
 
+def pivot_points(high: float, low: float, close: float) -> dict:
+    """
+    Standard floor pivot points from daily OHLC.
+    PP = (H+L+C)/3, R1-R3, S1-S3. All rounded to 1dp.
+    """
+    pp = (high + low + close) / 3
+    r1 = 2 * pp - low
+    s1 = 2 * pp - high
+    r2 = pp + (high - low)
+    s2 = pp - (high - low)
+    r3 = high + 2 * (pp - low)
+    s3 = low - 2 * (high - pp)
+    return {
+        "pp": round(pp, 1),
+        "r1": round(r1, 1), "r2": round(r2, 1), "r3": round(r3, 1),
+        "s1": round(s1, 1), "s2": round(s2, 1), "s3": round(s3, 1),
+    }
+
+
+def detect_candlestick_patterns(candles: list[dict]) -> dict:
+    """
+    Detect classic candlestick patterns from the last 3-5 candles.
+    Returns {pattern_name, pattern_direction, pattern_strength}.
+    """
+    result = {"pattern_name": None, "pattern_direction": None, "pattern_strength": None}
+    if not candles or len(candles) < 1:
+        return result
+
+    c = candles[-1]
+    o, h, l, cl = c["open"], c["high"], c["low"], c["close"]
+    body = abs(cl - o)
+    upper_wick = h - max(o, cl)
+    lower_wick = min(o, cl) - l
+    total_range = h - l
+    if total_range == 0:
+        return result
+
+    body_ratio = body / total_range
+
+    # --- Single candle patterns ---
+    # Doji: very small body relative to range
+    if body_ratio < 0.1:
+        result.update(pattern_name="doji", pattern_direction="neutral", pattern_strength="moderate")
+        return result
+
+    # Spinning top: small body, wicks on both sides
+    if body_ratio < 0.3 and upper_wick > body * 0.5 and lower_wick > body * 0.5:
+        result.update(pattern_name="spinning_top", pattern_direction="neutral", pattern_strength="weak")
+        return result
+
+    # Hammer: small body at top, long lower wick (bullish)
+    if lower_wick >= body * 2 and upper_wick < body * 0.5 and body_ratio < 0.4:
+        result.update(pattern_name="hammer", pattern_direction="bullish", pattern_strength="strong")
+        return result
+
+    # Inverted hammer: small body at bottom, long upper wick (bullish reversal)
+    if upper_wick >= body * 2 and lower_wick < body * 0.5 and body_ratio < 0.4:
+        result.update(pattern_name="inverted_hammer", pattern_direction="bullish", pattern_strength="moderate")
+        return result
+
+    # Marubozu: large body, minimal wicks
+    if body_ratio > 0.85:
+        direction = "bullish" if cl > o else "bearish"
+        result.update(pattern_name="marubozu", pattern_direction=direction, pattern_strength="strong")
+        return result
+
+    # --- Two candle patterns (need >= 2 candles) ---
+    if len(candles) >= 2:
+        prev = candles[-2]
+        po, ph, pl, pcl = prev["open"], prev["high"], prev["low"], prev["close"]
+        prev_body = abs(pcl - po)
+        prev_bullish = pcl > po
+        curr_bullish = cl > o
+
+        # Bullish engulfing: prev bearish, current bullish body engulfs prev body
+        if not prev_bullish and curr_bullish and o <= pcl and cl >= po and body > prev_body:
+            result.update(pattern_name="bullish_engulfing", pattern_direction="bullish", pattern_strength="strong")
+            return result
+
+        # Bearish engulfing: prev bullish, current bearish body engulfs prev body
+        if prev_bullish and not curr_bullish and o >= pcl and cl <= po and body > prev_body:
+            result.update(pattern_name="bearish_engulfing", pattern_direction="bearish", pattern_strength="strong")
+            return result
+
+        # Piercing line: prev bearish, current opens below prev low, closes above prev midpoint
+        prev_mid = (po + pcl) / 2
+        if not prev_bullish and curr_bullish and o < pl and cl > prev_mid and cl < po:
+            result.update(pattern_name="piercing_line", pattern_direction="bullish", pattern_strength="moderate")
+            return result
+
+        # Dark cloud cover: prev bullish, current opens above prev high, closes below prev midpoint
+        prev_mid_b = (po + pcl) / 2
+        if prev_bullish and not curr_bullish and o > ph and cl < prev_mid_b and cl > po:
+            result.update(pattern_name="dark_cloud_cover", pattern_direction="bearish", pattern_strength="moderate")
+            return result
+
+    # --- Three candle patterns (need >= 3 candles) ---
+    if len(candles) >= 3:
+        c1 = candles[-3]
+        c2 = candles[-2]
+        c3 = candles[-1]
+        c1_bull = c1["close"] > c1["open"]
+        c2_body = abs(c2["close"] - c2["open"])
+        c2_range = c2["high"] - c2["low"]
+        c3_bull = c3["close"] > c3["open"]
+
+        # Morning star: bearish + small body + bullish (reversal)
+        if (not c1_bull and c2_range > 0 and c2_body / c2_range < 0.3
+                and c3_bull and c3["close"] > (c1["open"] + c1["close"]) / 2):
+            result.update(pattern_name="morning_star", pattern_direction="bullish", pattern_strength="strong")
+            return result
+
+        # Evening star: bullish + small body + bearish (reversal)
+        if (c1_bull and c2_range > 0 and c2_body / c2_range < 0.3
+                and not c3_bull and c3["close"] < (c1["open"] + c1["close"]) / 2):
+            result.update(pattern_name="evening_star", pattern_direction="bearish", pattern_strength="strong")
+            return result
+
+        # Three white soldiers: 3 consecutive bullish with increasing closes
+        if (c1_bull and c2["close"] > c2["open"] and c3_bull
+                and c2["close"] > c1["close"] and c3["close"] > c2["close"]
+                and c2["open"] > c1["open"] and c3["open"] > c2["open"]):
+            result.update(pattern_name="three_white_soldiers", pattern_direction="bullish", pattern_strength="strong")
+            return result
+
+        # Three black crows: 3 consecutive bearish with decreasing closes
+        if (not c1_bull and c2["close"] < c2["open"] and not c3_bull
+                and c2["close"] < c1["close"] and c3["close"] < c2["close"]
+                and c2["open"] < c1["open"] and c3["open"] < c2["open"]):
+            result.update(pattern_name="three_black_crows", pattern_direction="bearish", pattern_strength="strong")
+            return result
+
+    return result
+
+
+def analyze_body_trend(candles: list[dict], lookback: int = 5) -> dict:
+    """
+    Analyze candle body sizes for momentum/exhaustion signals.
+    Returns {body_trend, consecutive_direction, avg_body_size, wick_ratio}.
+    """
+    result = {
+        "body_trend": "neutral",
+        "consecutive_direction": 0,
+        "avg_body_size": 0.0,
+        "wick_ratio": 0.0,
+    }
+    if not candles or len(candles) < 2:
+        return result
+
+    recent = candles[-lookback:] if len(candles) >= lookback else candles
+    bodies = [abs(c["close"] - c["open"]) for c in recent]
+    avg_body = sum(bodies) / len(bodies) if bodies else 0
+    result["avg_body_size"] = round(avg_body, 1)
+
+    # Body trend: compare first half vs second half avg body size
+    if len(bodies) >= 4:
+        mid = len(bodies) // 2
+        first_half = sum(bodies[:mid]) / mid
+        second_half = sum(bodies[mid:]) / len(bodies[mid:])
+        if first_half > 0:
+            ratio = second_half / first_half
+            if ratio > 1.3:
+                result["body_trend"] = "expanding"
+            elif ratio < 0.7:
+                result["body_trend"] = "contracting"
+
+    # Consecutive direction: count streak from end
+    streak = 0
+    for c in reversed(recent):
+        bullish = c["close"] > c["open"]
+        bearish = c["close"] < c["open"]
+        if streak == 0:
+            if bullish:
+                streak = 1
+            elif bearish:
+                streak = -1
+            else:
+                break  # doji breaks streak
+        elif streak > 0 and bullish:
+            streak += 1
+        elif streak < 0 and bearish:
+            streak -= 1
+        else:
+            break
+    result["consecutive_direction"] = streak
+
+    # Wick ratio: avg (upper + lower wick) / body
+    wick_ratios = []
+    for c in recent:
+        body = abs(c["close"] - c["open"])
+        if body > 0:
+            upper_wick = c["high"] - max(c["open"], c["close"])
+            lower_wick = min(c["open"], c["close"]) - c["low"]
+            wick_ratios.append((upper_wick + lower_wick) / body)
+    result["wick_ratio"] = round(sum(wick_ratios) / len(wick_ratios), 2) if wick_ratios else 0.0
+
+    return result
+
+
 def analyze_timeframe(candles: list[dict]) -> dict:
     """
     Full indicator analysis for a single timeframe.
@@ -252,10 +451,13 @@ def analyze_timeframe(candles: list[dict]) -> dict:
             result["bollinger_percentile"] = 0.5
 
     # Volume analysis — is this a high-conviction or thin signal?
+    # Always use the LAST COMPLETED candle (volumes[-2]), never the current forming one.
+    # The latest candle (volumes[-1]) is almost always partial — its volume is meaningless.
     if any(v > 0 for v in volumes):
         recent_vols = [v for v in volumes[-20:] if v > 0]
         avg_vol = sum(recent_vols) / len(recent_vols) if recent_vols else 0
-        vol_ratio = volumes[-1] / avg_vol if avg_vol > 0 else None
+        vol_completed = volumes[-2] if len(volumes) >= 2 else volumes[-1]
+        vol_ratio = vol_completed / avg_vol if avg_vol > 0 else None
         result["volume_ratio"] = round(vol_ratio, 2) if vol_ratio is not None else None
         result["volume_signal"] = (
             "HIGH"   if vol_ratio and vol_ratio > 1.5 else
@@ -360,6 +562,19 @@ def analyze_timeframe(candles: list[dict]) -> dict:
         result["swept_low"]  = False
         result["swept_high"] = False
 
+    # ── Candlestick Patterns ────────────────────────────────────────────────
+    cp = detect_candlestick_patterns(candles[-5:] if len(candles) >= 5 else candles)
+    result["candlestick_pattern"]   = cp["pattern_name"]
+    result["candlestick_direction"] = cp["pattern_direction"]
+    result["candlestick_strength"]  = cp["pattern_strength"]
+
+    # ── Body Trend Analysis ─────────────────────────────────────────────────
+    bt = analyze_body_trend(candles, lookback=5)
+    result["body_trend"]              = bt["body_trend"]
+    result["consecutive_direction"]   = bt["consecutive_direction"]
+    result["avg_body_size"]           = bt["avg_body_size"]
+    result["wick_ratio"]              = bt["wick_ratio"]
+
     return result
 
 
@@ -432,6 +647,139 @@ def confirm_5m_entry(tf_5m: dict, direction: str) -> bool:
         return price_below_ema9 and rsi_ok and body_red
 
 
+def _build_confluence(tf_15m: dict, direction: str, pivots: dict = None) -> tuple[list[str], list[str]]:
+    """
+    Build confluence and counter-signal lists from Phase 1 indicators.
+    Returns (confluence_list, counter_list).
+    """
+    conf = []
+    counter = []
+    is_long = direction == "LONG"
+
+    # Fibonacci: near a key fib level
+    fib_near = tf_15m.get("fib_near")
+    if fib_near:
+        conf.append(f"Fib {fib_near}")
+
+    # Liquidity sweep
+    swept_low = tf_15m.get("swept_low", False)
+    swept_high = tf_15m.get("swept_high", False)
+    if is_long:
+        if swept_low:
+            conf.append("swept low (bullish reversal)")
+        if swept_high:
+            counter.append("swept high (bearish reversal)")
+    else:
+        if swept_high:
+            conf.append("swept high (bearish reversal)")
+        if swept_low:
+            counter.append("swept low (bullish reversal)")
+
+    # FVG
+    fvg_bullish = tf_15m.get("fvg_bullish", False)
+    fvg_bearish = tf_15m.get("fvg_bearish", False)
+    if is_long:
+        if fvg_bullish:
+            conf.append("bullish FVG (demand zone)")
+        if fvg_bearish:
+            counter.append("bearish FVG (supply zone)")
+    else:
+        if fvg_bearish:
+            conf.append("bearish FVG (supply zone)")
+        if fvg_bullish:
+            counter.append("bullish FVG (demand zone)")
+
+    # VWAP
+    vwap_val = tf_15m.get("vwap")
+    price = tf_15m.get("price")
+    if vwap_val and price:
+        above_vwap = tf_15m.get("above_vwap")
+        if is_long:
+            if above_vwap is False:
+                conf.append("below VWAP (discount)")
+            elif above_vwap is True:
+                counter.append("above VWAP (premium)")
+        else:
+            if above_vwap is True:
+                conf.append("above VWAP (premium)")
+            elif above_vwap is False:
+                counter.append("below VWAP (discount)")
+
+    # HA streak
+    ha_streak = tf_15m.get("ha_streak")
+    if ha_streak is not None:
+        if is_long:
+            if ha_streak >= 2:
+                conf.append(f"HA streak {ha_streak}")
+            elif ha_streak <= -3:
+                counter.append(f"HA streak {ha_streak} (bearish)")
+        else:
+            if ha_streak <= -2:
+                conf.append(f"HA streak {ha_streak}")
+            elif ha_streak >= 3:
+                counter.append(f"HA streak {ha_streak} (bullish)")
+
+    # Pivot points — institutional S/R levels
+    if pivots and price:
+        if is_long:
+            for lvl in ("s1", "s2", "s3"):
+                val = pivots.get(lvl)
+                if val and abs(price - val) <= 100:
+                    conf.append(f"near pivot {lvl.upper()} ({val:.0f})")
+                    break
+            for lvl in ("r1", "r2"):
+                val = pivots.get(lvl)
+                if val and abs(price - val) <= 100:
+                    counter.append(f"near pivot {lvl.upper()} resistance ({val:.0f})")
+                    break
+        else:
+            for lvl in ("r1", "r2", "r3"):
+                val = pivots.get(lvl)
+                if val and abs(price - val) <= 100:
+                    conf.append(f"near pivot {lvl.upper()} ({val:.0f})")
+                    break
+            for lvl in ("s1", "s2"):
+                val = pivots.get(lvl)
+                if val and abs(price - val) <= 100:
+                    counter.append(f"near pivot {lvl.upper()} support ({val:.0f})")
+                    break
+
+    # Candlestick pattern
+    cp_dir = tf_15m.get("candlestick_direction")
+    cp_name = tf_15m.get("candlestick_pattern")
+    cp_str = tf_15m.get("candlestick_strength")
+    if cp_name and cp_dir and cp_dir != "neutral":
+        if is_long:
+            if cp_dir == "bullish":
+                conf.append(f"{cp_name} ({cp_str})")
+            elif cp_dir == "bearish":
+                counter.append(f"{cp_name} ({cp_str})")
+        else:
+            if cp_dir == "bearish":
+                conf.append(f"{cp_name} ({cp_str})")
+            elif cp_dir == "bullish":
+                counter.append(f"{cp_name} ({cp_str})")
+
+    # Body trend — exhaustion/momentum
+    body_trend = tf_15m.get("body_trend")
+    consec = tf_15m.get("consecutive_direction", 0)
+    wick_r = tf_15m.get("wick_ratio", 0)
+    if body_trend == "contracting":
+        if is_long and consec < 0:
+            conf.append("contracting bodies (sell-off exhaustion)")
+        elif not is_long and consec > 0:
+            conf.append("contracting bodies (rally exhaustion)")
+    elif body_trend == "expanding":
+        if is_long and consec > 0:
+            conf.append("expanding bodies (bullish momentum)")
+        elif not is_long and consec < 0:
+            conf.append("expanding bodies (bearish momentum)")
+    if wick_r and wick_r > 2.0:
+        counter.append(f"high wick ratio {wick_r:.1f} (indecision)")
+
+    return conf, counter
+
+
 def detect_setup(
     tf_daily: dict,
     tf_4h: dict,
@@ -473,6 +821,14 @@ def detect_setup(
     # Use EMA200 with fallback to EMA50 for trend determination
     daily_bullish = tf_daily.get("above_ema200_fallback")
 
+    # Pivot points from daily data (yesterday's completed candle)
+    pivots = {}
+    d_high = tf_daily.get("prev_candle_high")
+    d_low = tf_daily.get("prev_candle_low")
+    d_close = tf_daily.get("prev_close")
+    if d_high and d_low and d_close:
+        pivots = pivot_points(d_high, d_low, d_close)
+
     result["indicators_snapshot"] = {
         "price": price,
         "rsi_15m": rsi_15m,
@@ -489,6 +845,28 @@ def detect_setup(
         "swing_low_20": tf_15m.get("swing_low_20"),
         "dist_to_swing_high": tf_15m.get("dist_to_swing_high"),
         "dist_to_swing_low": tf_15m.get("dist_to_swing_low"),
+        # Phase 1 indicators
+        "vwap": tf_15m.get("vwap"),
+        "above_vwap": tf_15m.get("above_vwap"),
+        "ha_bullish": tf_15m.get("ha_bullish"),
+        "ha_streak": tf_15m.get("ha_streak"),
+        "fib_near": tf_15m.get("fib_near"),
+        "fvg_bullish": tf_15m.get("fvg_bullish"),
+        "fvg_bearish": tf_15m.get("fvg_bearish"),
+        "fvg_level": tf_15m.get("fvg_level"),
+        "swept_low": tf_15m.get("swept_low"),
+        "swept_high": tf_15m.get("swept_high"),
+        "prev_candle_high": tf_15m.get("prev_candle_high"),
+        "prev_candle_low": tf_15m.get("prev_candle_low"),
+        # Phase 2 indicators
+        "pivots": pivots,
+        "candlestick_pattern": tf_15m.get("candlestick_pattern"),
+        "candlestick_direction": tf_15m.get("candlestick_direction"),
+        "candlestick_strength": tf_15m.get("candlestick_strength"),
+        "body_trend": tf_15m.get("body_trend"),
+        "consecutive_direction": tf_15m.get("consecutive_direction"),
+        "avg_body_size": tf_15m.get("avg_body_size"),
+        "wick_ratio": tf_15m.get("wick_ratio"),
     }
 
     if not price:
@@ -523,6 +901,16 @@ def detect_setup(
             tp = entry + DEFAULT_TP_DISTANCE
 
             ema50_note = "above EMA50" if above_ema50 else "below EMA50 (AI to evaluate)"
+            conf_list, counter_list = _build_confluence(tf_15m, "LONG", pivots=pivots)
+            reasoning = (
+                f"LONG: BB mid bounce on 15M. "
+                f"Price {abs(price - bb_mid):.0f}pts from mid ({bb_mid:.0f}). "
+                f"RSI {rsi_15m:.1f} in zone. {ema50_note}. {daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
             result.update({
                 "found": True,
                 "type": "bollinger_mid_bounce",
@@ -530,11 +918,7 @@ def detect_setup(
                 "entry": round(entry, 1),
                 "sl": round(sl, 1),
                 "tp": round(tp, 1),
-                "reasoning": (
-                    f"LONG: BB mid bounce on 15M. "
-                    f"Price {abs(price - bb_mid):.0f}pts from mid ({bb_mid:.0f}). "
-                    f"RSI {rsi_15m:.1f} in zone. {ema50_note}. {daily_str}."
-                ),
+                "reasoning": reasoning,
             })
             return result
 
@@ -560,6 +944,18 @@ def detect_setup(
                 f" 4H RSI {rsi_4h:.1f} — multi-TF oversold confluence."
                 if rsi_4h and rsi_4h < 40 else ""
             )
+            conf_list, counter_list = _build_confluence(tf_15m, "LONG", pivots=pivots)
+            reasoning = (
+                f"LONG: BB lower band bounce on 15M. "
+                f"Price {abs(price - bb_lower):.0f}pts from lower ({bb_lower:.0f}). "
+                f"RSI {rsi_15m:.1f} deeply oversold. "
+                f"Lower wick {lower_wick_l:.0f}pts rejection. "
+                f"{daily_str}.{macro_note}"
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
             result.update({
                 "found": True,
                 "type": "bollinger_lower_bounce",
@@ -567,13 +963,7 @@ def detect_setup(
                 "entry": round(entry, 1),
                 "sl": round(sl, 1),
                 "tp": round(tp, 1),
-                "reasoning": (
-                    f"LONG: BB lower band bounce on 15M. "
-                    f"Price {abs(price - bb_lower):.0f}pts from lower ({bb_lower:.0f}). "
-                    f"RSI {rsi_15m:.1f} deeply oversold. "
-                    f"Lower wick {lower_wick_l:.0f}pts rejection. "
-                    f"{daily_str}.{macro_note}"
-                ),
+                "reasoning": reasoning,
             })
             return result
 
@@ -615,6 +1005,16 @@ def detect_setup(
             sl = entry + DEFAULT_SL_DISTANCE
             tp = entry - DEFAULT_TP_DISTANCE
 
+            conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+            reasoning = (
+                f"SHORT: BB upper rejection on 15M. "
+                f"Price {abs(price - bb_upper):.0f}pts from upper ({bb_upper:.0f}). "
+                f"RSI {rsi_15m:.1f} in zone. Below EMA50. {short_daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
             result.update({
                 "found": True,
                 "type": "bollinger_upper_rejection",
@@ -622,11 +1022,7 @@ def detect_setup(
                 "entry": round(entry, 1),
                 "sl": round(sl, 1),
                 "tp": round(tp, 1),
-                "reasoning": (
-                    f"SHORT: BB upper rejection on 15M. "
-                    f"Price {abs(price - bb_upper):.0f}pts from upper ({bb_upper:.0f}). "
-                    f"RSI {rsi_15m:.1f} in zone. Below EMA50. {short_daily_str}."
-                ),
+                "reasoning": reasoning,
             })
             return result
 
@@ -639,6 +1035,15 @@ def detect_setup(
             sl = entry + DEFAULT_SL_DISTANCE
             tp = entry - DEFAULT_TP_DISTANCE
 
+            conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+            reasoning = (
+                f"SHORT: EMA50 rejection on 15M. Price {dist_ema50:.0f}pts from EMA50 ({ema50_15m:.0f}), "
+                f"testing from below. RSI {rsi_15m:.1f}. {short_daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
             result.update({
                 "found": True,
                 "type": "ema50_rejection",
@@ -646,18 +1051,22 @@ def detect_setup(
                 "entry": round(entry, 1),
                 "sl": round(sl, 1),
                 "tp": round(tp, 1),
-                "reasoning": (
-                    f"SHORT: EMA50 rejection on 15M. Price {dist_ema50:.0f}pts from EMA50 ({ema50_15m:.0f}), "
-                    f"testing from below. RSI {rsi_15m:.1f}. {short_daily_str}."
-                ),
+                "reasoning": reasoning,
             })
             return result
 
-    rsi_str = f"{rsi_15m:.1f}" if rsi_15m is not None else "N/A"
+    diag_parts = []
+    if bb_mid is not None:
+        mid_dist = abs(price - bb_mid)
+        diag_parts.append(f"BB_mid={mid_dist:.0f}pts({'OK' if mid_dist <= 150 else 'FAR'})")
+    if rsi_15m is not None:
+        diag_parts.append(f"RSI={rsi_15m:.1f}({'OK' if 35 <= rsi_15m <= RSI_ENTRY_HIGH_BOUNCE else 'OUT'})")
+    prev_close = tf_15m.get("prev_close")
+    if prev_close is not None:
+        diag_parts.append(f"bounce={'OK' if price > prev_close else 'NO'}")
     daily_str = "bullish" if daily_bullish else ("bearish" if daily_bullish is not None else "N/A")
-    result["reasoning"] = (
-        f"No setup. Price={price:.0f} | RSI={rsi_str} | Daily={daily_str}"
-    )
+    diag = " | ".join(diag_parts)
+    result["reasoning"] = f"No setup. {diag} | Daily={daily_str}"
     return result
 
 

@@ -2,7 +2,7 @@
 Local confidence scorer — bidirectional 11-criteria system.
 
 Computes a confidence score LOCALLY from indicator data before any AI call.
-Acts as a gate: only escalate to Haiku/Sonnet/Opus if local score >= HAIKU_MIN_SCORE (60%).
+Acts as a gate: only escalate to Sonnet/Opus if local score >= HAIKU_MIN_SCORE (60%).
 
 Scoring (proportional):
   score = min(30 + int(passed * 70 / total_criteria), 100)
@@ -122,6 +122,8 @@ def compute_confidence(
     criteria["daily_trend"] = c1
 
     # ---- Criterion 2: Entry at Technical Level ----
+    vwap_15m = tf_15m.get("vwap")
+    above_vwap_15m = tf_15m.get("above_vwap")
     if direction == "LONG":
         # Near BB midband OR near EMA50 OR near BB lower band (deeply oversold bounce)
         near_bb_mid = (
@@ -133,13 +135,21 @@ def compute_confidence(
         near_bb_lower = (
             bb_lower is not None and abs(price - bb_lower) <= 80
         )
-        c2 = near_bb_mid or near_ema50 or near_bb_lower
+        # VWAP fallback: price below VWAP within 150pts (discount zone)
+        near_vwap_long = (
+            vwap_15m is not None
+            and above_vwap_15m is False
+            and abs(price - vwap_15m) <= BB_MID_THRESHOLD_PTS
+        )
+        c2 = near_bb_mid or near_ema50 or near_bb_lower or near_vwap_long
         if near_bb_lower:
             reasons["entry_level"] = f"Price {abs(price - bb_lower):.0f}pts from BB lower ({bb_lower:.0f})"
         elif near_bb_mid:
             reasons["entry_level"] = f"Price {abs(price - bb_mid):.0f}pts from BB mid ({bb_mid:.0f})"
         elif near_ema50:
             reasons["entry_level"] = f"Price {abs(price - ema50_15m):.0f}pts from EMA50 ({ema50_15m:.0f})"
+        elif near_vwap_long:
+            reasons["entry_level"] = f"Price {abs(price - vwap_15m):.0f}pts below VWAP ({vwap_15m:.0f}, discount)"
         else:
             reasons["entry_level"] = (
                 f"Not at tech level. BB mid dist: {abs(price - bb_mid):.0f}pts, "
@@ -160,13 +170,21 @@ def compute_confidence(
             and abs(price - ema50_15m) <= EMA50_THRESHOLD_PTS
             and price <= ema50_15m  # price came up to EMA50 from below = rejection
         )
-        c2 = near_bb_upper or near_bb_mid or near_ema50_short
+        # VWAP fallback: price above VWAP within 150pts (premium zone)
+        near_vwap_short = (
+            vwap_15m is not None
+            and above_vwap_15m is True
+            and abs(price - vwap_15m) <= BB_MID_THRESHOLD_PTS
+        )
+        c2 = near_bb_upper or near_bb_mid or near_ema50_short or near_vwap_short
         if near_bb_upper:
             reasons["entry_level"] = f"Price {abs(price - bb_upper):.0f}pts from BB upper ({bb_upper:.0f})"
         elif near_ema50_short:
             reasons["entry_level"] = f"Price {abs(price - ema50_15m):.0f}pts from EMA50 (rejection)"
         elif near_bb_mid:
             reasons["entry_level"] = f"Price {abs(price - bb_mid):.0f}pts from BB mid"
+        elif near_vwap_short:
+            reasons["entry_level"] = f"Price {abs(price - vwap_15m):.0f}pts above VWAP ({vwap_15m:.0f}, premium)"
         else:
             reasons["entry_level"] = "Not at technical level for short"
     criteria["entry_level"] = c2
@@ -292,13 +310,15 @@ def compute_confidence(
 
     # ---- Criterion 11: Heiken Ashi Alignment ----
     ha_bullish = tf_15m.get("ha_bullish")
+    ha_streak = tf_15m.get("ha_streak")
+    streak_str = f", streak={ha_streak}" if ha_streak is not None else ""
     if ha_bullish is not None:
         if direction == "LONG":
             c11 = bool(ha_bullish)
-            reasons["ha_aligned"] = f"HA 15M: {'bullish' if c11 else 'bearish'}"
+            reasons["ha_aligned"] = f"HA 15M: {'bullish' if c11 else 'bearish'}{streak_str}"
         else:
             c11 = not bool(ha_bullish)
-            reasons["ha_aligned"] = f"HA 15M: {'bearish (aligned SHORT)' if c11 else 'bullish (counter-HA)'}"
+            reasons["ha_aligned"] = f"HA 15M: {'bearish (aligned SHORT)' if c11 else 'bullish (counter-HA)'}{streak_str}"
     else:
         c11 = True  # default pass if HA unavailable (older candle data)
         reasons["ha_aligned"] = "HA unavailable — defaulting pass"

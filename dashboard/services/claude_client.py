@@ -404,7 +404,7 @@ SELECT
 
 Also read storage/data/chat_usage.json for dashboard chat usage by week.
 
-Report: total API spend, cost per trade evaluation, Haiku/Sonnet/Opus split if available.
+Report: total API spend, cost per trade evaluation, Sonnet/Opus split if available.
 Note: Opus pricing is $15/$75 per million tokens (corrected 2026-03-01).
 """
 

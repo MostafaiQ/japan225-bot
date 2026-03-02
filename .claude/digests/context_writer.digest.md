@@ -13,6 +13,7 @@ write_context(indicators, market_context, web_research, recent_scans, recent_tra
 ## Files Written (storage/context/)
 market_snapshot.md  — session, mode, pre-screen setup (incl. Entry TF label), local confidence breakdown,
                       indicators for D1 / 4H / 15M / 5M (all fields, readable format)
+                      FIELDS includes: VWAP, Above VWAP (added Phase 1 wiring)
 recent_activity.md  — last 15 scans (timestamp, session, price, action, conf%)
                       last 10 closed trades (direction, setup, outcome, P&L, duration)
                       win rate summary by setup type

@@ -121,7 +121,6 @@ def get_tokens_today() -> dict:
     """Estimate token usage today from scan action_taken values."""
     today = date.today().isoformat()
     # Token estimates per AI tier (input+output combined)
-    HAIKU_TOKENS = 500
     SONNET_TOKENS = 1200
     OPUS_TOKENS = 1500
     try:
@@ -133,11 +132,9 @@ def get_tokens_today() -> dict:
         total = 0
         for r in rows:
             act = r["action_taken"] or ""
-            if act.startswith("haiku_rejected"):
-                total += HAIKU_TOKENS
-            elif act.startswith("ai_rejected") or act.startswith("pending"):
-                total += HAIKU_TOKENS + SONNET_TOKENS  # Haiku approved + Sonnet
-            # no_setup, cooldown, low_conf etc = 0 tokens (no AI called)
+            if act.startswith("ai_rejected") or act.startswith("pending"):
+                total += SONNET_TOKENS  # Sonnet (+ Opus if borderline, but estimate conservatively)
+            # no_setup, cooldown, low_conf, haiku_rejected (legacy) etc = 0 tokens (no AI called)
         return {"tokens": total, "scans": len(rows)}
     except Exception:
         return {"tokens": 0, "scans": 0}

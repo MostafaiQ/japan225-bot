@@ -25,7 +25,7 @@ RUNNER_VELOCITY_THRESHOLD=0.75  TRAILING_STOP_DISTANCE=150  TRAILING_STOP_INCREM
 ## Indicators
 BOLLINGER_PERIOD=20  BOLLINGER_STD=2.0  EMA_FAST=50  EMA_SLOW=200  RSI_PERIOD=14
 RSI_OVERSOLD=30  RSI_OVERBOUGHT=70  RSI_ENTRY_LOW=35  RSI_ENTRY_HIGH=55
-RSI_ENTRY_HIGH_BOUNCE=55   # RSI upper gate for BB mid bounce (raised from 48; AI gates RSI 48-55 range)
+RSI_ENTRY_HIGH_BOUNCE=65   # RSI upper gate for BB mid bounce (raised from 55; AI gates RSI 55-65 momentum zone)
 
 ## Confidence
 CONFIDENCE_BASE=30  CONFIDENCE_CRITERIA = 8 keys × 10pts each  # max = 110, capped at 100
@@ -33,17 +33,16 @@ CONFIDENCE_BASE=30  CONFIDENCE_CRITERIA = 8 keys × 10pts each  # max = 110, cap
 ## Sessions (Kuwait UTC+3 reference — session.py uses UTC internally)
 SESSIONS dict: tokyo_open/mid/late/close, london_open/mid/late, ny_open/mid/late, off_hours
 
-## AI models (updated 2026-03-01 — 3-tier pipeline)
-SONNET_MODEL="claude-sonnet-4-5-20250929"  $3/$15 per million tokens
-OPUS_MODEL="claude-opus-4-6"               $15/$75 per million tokens  ← corrected
-HAIKU_MODEL="claude-haiku-4-5-20251001"    $0.80/$4 per million tokens  ← new pre-gate
+## AI models (updated 2026-03-02 — 2-tier pipeline, Haiku removed)
+SONNET_MODEL="claude-sonnet-4-6"           $3/$15 per million tokens (adaptive thinking on by default)
+OPUS_MODEL="claude-opus-4-6"               $15/$75 per million tokens
 AI_MAX_TOKENS=2000  AI_TEMPERATURE=0.1
 
 ## Monitor timing
 MONITOR_INTERVAL_SECONDS=2   SCAN_INTERVAL_SECONDS=300  OFFHOURS_INTERVAL_SECONDS=1800
 POSITION_CHECK_EVERY_N_CYCLES=15  # 15 × 2s = 30s position check (2 calls/min to positions endpoint)
-AI_COOLDOWN_MINUTES=30  # Set AFTER Haiku approves, not at local gate
-HAIKU_MIN_SCORE=60      # Effective floor already 50 (C7+C8 always True → 30+2×10=50). 60 = first real filter.
+AI_COOLDOWN_MINUTES=15
+HAIKU_MIN_SCORE=60      # Local confidence floor before AI (legacy name). Effective floor already 50 (C7+C8).
                         # Requires ≥1 technical criterion beyond C7/C8. Scores discrete: 30,40,50,60,...
 PRICE_DRIFT_ABORT_PTS=20  STALE_DATA_THRESHOLD=10
 ADVERSE_LOOKBACK_READINGS=150  # 150 × 2s = 5min adverse window

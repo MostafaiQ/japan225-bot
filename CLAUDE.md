@@ -21,11 +21,12 @@
 | ig_client | IG REST API, connect, prices, open/modify/close |
 | risk_manager | validate_trade(), 11 checks, get_safe_lot_size() |
 | exit_manager | evaluate_position(), ExitPhase, trailing stop |
-| analyzer | AIAnalyzer, Haiku/Sonnet/Opus pipeline, tool use schema |
+| analyzer | AIAnalyzer, Sonnet/Opus 2-tier pipeline, JSON schema |
 | context_writer | write_context(), market_snapshot/recent_activity/macro/live_edge |
 | telegram_bot | Commands, buttons, alert flow |
 | dashboard | FastAPI routes, systemd units, ngrok |
 | claude_client | Dashboard chat, history summarizer, usage tracker |
+| scan_analyzer | Cron-based missed-move tracker, rejection analysis |
 
 ## Response Style (dashboard chat)
 - Status queries: 2–4 sentences max. No headers.
@@ -97,7 +98,7 @@ User is a trader, not a developer. When they ask operational questions:
 ```
 monitor.py              Main process (systemd: japan225-bot)
 config/settings.py      ALL constants — never scatter config
-ai/analyzer.py          Haiku→Sonnet→Opus pipeline, tool use schema
+ai/analyzer.py          Sonnet→Opus 2-tier pipeline, JSON schema
 storage/data/           trading.db | bot_state.json | prompt_learnings.json
 storage/data/           chat_usage.json | dashboard_overrides.json
 .claude/digests/        14 digest files — always prefer over raw source

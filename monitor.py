@@ -459,23 +459,38 @@ class TradingMonitor:
 
         current_price = market.get("bid", 0)
 
-        # --- Fetch candles: 5M+15M first, then Daily (sequential to avoid rate-limit bursts) ---
-        candles_15m, candles_5m = await asyncio.gather(
-            asyncio.get_event_loop().run_in_executor(
-                None, lambda: self.ig.get_prices("MINUTE_15", PRE_SCREEN_CANDLES)
-            ),
-            asyncio.get_event_loop().run_in_executor(
+        # --- Fetch candles ---
+        # Cold start (full fetch, many pages): ALL sequential to stay within 28 req/min
+        # Warm (delta, 1 page each): 5M+15M parallel, Daily time-gated (usually skipped)
+        cold_start = not self.ig._cache_full_fetch_done.get("MINUTE_15", False)
+        loop = asyncio.get_event_loop()
+        if cold_start:
+            # Sequential: 5M (~5s) → 15M (~11s) → Daily (~13s). Token bucket handles pacing.
+            candles_5m = await loop.run_in_executor(
                 None, lambda: self.ig.get_prices("MINUTE_5", MINUTE_5_CANDLES)
-            ),
-        )
+            )
+            candles_15m = await loop.run_in_executor(
+                None, lambda: self.ig.get_prices("MINUTE_15", PRE_SCREEN_CANDLES)
+            )
+            candles_daily = await loop.run_in_executor(
+                None, lambda: self.ig.get_prices("DAY", DAILY_EMA200_CANDLES)
+            )
+        else:
+            # Delta fetches: 1 page each, safe to parallel. Daily usually time-gated.
+            candles_15m, candles_5m = await asyncio.gather(
+                loop.run_in_executor(
+                    None, lambda: self.ig.get_prices("MINUTE_15", PRE_SCREEN_CANDLES)
+                ),
+                loop.run_in_executor(
+                    None, lambda: self.ig.get_prices("MINUTE_5", MINUTE_5_CANDLES)
+                ),
+            )
+            candles_daily = await loop.run_in_executor(
+                None, lambda: self.ig.get_prices("DAY", DAILY_EMA200_CANDLES)
+            )
         if not candles_15m:
             logger.warning("Failed to fetch 15M candles")
             return SCAN_INTERVAL_SECONDS
-        # Daily fetched after 15M/5M with delay to avoid 28 req/min rate-limit collision
-        await asyncio.sleep(5)
-        candles_daily = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: self.ig.get_prices("DAY", DAILY_EMA200_CANDLES)
-        )
 
         tf_15m = analyze_timeframe(candles_15m)
         tf_daily = analyze_timeframe(candles_daily) if candles_daily else {}
@@ -569,13 +584,11 @@ class TradingMonitor:
             })
             return SCAN_INTERVAL_SECONDS
 
-        # --- Haiku gate at HAIKU_MIN_SCORE (35%) — lower than old 50% hard floor ---
-        # Setups scoring 35-49% are now evaluated by Haiku with full macro context instead of
-        # being silently dropped. The static local score only sees technical criteria; Haiku
-        # can see USD/JPY trend, VIX, news, and reason about whether external factors override.
+        # --- Local confidence floor at HAIKU_MIN_SCORE (60%) ---
+        # Filters true technical junk before AI evaluation. Sonnet handles borderline cases.
         if local_conf["score"] < HAIKU_MIN_SCORE:
             logger.info(
-                f"Local score {local_conf['score']}% below Haiku floor ({HAIKU_MIN_SCORE}%). "
+                f"Local score {local_conf['score']}% below floor ({HAIKU_MIN_SCORE}%). "
                 f"Skipping (true technical junk)."
             )
             self._last_scan_detail = {"outcome": "low_conf", "direction": prescreen_direction, "confidence": local_conf["score"], "price": current_price, "setup_type": setup.get("type")}
@@ -591,6 +604,7 @@ class TradingMonitor:
                            and k not in ("no_event_1hr", "no_friday_monthend")]
         live_edge = self.storage.get_ai_context_block()
         indicators = {"m15": tf_15m, "h4": tf_4h, "daily": tf_daily}
+        indicators["pivots"] = setup.get("indicators_snapshot", {}).get("pivots", {})
         if tf_5m:
             indicators["m5"] = tf_5m
 
@@ -616,45 +630,15 @@ class TradingMonitor:
         )
 
         entry_tf = tf_5m if entry_timeframe == "5m" else tf_15m
-        haiku_result = self.analyzer.precheck_with_haiku(
-            setup_type=setup.get("type", ""),
-            direction=prescreen_direction,
-            rsi_15m=entry_tf.get("rsi", 0),
-            volume_signal=entry_tf.get("volume_signal", "NORMAL"),
-            session=session.get("name", ""),
-            live_edge_block=live_edge,
-            local_confidence=local_conf,
-            web_research=web_research,
-            failed_criteria=failed_criteria,
-            indicators=indicators,
-        )
-        haiku_cost = haiku_result.get("_cost", 0)
-
-        if not haiku_result.get("should_escalate", True):
-            logger.info(f"Haiku gate: REJECTED. {haiku_result.get('reason', '')}")
-            self._last_scan_detail = {"outcome": "haiku_rejected", "direction": prescreen_direction, "confidence": local_conf["score"], "price": current_price, "setup_type": setup.get("type"), "reason": haiku_result.get("reason", "")[:80]}
-            self.storage.save_scan({
-                "timestamp": datetime.now().isoformat(),
-                "session": session["name"],
-                "price": current_price,
-                "indicators": {},
-                "market_context": {},
-                "analysis": {
-                    "setup_found": False,
-                    "reasoning": f"[Haiku rejected] {haiku_result.get('reason', '')}",
-                },
-                "setup_found": False,
-                "confidence": local_conf["score"],
-                "action_taken": f"haiku_rejected_{prescreen_direction.lower()}",
-                "api_cost": haiku_cost,
-            })
-            # No cooldown on Haiku reject — subscription is $0/call, scan again in 5 min
-            return SCAN_INTERVAL_SECONDS
-
-        # Haiku approved → escalate to Sonnet. No cooldown — if Sonnet/Opus or user rejects,
-        # bot is free to catch the next setup immediately.
         logger.info(
-            f"Haiku gate: APPROVED (local={local_conf['score']}%). Escalating to Sonnet..."
+            f"Volume signals → 5M: {tf_5m.get('volume_signal')}({tf_5m.get('volume_ratio')}) "
+            f"| 15M: {tf_15m.get('volume_signal')}({tf_15m.get('volume_ratio')}) "
+            f"| Daily: {tf_daily.get('volume_signal')}({tf_daily.get('volume_ratio')})"
+        )
+
+        # --- Direct to Sonnet (Haiku pre-gate removed — adds latency with no value at $0/call) ---
+        logger.info(
+            f"Local score {local_conf['score']}%. Escalating to Sonnet..."
         )
 
         recent_scans = self.storage.get_recent_scans(5)
@@ -677,78 +661,26 @@ class TradingMonitor:
             prescreen_direction=prescreen_direction,
             local_confidence=local_conf,
             live_edge_block=live_edge,
-            haiku_reasoning=haiku_result.get("reason", ""),
+            failed_criteria=failed_criteria,
         )
 
-        sonnet_confidence = sonnet_result.get("confidence", 0)
-        sonnet_found = sonnet_result.get("setup_found", False)
-        logger.info(f"Sonnet: found={sonnet_found}, confidence={sonnet_confidence}%")
-        logger.info(f"Sonnet reasoning: {sonnet_result.get('reasoning', 'N/A')[:200]}")  # U2
-
-        # Determine thresholds for Opus escalation logic
-        _min_conf_dir = MIN_CONFIDENCE_SHORT if prescreen_direction == "SHORT" else MIN_CONFIDENCE
-
-        # U1: Opus second opinion for near-threshold Sonnet rejections
-        # U: Original Opus devil's advocate for confident Sonnet approvals
+        # Sonnet 4.6 handles everything in one subprocess:
+        # - Analysis + self-review (always)
+        # - Opus sub-agent delegation (when confidence 72-86%, handled internally)
         final_result = sonnet_result
-        if not sonnet_found and sonnet_confidence >= _min_conf_dir - 5:
-            # Sonnet said no but confidence is borderline — escalate to Opus for second opinion
-            logger.info(
-                f"Sonnet near-threshold rejection ({sonnet_confidence}% >= {_min_conf_dir - 5}%). "
-                f"Opus second opinion..."
-            )
-            opus_result = self.analyzer.confirm_with_opus(
-                indicators=indicators,
-                recent_scans=recent_scans,
-                market_context=market_context,
-                web_research=web_research,
-                sonnet_analysis=sonnet_result,
-                live_edge_block=live_edge,
-                haiku_reasoning=haiku_result.get("reason", ""),
-            )
-            final_result = opus_result
-            if opus_result.get("setup_found"):
-                logger.info(
-                    f"Opus overrode Sonnet rejection: "
-                    f"found=True, confidence={opus_result.get('confidence')}%"
-                )
-            else:
-                logger.info(
-                    f"Opus confirms Sonnet rejection. Confidence={opus_result.get('confidence')}%"
-                )
-        elif sonnet_found and 75 <= sonnet_confidence < 87:
-            # Sonnet confident → Opus devil's advocate
-            logger.info(f"Sonnet at {sonnet_confidence}%. Escalating to Opus...")
-            opus_result = self.analyzer.confirm_with_opus(
-                indicators=indicators,
-                recent_scans=recent_scans,
-                market_context=market_context,
-                web_research=web_research,
-                sonnet_analysis=sonnet_result,
-                live_edge_block=live_edge,
-                haiku_reasoning=haiku_result.get("reason", ""),
-            )
-            final_result = opus_result
-            logger.info(
-                f"Opus: found={opus_result.get('setup_found')}, "
-                f"confidence={opus_result.get('confidence')}%"
-            )
+        final_confidence = final_result.get("confidence", 0)
+        logger.info(f"AI: found={final_result.get('setup_found')}, confidence={final_confidence}%")
+        logger.info(f"AI reasoning: {final_result.get('reasoning', 'N/A')[:200]}")
 
         # --- Determine final outcome before saving ---
-        direction = final_result.get("direction", prescreen_direction)
+        direction = final_result.get("direction") or prescreen_direction
         min_conf = MIN_CONFIDENCE_SHORT if direction == "SHORT" else MIN_CONFIDENCE
-        final_confidence = final_result.get("confidence", 0)
         ai_confirmed = final_result.get("setup_found", False) and final_confidence >= min_conf
 
-        # U3: action_taken reflects actual outcome — not always "pending_*"
         action_taken = f"pending_{direction.lower()}" if ai_confirmed else f"ai_rejected_{direction.lower()}"
 
         # --- Save scan ---
-        scan_cost = (
-            haiku_cost
-            + sonnet_result.get("_cost", 0)
-            + (final_result.get("_cost", 0) if final_result is not sonnet_result else 0)
-        )
+        scan_cost = final_result.get("_cost", 0)
         self.storage.save_scan({
             "timestamp": datetime.now().isoformat(),
             "session": session["name"],
@@ -779,7 +711,6 @@ class TradingMonitor:
             logger.error("Could not get account balance")
             return SCAN_INTERVAL_SECONDS
 
-        lots = self.risk.get_safe_lot_size(balance, current_price)
         entry = final_result.get("entry", current_price)
         sl = final_result.get("stop_loss", 0)
         tp = final_result.get("take_profit", 0)
@@ -787,6 +718,10 @@ class TradingMonitor:
         if not sl or not tp:
             logger.error(f"AI returned null SL or TP: sl={sl}, tp={tp}")
             return SCAN_INTERVAL_SECONDS
+
+        sl_distance = abs(entry - sl)
+        lots = self.risk.get_safe_lot_size(balance, current_price, sl_distance=sl_distance)
+        logger.info(f"Lot size: {lots} (balance=${balance:.2f}, SL={sl_distance:.0f}pts)")
 
         validation = self.risk.validate_trade(
             direction=direction,

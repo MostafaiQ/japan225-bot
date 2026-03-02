@@ -231,15 +231,13 @@ class RiskManager:
         if not checks["calendar_block"]["pass"]:
             rejection = rejection or checks["calendar_block"]["detail"]
         
-        # --- CHECK 10: Dollar Risk ---
+        # --- CHECK 10: Dollar Risk (informational — margin check is the real safety net) ---
         dollar_risk = lots * CONTRACT_SIZE * risk
-        max_dollar_risk = balance * 0.10  # Never risk more than 10% on one trade
+        dollar_risk_pct = dollar_risk / balance * 100 if balance > 0 else 100
         checks["dollar_risk"] = {
-            "pass": dollar_risk <= max_dollar_risk,
-            "detail": f"Risk ${dollar_risk:.2f} on this trade (max ${max_dollar_risk:.2f})",
+            "pass": True,  # Margin check (CHECK 2) is the binding constraint
+            "detail": f"Risk ${dollar_risk:.2f} ({dollar_risk_pct:.1f}% of balance) on this trade",
         }
-        if not checks["dollar_risk"]["pass"]:
-            rejection = rejection or f"Dollar risk ${dollar_risk:.2f} exceeds 10% of balance."
             
         # --- CHECK 11: Lot Size Valid ---
         checks["lot_size"] = {
@@ -272,9 +270,12 @@ class RiskManager:
             },
         }
     
-    def get_safe_lot_size(self, balance: float, price: float) -> float:
-        """Calculate the maximum safe lot size given current balance."""
+    def get_safe_lot_size(self, balance: float, price: float, sl_distance: float = 150) -> float:
+        """Calculate the maximum safe lot size given current balance.
+        Margin constraint is the binding limit (MAX_MARGIN_PERCENT of balance).
+        Maximizes lot size up to the margin cap.
+        """
         max_margin = balance * MAX_MARGIN_PERCENT
         margin_per_lot = CONTRACT_SIZE * price * MARGIN_FACTOR
-        max_lots = max_margin / margin_per_lot
+        max_lots = max_margin / margin_per_lot if margin_per_lot > 0 else 0
         return max(MIN_LOT_SIZE, int(max_lots * 100) / 100)

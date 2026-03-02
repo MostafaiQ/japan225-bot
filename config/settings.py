@@ -107,7 +107,7 @@ RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
 RSI_ENTRY_LOW = 35            # Ideal entry RSI range (15M)
 RSI_ENTRY_HIGH = 55
-RSI_ENTRY_HIGH_BOUNCE = 55    # RSI upper gate for BB mid bounce (AI is quality gate for RSI 48-55 range)
+RSI_ENTRY_HIGH_BOUNCE = 65    # RSI upper gate for BB mid bounce (AI gates 55-65 momentum zone)
 
 # ============================================
 # CONFIDENCE SCORING (8-point system)
@@ -166,9 +166,8 @@ MINUTE_5_CANDLES = 100  # 5M lookback for fallback entry TF (~8h of 5M data, cov
 # ============================================
 # AI MODELS
 # ============================================
-SONNET_MODEL = "claude-sonnet-4-5-20250929"
+SONNET_MODEL = "claude-sonnet-4-6"
 OPUS_MODEL   = "claude-opus-4-6"
-HAIKU_MODEL  = "claude-haiku-4-5-20251001"
 AI_MAX_TOKENS = 2000
 AI_TEMPERATURE = 0.1  # Low temp for consistent analysis
 
@@ -184,10 +183,10 @@ MONITOR_USE_STREAMING = False       # Start with REST polling, upgrade later
 # ============================================
 # ENTRY SCANNING
 # ============================================
-AI_COOLDOWN_MINUTES = 15            # Suppress duplicate AI escalations (set AFTER Haiku approves)
-HAIKU_MIN_SCORE = 60                # Minimum local score to reach Haiku gate
+AI_COOLDOWN_MINUTES = 15            # Suppress duplicate AI escalations
+HAIKU_MIN_SCORE = 60                # Local confidence floor before AI evaluation (legacy name, kept for compat)
                                     # CONFIDENCE_BASE=30, criteria add 10pts each → scores are discrete: 30,40,50,...
-                                    # C7/C8 (event/blackout) are always True when Haiku is reached (hard-blocked before)
+                                    # C7/C8 (event/blackout) are always True when AI is reached (hard-blocked before)
                                     # → effective floor is already 50 (30 + 2×10). Setting 50 does nothing.
                                     # 60 = first meaningful threshold: requires ≥1 technical criterion beyond C7/C8
 PRICE_DRIFT_ABORT_PTS = 20          # Abort trade if price moved this far during analysis

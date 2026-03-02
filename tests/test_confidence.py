@@ -425,3 +425,83 @@ class TestHaAlignedC11:
         tf_15m["ha_bullish"] = False
         result_fail = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         assert result_pass["score"] > result_fail["score"]
+
+
+# ── C2: VWAP Fallback ───────────────────────────────────────────────────────
+
+class TestC2VwapFallback:
+    def test_vwap_discount_passes_long_c2(self):
+        """LONG: price below VWAP within 150pts → C2 passes as fallback."""
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        # Break BB and EMA50 proximity so only VWAP can save C2
+        tf_15m["bollinger_mid"] = tf_15m["price"] + 200
+        tf_15m["bollinger_lower"] = tf_15m["price"] - 200
+        tf_15m["ema50"] = tf_15m["price"] + 200
+        # VWAP is above price (discount zone)
+        tf_15m["vwap"] = tf_15m["price"] + 100
+        tf_15m["above_vwap"] = False
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["entry_level"] is True
+        assert "VWAP" in result["reasons"]["entry_level"]
+
+    def test_vwap_premium_passes_short_c2(self):
+        """SHORT: price above VWAP within 150pts → C2 passes as fallback."""
+        tf_daily, tf_4h, tf_15m = ideal_short_setup()
+        # Break BB and EMA50 proximity so only VWAP can save C2
+        tf_15m["bollinger_upper"] = tf_15m["price"] - 200
+        tf_15m["bollinger_mid"] = tf_15m["price"] - 200
+        tf_15m["ema50"] = tf_15m["price"] + 200  # price below ema50 but dist > 150
+        # VWAP is below price (premium zone)
+        tf_15m["vwap"] = tf_15m["price"] - 100
+        tf_15m["above_vwap"] = True
+        result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["entry_level"] is True
+        assert "VWAP" in result["reasons"]["entry_level"]
+
+    def test_no_vwap_no_change(self):
+        """Without VWAP data, C2 fallback doesn't fire."""
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m["bollinger_mid"] = tf_15m["price"] + 200
+        tf_15m["bollinger_lower"] = tf_15m["price"] - 200
+        tf_15m["ema50"] = tf_15m["price"] + 200
+        tf_15m["vwap"] = None
+        tf_15m["above_vwap"] = None
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["entry_level"] is False
+
+    def test_wrong_side_vwap_no_pass_long(self):
+        """LONG: price ABOVE VWAP should not trigger the discount fallback."""
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m["bollinger_mid"] = tf_15m["price"] + 200
+        tf_15m["bollinger_lower"] = tf_15m["price"] - 200
+        tf_15m["ema50"] = tf_15m["price"] + 200
+        tf_15m["vwap"] = tf_15m["price"] - 100
+        tf_15m["above_vwap"] = True  # above VWAP = premium, not discount
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["entry_level"] is False
+
+
+# ── C11: ha_streak in reason ─────────────────────────────────────────────────
+
+class TestC11HaStreakReason:
+    def test_streak_in_reason_string(self):
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m["ha_bullish"] = True
+        tf_15m["ha_streak"] = 4
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert "streak=4" in result["reasons"]["ha_aligned"]
+
+    def test_none_streak_no_crash(self):
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        tf_15m["ha_bullish"] = True
+        tf_15m["ha_streak"] = None
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["criteria"]["ha_aligned"] is True
+        assert "streak=" not in result["reasons"]["ha_aligned"]
+
+    def test_negative_streak_in_short_reason(self):
+        tf_daily, tf_4h, tf_15m = ideal_short_setup()
+        tf_15m["ha_bullish"] = False
+        tf_15m["ha_streak"] = -3
+        result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
+        assert "streak=-3" in result["reasons"]["ha_aligned"]

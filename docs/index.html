@@ -819,7 +819,7 @@ function renderStatus(d) {
       low_conf:      '<span class="badge b-neutral">Low Conf</span>',
       event_block:   '<span class="badge b-warn">Event Block</span>',
       friday_block:  '<span class="badge b-warn">Fri Block</span>',
-      haiku_rejected:'<span class="badge b-neutral">Haiku ✗</span>',
+      haiku_rejected:'<span class="badge b-neutral">Pre-gate ✗</span>',
       ai_rejected:   '<span class="badge b-neutral">AI ✗</span>',
       trade_alert:   '<span class="badge b-long">Trade Alert!</span>',
     };
@@ -900,9 +900,9 @@ const _actionLabels = {
   friday_block_short:  '🚫 Fri (S)',
   low_conf_long:       '📉 Low conf (L)',
   low_conf_short:      '📉 Low conf (S)',
-  haiku_rejected:       '🤖 Haiku ✗',
-  haiku_rejected_long:  '🤖 Haiku ✗ (L)',
-  haiku_rejected_short: '🤖 Haiku ✗ (S)',
+  haiku_rejected:       '🤖 Pre-gate ✗',
+  haiku_rejected_long:  '🤖 Pre-gate ✗ (L)',
+  haiku_rejected_short: '🤖 Pre-gate ✗ (S)',
   ai_rejected_long:     '🤖 AI ✗ (L)',
   ai_rejected_short:    '🤖 AI ✗ (S)',
   pending:              '📤 Alert sent',
@@ -963,7 +963,7 @@ function _renderScansTable(scans) {
       ? (Date.now() - new Date(_utc(s.timestamp))) / 60000
       : Infinity;
     const escalateBtn = isCooldown && cdAge < 15
-      ? ` <button class="btn btn-warn btn-sm" style="padding:2px 7px;font-size:11px;" onclick="escalateNow(this)" title="Clear cooldown and escalate to Haiku immediately">↑ Escalate</button>`
+      ? ` <button class="btn btn-warn btn-sm" style="padding:2px 7px;font-size:11px;" onclick="escalateNow(this)" title="Clear cooldown and escalate to AI immediately">↑ Escalate</button>`
       : '';
     return `<tr>
       <td>${fmtTime(s.timestamp)}</td>
