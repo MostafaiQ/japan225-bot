@@ -25,7 +25,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TRADE_EXPIRY_MINUTES
+from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TRADE_EXPIRY_MINUTES, AI_COOLDOWN_MINUTES
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +178,8 @@ class TelegramBot:
     def _status_text(self) -> str:
         pos = self.storage.get_position_state()
         acc = self.storage.get_account_state()
+        on_cd = self.storage.is_ai_on_cooldown(AI_COOLDOWN_MINUTES)
+        cd_info = self.storage.get_ai_cooldown()
         lines = ["🤖 <b>Japan 225 Bot</b>", DIV]
         if pos.get("has_open"):
             pnl = pos.get("unrealised_pnl", 0) or 0
@@ -195,10 +197,23 @@ class TelegramBot:
             ]
         else:
             lines += ["💤 <i>No open position</i>", DIV]
+        # Scanning state
+        if on_cd and cd_info:
+            try:
+                last = datetime.fromisoformat(cd_info["last_escalation"])
+                elapsed = int((datetime.now() - last).total_seconds() / 60)
+                remain  = max(0, AI_COOLDOWN_MINUTES - elapsed)
+                cd_dir  = cd_info.get("direction", "")
+                dir_tag = f" ({cd_dir})" if cd_dir else ""
+                lines.append(f"🔍 Scan: ⏳ <b>COOLDOWN{dir_tag}</b> — {remain}m remaining")
+            except Exception:
+                lines.append("🔍 Scan: ⏳ <b>COOLDOWN</b>")
+        else:
+            lines.append(f"🔍 Scan: {_sys(acc.get('system_active', True))}")
         lines += [
+            DIV,
             "💰 <b>Account</b>",
             f"Balance:  <b>${acc.get('balance', 0):.2f}</b>",
-            f"System:   {_sys(acc.get('system_active', True))}",
             f"Losses:   {acc.get('consecutive_losses', 0)} consecutive",
         ]
         return "\n".join(lines)
@@ -241,9 +256,27 @@ class TelegramBot:
         if not scans:
             return None
         lines = [f"📅 <b>Today's Scans</b>  ({len(scans)} total)", DIV]
-        for s in scans[-8:]:
-            badge = "🔍 <b>SETUP</b>" if s.get("setup_found") else "—"
-            lines.append(f"{s.get('session', '?')}  {_price(s.get('price', 0))}  {badge}")
+        _icons = {
+            "cooldown":       "⏳", "haiku_rejected": "🤖",
+            "ai_rejected":    "❌", "low_conf":       "📉",
+            "event_block":    "🚫", "friday_block":   "🚫",
+            "pending":        "📤", "no_setup":       "·",
+        }
+        for s in scans[-10:]:
+            act = (s.get("action_taken") or "").lower()
+            act_key = act.replace("_long", "").replace("_short", "")
+            icon = _icons.get(act_key, "🔍" if s.get("setup_found") else "·")
+            ts = s.get("timestamp", "")
+            try:
+                t_str = datetime.fromisoformat(ts).strftime("%H:%M")
+            except Exception:
+                t_str = "—"
+            direction = "LONG" if "long" in act else ("SHORT" if "short" in act else None)
+            dir_icon  = "▲" if direction == "LONG" else ("▼" if direction == "SHORT" else "·")
+            conf      = s.get("confidence")
+            conf_str  = f"  {_pct(conf)}" if conf is not None else ""
+            sess      = (s.get("session") or "—")[:3].upper()
+            lines.append(f"{icon} <code>{t_str}</code> {sess}  {dir_icon}{direction or '—'}{conf_str}")
         return "\n".join(lines)
 
     def _stats_text(self) -> str:
@@ -435,8 +468,16 @@ class TelegramBot:
         )
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        kb = _nav_kb("status")
+        if self.storage.is_ai_on_cooldown(AI_COOLDOWN_MINUTES):
+            # Append an Escalate button when bot is on cooldown
+            kb = InlineKeyboardMarkup(
+                list(kb.inline_keyboard) + [[
+                    InlineKeyboardButton("⚡ Escalate to Haiku now", callback_data="force_escalate")
+                ]]
+            )
         await update.message.reply_text(
-            self._status_text(), parse_mode=ParseMode.HTML, reply_markup=_nav_kb("status")
+            self._status_text(), parse_mode=ParseMode.HTML, reply_markup=kb
         )
 
     async def _cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -553,8 +594,15 @@ class TelegramBot:
     async def _dispatch_menu(self, cb: str, msg):
         """Execute menu action and reply to msg (Message object)."""
         if cb == "menu_status":
+            kb = _nav_kb("status")
+            if self.storage.is_ai_on_cooldown(AI_COOLDOWN_MINUTES):
+                kb = InlineKeyboardMarkup(
+                    list(kb.inline_keyboard) + [[
+                        InlineKeyboardButton("⚡ Escalate to Haiku now", callback_data="force_escalate")
+                    ]]
+                )
             await msg.reply_text(
-                self._status_text(), parse_mode=ParseMode.HTML, reply_markup=_nav_kb("status")
+                self._status_text(), parse_mode=ParseMode.HTML, reply_markup=kb
             )
         elif cb == "menu_balance":
             await msg.reply_text(
@@ -726,6 +774,15 @@ class TelegramBot:
 
         elif data == "noop":
             pass
+
+        elif data == "force_escalate":
+            self.storage.clear_ai_cooldown()
+            if self.on_force_scan:
+                await self.on_force_scan()
+            await query.edit_message_text(
+                query.message.text + "\n\n⚡ <b>Cooldown cleared — escalating to Haiku on next scan.</b>",
+                parse_mode=ParseMode.HTML,
+            )
 
         elif data.startswith("menu_"):
             await self._dispatch_menu(data, query.message)

@@ -110,8 +110,9 @@
     .c-warn { color: var(--warning); }
 
     /* ── No-position ── */
-    .no-pos { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:36px 20px; color:var(--text-muted); gap:8px; }
+    .no-pos { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:36px 20px; color:var(--text-muted); gap:8px; text-align:center; width:100%; }
     .no-pos svg { opacity:.3; }
+    .no-pos span { font-size:13px; }
 
     /* ── Phase bar ── */
     .phase-bar { margin-top: 14px; }
@@ -125,6 +126,11 @@
     .tbl-wrap { overflow-x: auto; }
     table { width:100%; border-collapse:collapse; font-size:13px; }
     th { text-align:left; padding:7px 12px; color:var(--text-muted); font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; border-bottom:1px solid var(--border); white-space:nowrap; }
+    th.sortable { cursor:pointer; user-select:none; }
+    th.sortable:hover { color:var(--text-dim); }
+    th.sortable.sort-active { color:var(--primary); }
+    .sort-icon { margin-left:4px; opacity:.5; font-style:normal; }
+    th.sort-active .sort-icon { opacity:1; }
     td { padding:9px 12px; border-bottom:1px solid var(--border); color:var(--text-dim); }
     tr:last-child td { border-bottom:none; }
     tr:hover td { background:var(--card-hover); }
@@ -340,7 +346,14 @@
         </div>
         <div class="tbl-wrap">
           <table>
-            <thead><tr><th>Time</th><th>Session</th><th>Price</th><th>Direction</th><th>Confidence</th><th>Action</th></tr></thead>
+            <thead><tr>
+              <th class="sortable sort-active" onclick="sortScans(0)" id="sh0">Time <i class="sort-icon">▼</i></th>
+              <th class="sortable" onclick="sortScans(1)" id="sh1">Session <i class="sort-icon">↕</i></th>
+              <th class="sortable" onclick="sortScans(2)" id="sh2">Price <i class="sort-icon">↕</i></th>
+              <th class="sortable" onclick="sortScans(3)" id="sh3">Direction <i class="sort-icon">↕</i></th>
+              <th class="sortable" onclick="sortScans(4)" id="sh4">Confidence <i class="sort-icon">↕</i></th>
+              <th>Action</th>
+            </tr></thead>
             <tbody id="scansBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
           </table>
         </div>
@@ -697,9 +710,14 @@ function renderStatus(d) {
     const conf  = det.confidence != null ? ` ${det.confidence}%` : '';
     lastScanHtml = badge + `<span style="font-size:12px;color:var(--text-muted);margin-left:6px;">${esc(dir + conf)}</span>`;
   }
+  const phaseHtml = {
+    MONITORING: '<span class="badge b-long">📊 MONITORING</span>',
+    COOLDOWN:   '<span class="badge b-warn">⏳ COOLDOWN</span>',
+    SCANNING:   '<span class="badge b-neutral">🔍 SCANNING</span>',
+  }[d.phase] || `<span class="badge b-neutral">${esc(d.phase||'—')}</span>`;
   const rows = [
     ['Session',        d.session      || '—'],
-    ['Phase',          d.phase        || '—'],
+    ['Phase',          phaseHtml],
     ['Scanning',       d.scanning_paused
       ? '<span class="badge b-warn">PAUSED</span>'
       : '<span class="badge b-long">ACTIVE</span>'],
@@ -768,12 +786,47 @@ const _actionLabels = {
   pending_long:        '📤 Alert (L)',
   pending_short:       '📤 Alert (S)',
 };
+
+let _scansData = [];
+let _scanSort  = { col: 0, asc: false };  // default: time desc
+
+function sortScans(col) {
+  if (_scanSort.col === col) { _scanSort.asc = !_scanSort.asc; }
+  else { _scanSort = { col, asc: col !== 0 }; }
+  // Update header icons
+  for (let i = 0; i < 5; i++) {
+    const th = document.getElementById('sh' + i);
+    if (!th) continue;
+    th.classList.toggle('sort-active', i === col);
+    const ic = th.querySelector('.sort-icon');
+    if (ic) ic.textContent = i === col ? (_scanSort.asc ? '▲' : '▼') : '↕';
+  }
+  _renderScansTable(_scansData);
+}
+
 function renderScans(scans) {
+  _scansData = scans;
+  _renderScansTable(scans);
+}
+
+function _renderScansTable(scans) {
   const tb = document.getElementById('scansBody');
   if (!scans.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">No scans during active session yet</td></tr>'; return; }
-  tb.innerHTML = scans.map(s => {
+  const sortFns = [
+    (a,b) => (a.timestamp||'').localeCompare(b.timestamp||''),
+    (a,b) => (a.session||'').localeCompare(b.session||''),
+    (a,b) => (a.price||0) - (b.price||0),
+    (a,b) => (a.direction||'').localeCompare(b.direction||''),
+    (a,b) => (a.confidence??-1) - (b.confidence??-1),
+  ];
+  const sorted = [...scans].sort((a,b) => {
+    const r = sortFns[_scanSort.col]?.(a,b) ?? 0;
+    return _scanSort.asc ? r : -r;
+  });
+  tb.innerHTML = sorted.map(s => {
     const act = s.action_taken || '';
     const dir = s.direction;
+    const isCooldown = act.startsWith('cooldown_');
     const setup = s.setup_found
       ? `<span class="badge b-long">${dir || 'Found'}</span>`
       : dir
@@ -783,15 +836,26 @@ function renderScans(scans) {
       ? `<span class="${s.confidence >= 70 ? 'c-long' : s.confidence >= 40 ? 'c-warn' : 'c-dim'}">${s.confidence}%</span>`
       : '—';
     const action = _actionLabels[act] || (act ? esc(act) : '—');
+    const escalateBtn = isCooldown
+      ? ` <button class="btn btn-warn btn-sm" style="padding:2px 7px;font-size:11px;" onclick="escalateNow()" title="Clear cooldown and scan now">↑ Escalate</button>`
+      : '';
     return `<tr>
       <td>${fmtTime(s.timestamp)}</td>
       <td>${s.session || '—'}</td>
       <td>${fmt1(s.price)}</td>
       <td>${setup}</td>
       <td>${conf}</td>
-      <td style="font-size:12px;">${action}</td>
+      <td style="font-size:12px;">${action}${escalateBtn}</td>
     </tr>`;
   }).join('');
+}
+
+async function escalateNow() {
+  try {
+    await req('POST', '/api/controls/clear-cooldown');
+    alert2('ctrlAlert', 'ok', '✓ Cooldown cleared — escalating to Haiku on next scan.');
+    setTimeout(loadOverview, 2500);
+  } catch(e) { alert2('ctrlAlert', 'err', '✗ ' + e.message); }
 }
 
 function showNotConfigured() {

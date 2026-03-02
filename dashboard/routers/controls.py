@@ -13,7 +13,8 @@ from dashboard.services import db_reader
 
 router = APIRouter()
 
-TRIGGER_PATH = Path(__file__).parent.parent.parent / "storage" / "data" / "force_scan.trigger"
+TRIGGER_PATH    = Path(__file__).parent.parent.parent / "storage" / "data" / "force_scan.trigger"
+CLEAR_CD_PATH   = Path(__file__).parent.parent.parent / "storage" / "data" / "clear_cooldown.trigger"
 
 
 def _systemctl(action: str) -> tuple[bool, str]:
@@ -32,6 +33,15 @@ async def force_scan():
     TRIGGER_PATH.parent.mkdir(parents=True, exist_ok=True)
     TRIGGER_PATH.touch()
     return {"ok": True, "message": "Scan trigger written. Bot will scan at next cycle check."}
+
+
+@router.post("/api/controls/clear-cooldown")
+async def clear_cooldown():
+    """Write trigger file — monitor will clear AI cooldown at next cycle."""
+    CLEAR_CD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CLEAR_CD_PATH.touch()
+    TRIGGER_PATH.touch()   # also force-scan so it takes effect immediately
+    return {"ok": True, "message": "Cooldown cleared. Escalating to Haiku on next scan."}
 
 
 @router.post("/api/controls/restart")

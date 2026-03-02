@@ -94,7 +94,8 @@ class TradingMonitor:
         # Paths for dashboard integration
         self._state_path   = Path(__file__).parent / "storage" / "data" / "bot_state.json"
         self._overrides_path = Path(__file__).parent / "storage" / "data" / "dashboard_overrides.json"
-        self._trigger_path = Path(__file__).parent / "storage" / "data" / "force_scan.trigger"
+        self._trigger_path   = Path(__file__).parent / "storage" / "data" / "force_scan.trigger"
+        self._clear_cd_path  = Path(__file__).parent / "storage" / "data" / "clear_cooldown.trigger"
 
     # ============================================================
     # STARTUP
@@ -280,7 +281,11 @@ class TradingMonitor:
             m = rem // 60
             state = {
                 "session":        self._current_session or "—",
-                "phase":          phase or ("MONITORING" if self.storage.get_position_state().get("has_open") else "SCANNING"),
+                "phase":          phase or (
+                    "MONITORING" if self.storage.get_position_state().get("has_open")
+                    else "COOLDOWN" if self.storage.is_ai_on_cooldown(AI_COOLDOWN_MINUTES)
+                    else "SCANNING"
+                ),
                 "scanning_paused": self.scanning_paused,
                 "last_scan":      self._last_scan_time.isoformat() if self._last_scan_time else None,
                 "next_scan_at":   self._next_scan_at.isoformat() if self._next_scan_at else None,
@@ -298,6 +303,13 @@ class TradingMonitor:
 
     def _check_force_scan_trigger(self) -> bool:
         """Return True (and delete trigger) if dashboard requested a force scan."""
+        try:
+            if self._clear_cd_path.exists():
+                self._clear_cd_path.unlink()
+                self.storage.clear_ai_cooldown()
+                logger.info("Dashboard clear-cooldown trigger: cooldown cleared.")
+        except Exception:
+            pass
         try:
             if self._trigger_path.exists():
                 self._trigger_path.unlink()
@@ -445,15 +457,21 @@ class TradingMonitor:
         prescreen_direction = setup["direction"]
         logger.info(f"Pre-screen: {prescreen_direction} setup detected. Checking local confidence...")
 
-        # --- AI cooldown check ---
+        # --- AI cooldown check (compute approx confidence for display — no 4H fetch needed) ---
         if self.storage.is_ai_on_cooldown(AI_COOLDOWN_MINUTES):
-            logger.info(f"AI on cooldown ({AI_COOLDOWN_MINUTES} min). Skipping escalation.")
-            self._last_scan_detail = {"outcome": "cooldown", "direction": prescreen_direction, "price": current_price, "setup_type": setup.get("type")}
+            approx_conf = compute_confidence(
+                direction=prescreen_direction,
+                tf_daily=tf_daily,
+                tf_4h={},   # no 4H fetch — C6/C10 default gracefully
+                tf_15m=tf_15m,
+            )
+            logger.info(f"AI on cooldown ({AI_COOLDOWN_MINUTES} min). Conf≈{approx_conf['score']}%. Skipping escalation.")
+            self._last_scan_detail = {"outcome": "cooldown", "direction": prescreen_direction, "confidence": approx_conf["score"], "price": current_price, "setup_type": setup.get("type")}
             self.storage.save_scan({
                 "timestamp": datetime.now().isoformat(), "session": session["name"],
                 "price": current_price, "indicators": {}, "market_context": {},
-                "analysis": {"setup_found": True, "reasoning": f"[AI Cooldown] {prescreen_direction} setup found, cooldown active"},
-                "setup_found": False, "confidence": None, "action_taken": f"cooldown_{prescreen_direction.lower()}", "api_cost": 0,
+                "analysis": {"setup_found": True, "reasoning": f"[AI Cooldown] {prescreen_direction} setup, conf≈{approx_conf['score']}%"},
+                "setup_found": False, "confidence": approx_conf["score"], "action_taken": f"cooldown_{prescreen_direction.lower()}", "api_cost": 0,
             })
             return SCAN_INTERVAL_SECONDS
 
