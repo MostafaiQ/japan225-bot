@@ -125,11 +125,11 @@ class TradingMonitor:
             logger.critical("IG connection failed after 3 attempts. Waiting for IG to recover.")
             await self.telegram.send_alert(
                 "⚠️ IG API unavailable (503/500 — likely weekend maintenance).\n"
-                "Telegram is online. Bot will retry IG every 5 minutes.\n"
+                "Telegram is online. Bot will retry IG every 1 minute.\n"
                 "Use /status for updates."
             )
             while not connected:
-                await asyncio.sleep(300)
+                await asyncio.sleep(60)
                 logger.info("Retrying IG connection...")
                 if self.ig.connect():
                     connected = True

@@ -66,6 +66,20 @@ class IGClient:
             logger.info("Session expiring, re-authenticating...")
             return self.connect()
         return True
+
+    def _check_auth_error(self, e: Exception) -> bool:
+        """
+        If the exception is an auth failure (401/403/invalid session token),
+        mark the session as expired so the next ensure_connected() reconnects.
+        Returns True if this was an auth error (caller should retry after reconnect).
+        Happens when IG expires the token after 12h inactivity (e.g. over weekend).
+        """
+        err = str(e)
+        if any(code in err for code in ("401", "403", "invalid session", "Invalid session")):
+            logger.warning(f"Auth error detected (stale token) — forcing re-auth: {e}")
+            self.authenticated = False
+            return True
+        return False
     
     # ==========================================
     # MARKET DATA
@@ -107,6 +121,7 @@ class IGClient:
                     )
                     time.sleep(15)
                     continue
+                self._check_auth_error(e)
                 logger.error(f"Failed to get market info: {e}")
                 return None
         return None
@@ -167,6 +182,7 @@ class IGClient:
             return candles
             
         except Exception as e:
+            self._check_auth_error(e)
             logger.error(f"Failed to fetch prices ({resolution}): {e}")
             return []
     
@@ -356,6 +372,7 @@ class IGClient:
             # Filter to our instrument
             return [p for p in result if p.get("epic") == EPIC]
         except Exception as e:
+            self._check_auth_error(e)
             logger.error(f"Failed to fetch positions: {e}")
             return POSITIONS_API_ERROR
     
