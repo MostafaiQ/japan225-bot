@@ -100,14 +100,14 @@ def _make_monitor(ig_positions, db_state):
 class TestOrphanRecovery:
     """
     IG reports an open position, but DB has no record (bot crashed after open,
-    before DB write). Expected: call set_position_open and init momentum_tracker.
+    before DB write). Expected: call open_trade_atomic and init momentum_tracker.
     """
     @pytest.mark.asyncio
-    async def test_orphan_calls_set_position_open(self):
+    async def test_orphan_calls_open_trade_atomic(self):
         ig_pos = _make_ig_position()
         monitor = _make_monitor([ig_pos], _make_db_state(has_open=False))
         await monitor.startup_sync()
-        monitor.storage.set_position_open.assert_called_once()
+        monitor.storage.open_trade_atomic.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_orphan_initialises_momentum_tracker(self):
