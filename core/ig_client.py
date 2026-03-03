@@ -7,11 +7,14 @@ Key features:
 - Auto-reauthentication on token expiry
 - Rate limit awareness (100 trading / 30 non-trading per min)
 - Candle caching with delta fetches (saves ~99% data allowance)
+- Disk-backed candle cache survives restarts
 - Full error handling with descriptive messages
 """
+import json as _json
 import time
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
 from trading_ig import IGService
 from trading_ig.rest import IGException
@@ -19,7 +22,10 @@ from trading_ig.rest import IGException
 from config.settings import (
     IG_API_KEY, IG_USERNAME, IG_PASSWORD, IG_ACC_NUMBER, IG_ENV,
     EPIC, CURRENCY, EXPIRY, CONTRACT_SIZE, MARGIN_FACTOR,
+    STORAGE_DIR,
 )
+
+_CACHE_FILE = STORAGE_DIR / "candle_cache.json"
 
 # Sentinel returned by get_open_positions() on API failure.
 # Callers must check: if result is POSITIONS_API_ERROR: handle failure
@@ -39,6 +45,31 @@ class IGClient:
         self._last_request_time = 0
         self._candle_cache: dict[str, list[dict]] = {}  # resolution -> candles
         self._cache_full_fetch_done: dict[str, bool] = {}  # resolution -> True after first full fetch
+        self._load_disk_cache()
+
+    def _load_disk_cache(self) -> None:
+        """Load candle cache from disk (survives restarts)."""
+        try:
+            if _CACHE_FILE.exists():
+                data = _json.loads(_CACHE_FILE.read_text())
+                age_s = time.time() - data.get("saved_at", 0)
+                if age_s < 14400:  # 4 hours max age
+                    self._candle_cache = data.get("candles", {})
+                    for res in self._candle_cache:
+                        self._cache_full_fetch_done[res] = True
+                    logger.info(f"Loaded disk cache ({len(self._candle_cache)} resolutions, {age_s/60:.0f}min old)")
+                else:
+                    logger.info("Disk cache too old (>4h), starting fresh")
+        except Exception as e:
+            logger.warning(f"Failed to load disk cache: {e}")
+
+    def _save_disk_cache(self) -> None:
+        """Persist candle cache to disk."""
+        try:
+            data = {"saved_at": time.time(), "candles": self._candle_cache}
+            _CACHE_FILE.write_text(_json.dumps(data))
+        except Exception as e:
+            logger.warning(f"Failed to save disk cache: {e}")
     
     def connect(self) -> bool:
         """Authenticate with IG Markets API."""
@@ -289,6 +320,7 @@ class IGClient:
                     if added > 0:
                         logger.info(f"Delta fetch: +{added} new candles ({resolution}), cache={len(cached)}")
 
+                self._save_disk_cache()
                 return self._candle_cache[resolution][-num_points:]
 
             except ApiExceededException:
