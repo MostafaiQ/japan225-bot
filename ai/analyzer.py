@@ -351,13 +351,6 @@ def build_scan_prompt(
         "     Incorporate its feedback before outputting final JSON.\n"
     )
 
-    context_note = ""
-    if CONTEXT_DIR.exists():
-        context_note = (
-            f"\nFull context files available at {CONTEXT_DIR}/ "
-            f"(market_snapshot.md, recent_activity.md, macro.md, live_edge.md)\n"
-        )
-
     return (
         f"Japan 225 CFD analysis — {now}\n"
         f"{prescreen_block}{secondary_block}{local_conf_block}"
@@ -366,7 +359,6 @@ def build_scan_prompt(
         f"\nMARKET CONTEXT: session={market_context.get('session_name','?')} | "
         f"trading_mode={market_context.get('trading_mode','?')}\n"
         f"\nWEB RESEARCH:\n{_fmt_web_research(web_research)}\n"
-        f"{context_note}"
         + (("\n" + live_edge_block) if live_edge_block else "")
         + "\n"
         + role_block
@@ -429,7 +421,7 @@ class AIAnalyzer:
         # --tools "" disables all tools → Sonnet responds directly from prompt data (no file reads/commands)
         # This cuts response time from 60-180s to 10-30s by eliminating CLAUDE.md loading + tool calls.
         cmd = [CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions",
-               "--no-session-persistence", "--tools", ""]
+               "--no-session-persistence", "--fast", "--max-tokens", "1024", "--tools", ""]
         if use_opus_agent:
             from config.settings import OPUS_MODEL
             agents_json = json.dumps({
