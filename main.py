@@ -31,17 +31,9 @@ logger = logging.getLogger("scan")
 
 
 def get_current_session() -> str:
-    """Determine current trading session based on Kuwait time (UTC+3)."""
-    from config.settings import SESSIONS
-    # For simplicity, use UTC and add 3 hours
-    from datetime import timezone, timedelta
-    now = datetime.now(timezone(timedelta(hours=3)))
-    current_time = now.strftime("%H:%M")
-    
-    for session_name, info in SESSIONS.items():
-        if info["start"] <= current_time < info["end"]:
-            return session_name
-    return "off_hours"
+    """Determine current trading session using core.session module."""
+    from core.session import get_current_session as _get_session
+    return _get_session()
 
 
 async def run_scan():
