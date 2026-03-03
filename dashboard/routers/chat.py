@@ -120,9 +120,19 @@ async def chat(body: ChatRequest):
     if not body.message.strip():
         raise HTTPException(400, "message is empty")
 
+    from dashboard.services.claude_client import _pick_tier
+    model, effort, timeout = _pick_tier(body.message)
+    # Derive a short tier label for the frontend
+    if "haiku" in model:
+        tier = "haiku"
+    elif "opus" in model:
+        tier = "opus"
+    else:
+        tier = "sonnet"
+
     _prune_jobs()
     job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"status": "pending", "response": None, "created": monotonic()}
+    _jobs[job_id] = {"status": "pending", "response": None, "created": monotonic(), "tier": tier}
 
     async def _run() -> None:
         from dashboard.services.claude_client import chat as _chat
@@ -146,7 +156,7 @@ async def chat(body: ChatRequest):
             pass  # non-fatal — client can still get response via poll
 
     asyncio.create_task(_run())
-    return {"job_id": job_id, "status": "pending"}
+    return {"job_id": job_id, "status": "pending", "tier": tier}
 
 
 @router.get("/api/chat/status/{job_id}")
@@ -155,4 +165,4 @@ async def chat_status(job_id: str):
     job = _jobs.get(job_id)
     if not job:
         raise HTTPException(404, "job not found or expired")
-    return {"status": job["status"], "response": job["response"]}
+    return {"status": job["status"], "response": job["response"], "tier": job.get("tier", "sonnet")}

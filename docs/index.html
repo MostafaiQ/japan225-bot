@@ -1185,7 +1185,9 @@ async function sendChat() {
       const d = await req('POST', '/api/chat', { message: msg, history: S.chat });
       posted = true;
       if (d.job_id) {
-        localStorage.setItem('pendingJob', JSON.stringify({ job_id: d.job_id, startTime: Date.now() }));
+        const tier = d.tier || 'sonnet';
+        localStorage.setItem('pendingJob', JSON.stringify({ job_id: d.job_id, startTime: Date.now(), tier }));
+        _updateTierBadge(thinkEl, tier);
         _startJobPolling(d.job_id, thinkEl);
         // button stays disabled until job finishes (managed inside _startJobPolling)
       } else if (d.response) {
@@ -1207,15 +1209,29 @@ async function sendChat() {
 }
 
 const _thinkPhrases = ['Thinking…', 'Reading files…', 'Checking logs…', 'Still working…', 'Almost done…', 'Finalising…'];
+const _tierColors = { haiku: '#10b981', sonnet: '#6366f1', opus: '#f59e0b' };
+const _tierLabels = { haiku: 'Haiku (fast)', sonnet: 'Sonnet', opus: 'Opus (deep)' };
 
-function _addThinkingBubble(startMs) {
+function _updateTierBadge(thinkEl, tier) {
+  if (!thinkEl) return;
+  const badge = thinkEl.querySelector('.tier-badge');
+  if (badge) {
+    badge.textContent = _tierLabels[tier] || tier;
+    badge.style.background = _tierColors[tier] || '#6366f1';
+  }
+}
+
+function _addThinkingBubble(startMs, tier) {
   const box = document.getElementById('chatBox');
   const d = document.createElement('div');
   d.className = 'chat-row assistant';
+  const tierLabel = _tierLabels[tier] || '';
+  const tierColor = _tierColors[tier] || '#6366f1';
+  const tierHtml = tier ? `<span class="tier-badge" style="display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;color:#fff;background:${tierColor};margin-left:6px;">${tierLabel}</span>` : '<span class="tier-badge" style="display:none;"></span>';
   d.innerHTML = `<div class="chat-avatar claude">✦</div>
     <div class="chat-body">
       <div class="bubble"><div class="think-dots"><span></span><span></span><span></span></div></div>
-      <div class="think-status">Thinking… <span class="think-elapsed" style="color:var(--text-muted);font-size:11px;">0s</span></div>
+      <div class="think-status">Thinking… <span class="think-elapsed" style="color:var(--text-muted);font-size:11px;">0s</span>${tierHtml}</div>
     </div>`;
   box.appendChild(d);
   box.scrollTop = box.scrollHeight;
@@ -1374,14 +1390,14 @@ async function _initChat() {
   const savedJob = localStorage.getItem('pendingJob');
   if (savedJob) {
     try {
-      const { job_id, startTime } = JSON.parse(savedJob);
+      const { job_id, startTime, tier } = JSON.parse(savedJob);
       if (job_id) {
         // If response already landed in server history, no need to poll
         const lastMsg = S.chat.length > 0 ? S.chat[S.chat.length - 1] : null;
         if (lastMsg && lastMsg.role === 'assistant') {
           localStorage.removeItem('pendingJob');
         } else {
-          const thinkEl = _addThinkingBubble(startTime);
+          const thinkEl = _addThinkingBubble(startTime, tier);
           _startJobPolling(job_id, thinkEl);
         }
       }

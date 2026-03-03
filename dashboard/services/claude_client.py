@@ -11,6 +11,10 @@ Context strategy (deadlock prevention):
     Claude Code never needs to read files for basic status questions.
   - CLAUDE.md in project root instructs Claude Code to use digests, not raw files.
 
+Tiered model selection:
+  - Quick queries (status, info, simple questions): Sonnet 4.6 → 5-15s response
+  - Deep queries (fix code, debug, push, complex analysis): Opus 4.6 high effort → 30-120s
+
 Usage tracking:
   - Every query is classified by intent and logged to chat_usage.json.
   - When a query type hits 5+ uses in a week, a new skill is auto-drafted.
@@ -32,16 +36,25 @@ SKILLS_DIR = Path.home() / ".claude" / "skills"
 
 CLAUDE_BIN = "/home/ubuntu/.local/bin/claude"
 CHAT_COSTS_FILE = PROJECT_ROOT / "storage" / "data" / "chat_costs.json"
+DB_FILE = PROJECT_ROOT / "storage" / "data" / "trading.db"
 
-# Rough cost estimate: claude-opus-4-6 with extended thinking
-# $15/M input tokens, $75/M output tokens. 1 token ≈ 4 chars.
-_SONNET_INPUT_PER_CHAR  = 15.0 / 1_000_000 / 4   # $/char input
-_SONNET_OUTPUT_PER_CHAR = 75.0 / 1_000_000 / 4   # $/char output
+# Rough cost estimate: blended Sonnet/Opus average
+# Sonnet: $3/$15 per M | Opus: $15/$75 per M. 1 token ≈ 4 chars.
+_INPUT_PER_CHAR  = 9.0  / 1_000_000 / 4   # $/char input (blended)
+_OUTPUT_PER_CHAR = 45.0 / 1_000_000 / 4   # $/char output (blended)
 
 # Rolling summary: keep last 2 raw turns + a compressed summary of everything older.
 # Summary is maintained as a single paragraph, updated after each assistant reply.
 MAX_RAW_TURNS = 2        # raw turns always kept
 SUMMARY_MAX_CHARS = 600  # ~150 tokens for the rolling summary
+
+# Keywords that trigger Opus (deep/code-fix queries)
+_DEEP_KEYWORDS = [
+    "fix", "solve", "error", "bug", "crash", "broken", "push", "commit",
+    "change code", "update code", "modify", "refactor", "implement", "add feature",
+    "deploy", "restart", "debug", "traceback", "exception", "failing",
+    "write code", "edit", "patch", "rewrite",
+]
 
 # Query intent classification (keyword → type)
 QUERY_PATTERNS = {
@@ -60,31 +73,63 @@ QUERY_PATTERNS = {
 }
 
 
+def _pick_tier(message: str) -> tuple[str, str, int]:
+    """
+    Pick model tier based on query complexity.
+    Returns (model, effort, timeout_seconds).
+      Tier 1 — Haiku:  simple status/info questions (2-8s)
+      Tier 2 — Sonnet: analysis, trade review, moderate questions (10-30s)
+      Tier 3 — Opus:   code fixes, debugging, deployments (30-180s)
+    """
+    msg_lower = message.lower()
+
+    # Tier 3: Opus — code changes, fixes, debugging
+    if any(kw in msg_lower for kw in _DEEP_KEYWORDS):
+        return "opus", "high", 600
+
+    # Tier 1: Haiku — pure status/info queries (short, no analysis needed)
+    haiku_patterns = [
+        "status", "balance", "position", "what's happening", "what is happening",
+        "is it running", "is the bot", "next scan", "what session", "are we in",
+        "time", "pnl", "p&l", "how much", "cost", "what was solved",
+        "what has been", "which session", "is ig", "is market",
+    ]
+    if any(kw in msg_lower for kw in haiku_patterns) and len(message) < 200:
+        return "haiku", "low", 60
+
+    # Tier 2: Sonnet — everything else (analysis, trade review, questions)
+    return "sonnet", "high", 180
+
+
 def chat(message: str, history: list[dict]) -> str:
     """
     Send message to Claude Code CLI. Returns full response text.
+    Auto-selects model tier: Haiku (fast) → Sonnet (moderate) → Opus (deep).
 
     history: list of {"role": "user"|"assistant", "content": str}
               Last entry is expected to be a summary dict if history is long:
               {"role": "summary", "content": str}
     """
     _track_usage(message)
+    model, effort, timeout = _pick_tier(message)
     prompt = _build_prompt(message, history)
 
     env = {**os.environ}
     env.pop("CLAUDECODE", None)
     env.pop("ANTHROPIC_API_KEY", None)  # force OAuth (Claude Max subscription), not the trading API key
 
+    logger.info(f"Chat tier: {model} effort={effort} timeout={timeout}s msg={message[:80]!r}")
+
     try:
         result = subprocess.run(
             [CLAUDE_BIN, "--print", "--dangerously-skip-permissions",
-             "--model", "claude-opus-4-6", "--effort", "high"],
+             "--model", model, "--effort", effort],
             input=prompt,
             capture_output=True,
             text=True,
             cwd=str(PROJECT_ROOT),
             env=env,
-            timeout=600,
+            timeout=timeout,
         )
         response = result.stdout.strip()
         if not response:
@@ -97,7 +142,8 @@ def chat(message: str, history: list[dict]) -> str:
         return response
 
     except subprocess.TimeoutExpired:
-        return "Claude Code timed out (10 min limit). Try a more specific question."
+        mins = timeout // 60
+        return f"Claude Code timed out ({mins} min limit). Try a more specific question."
     except FileNotFoundError:
         return f"Claude Code binary not found at {CLAUDE_BIN}. Check installation."
     except Exception as e:
@@ -139,7 +185,7 @@ def compress_history(history: list[dict]) -> list[dict]:
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _build_prompt(message: str, history: list[dict]) -> str:
-    """Build the full prompt: state snapshot + compressed history + new message."""
+    """Build the full prompt: state snapshot + live context + compressed history + new message."""
     parts = []
 
     # 1. Live bot state snapshot (replaces file reads for status questions)
@@ -147,13 +193,18 @@ def _build_prompt(message: str, history: list[dict]) -> str:
     if state_block:
         parts.append(state_block)
 
-    # 2. Compressed conversation history
+    # 2. Live operational context (recent logs, services, DB summary)
+    ops_block = _load_ops_context()
+    if ops_block:
+        parts.append(ops_block)
+
+    # 3. Compressed conversation history
     if history:
         history_block = _format_history(history)
         if history_block:
             parts.append(history_block)
 
-    # 3. New message
+    # 4. New message
     parts.append(f"Human: {message}")
     return "\n\n".join(parts)
 
@@ -188,9 +239,105 @@ def _load_bot_state_block() -> str:
                          f"Session: {scan.get('session', '?')} | "
                          f"Setup: {scan.get('setup_found', False)}")
 
+        # Last scan detail (the full outcome string)
+        detail = state.get("last_scan_detail")
+        if detail:
+            lines.append(f"Last scan detail: {str(detail)[:200]}")
+
+        # Next scan timing
+        nsa = state.get("next_scan_at")
+        if nsa:
+            lines.append(f"Next scan at: {nsa}")
+
+        # Current session from state
+        sess = state.get("current_session")
+        if sess:
+            lines.append(f"Current session: {sess}")
+
         return "\n".join(lines)
     except Exception:
         return ""
+
+
+def _load_ops_context() -> str:
+    """
+    Pre-compute operational context so the AI doesn't need tool calls for common questions.
+    Includes: service status, recent log errors, recent trade summary.
+    Runs quickly (~100ms total) — all local calls.
+    """
+    lines = ["--- LIVE CONTEXT (pre-computed) ---"]
+    try:
+        # Service status
+        try:
+            svc = subprocess.run(
+                ["systemctl", "is-active", "japan225-bot", "japan225-dashboard", "japan225-ngrok"],
+                capture_output=True, text=True, timeout=3
+            )
+            statuses = svc.stdout.strip().split("\n")
+            names = ["bot", "dashboard", "ngrok"]
+            svc_line = " | ".join(f"{n}={s}" for n, s in zip(names, statuses))
+            lines.append(f"Services: {svc_line}")
+        except Exception:
+            pass
+
+        # Recent errors from bot journal (last 5 ERROR lines)
+        try:
+            jctl = subprocess.run(
+                ["journalctl", "-u", "japan225-bot", "--no-pager", "-n", "200",
+                 "--since", "30 min ago", "-q"],
+                capture_output=True, text=True, timeout=3
+            )
+            if jctl.stdout:
+                err_lines = [l.strip() for l in jctl.stdout.splitlines()
+                             if "ERROR" in l or "CRITICAL" in l or "Traceback" in l]
+                if err_lines:
+                    lines.append(f"Recent errors ({len(err_lines)}):")
+                    for el in err_lines[-5:]:
+                        lines.append(f"  {el[:200]}")
+                else:
+                    lines.append("Recent errors: none in last 30 min")
+        except Exception:
+            pass
+
+        # Recent scan log lines (last 8 meaningful lines)
+        try:
+            jctl2 = subprocess.run(
+                ["journalctl", "-u", "japan225-bot", "--no-pager", "-n", "50",
+                 "--since", "1 hour ago", "-q"],
+                capture_output=True, text=True, timeout=3
+            )
+            if jctl2.stdout:
+                scan_keywords = ["SCAN", "SETUP", "CONFIDENCE", "SONNET", "OPUS",
+                                 "APPROVED", "REJECTED", "TRADE", "POSITION", "SESSION"]
+                scan_lines = [l.strip() for l in jctl2.stdout.splitlines()
+                              if any(kw in l.upper() for kw in scan_keywords)]
+                if scan_lines:
+                    lines.append("Recent scan activity:")
+                    for sl in scan_lines[-8:]:
+                        lines.append(f"  {sl[:200]}")
+        except Exception:
+            pass
+
+        # Recent trades from DB (last 3)
+        try:
+            if DB_FILE.exists():
+                db_result = subprocess.run(
+                    ["sqlite3", str(DB_FILE),
+                     "SELECT trade_number,direction,setup_type,confidence,pnl,result "
+                     "FROM trades ORDER BY id DESC LIMIT 3"],
+                    capture_output=True, text=True, timeout=3
+                )
+                if db_result.stdout.strip():
+                    lines.append(f"Recent trades: {db_result.stdout.strip()}")
+                else:
+                    lines.append("Recent trades: none yet")
+        except Exception:
+            pass
+
+    except Exception:
+        pass
+
+    return "\n".join(lines) if len(lines) > 1 else ""
 
 
 def _format_history(history: list[dict]) -> str:
@@ -245,7 +392,7 @@ def _absorb_into_summary(existing: str, turns: list[dict]) -> str:
 def _log_chat_cost(prompt: str, response: str) -> None:
     """Estimate cost from char count and append to chat_costs.json (max 500 entries)."""
     try:
-        cost = len(prompt) * _SONNET_INPUT_PER_CHAR + len(response) * _SONNET_OUTPUT_PER_CHAR
+        cost = len(prompt) * _INPUT_PER_CHAR + len(response) * _OUTPUT_PER_CHAR
         est_tokens = len(prompt) // 4 + len(response) // 4
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
