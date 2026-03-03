@@ -124,9 +124,10 @@ class TestRiskManagerValidation:
         assert result["checks"]["consecutive_losses"]["pass"] is True
 
     def test_daily_loss_limit(self):
-        self.storage.account_state["daily_loss_today"] = -3.0  # > 10% of $20.09
+        # Daily limit is 100% (effectively disabled), so $3 on $20 passes
+        self.storage.account_state["daily_loss_today"] = -3.0
         result = self.rm.validate_trade(**self._base_trade())
-        assert result["checks"]["daily_loss"]["pass"] is False
+        assert result["checks"]["daily_loss"]["pass"] is True
 
     def test_system_paused_rejected(self):
         self.storage.account_state["system_active"] = False

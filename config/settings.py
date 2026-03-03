@@ -53,7 +53,7 @@ MAX_MARGIN_PERCENT = 0.50  # Margin must NEVER exceed 50% of balance
 MAX_OPEN_POSITIONS = 1  # One trade at a time
 MAX_CONSECUTIVE_LOSSES = 2  # 2 losses = 4-hour cooldown
 COOLDOWN_HOURS = 4
-DAILY_LOSS_LIMIT_PERCENT = 0.10  # 10% of balance
+DAILY_LOSS_LIMIT_PERCENT = 1.0  # Effectively disabled — AI finds the setups, user manages risk
 WEEKLY_LOSS_LIMIT_PERCENT = 0.20  # 20% of balance
 MIN_CONFIDENCE = 70  # Hard floor - no trades below this
 EVENT_BLACKOUT_MINUTES = 60  # No trades within 60 min of high-impact events
