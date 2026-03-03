@@ -793,9 +793,15 @@ class TradingMonitor:
             f"| Daily: {tf_daily.get('volume_signal')}({tf_daily.get('volume_ratio')})"
         )
 
-        # --- Direct to Sonnet (Haiku pre-gate removed — adds latency with no value at $0/call) ---
+        # --- Determine if Opus should run speculatively in parallel ---
+        local_score = local_conf.get("score", 0)
+        pre_min_conf = MIN_CONFIDENCE_SHORT if prescreen_direction == "SHORT" else MIN_CONFIDENCE
+        should_run_opus_parallel = local_score >= pre_min_conf
+
+        # --- Direct to Sonnet (+ optional Opus in parallel) ---
         logger.info(
-            f"Local score {local_conf['score']}%. Escalating to Sonnet..."
+            f"Local score {local_score}%. Escalating to Sonnet"
+            + (" + Opus (parallel)" if should_run_opus_parallel else "") + "..."
         )
 
         recent_scans = self.storage.get_recent_scans(5)
@@ -814,21 +820,53 @@ class TradingMonitor:
         if secondary_setup:
             market_context["secondary_setup"] = secondary_setup
 
-        sonnet_result = self.analyzer.scan_with_sonnet(
-            indicators=indicators,
-            recent_scans=recent_scans,
-            market_context=market_context,
-            web_research=web_research,
-            prescreen_direction=prescreen_direction,
-            local_confidence=local_conf,
-            live_edge_block=live_edge,
-            failed_criteria=failed_criteria,
-            recent_trades=recent_trades_ctx,
+        loop = asyncio.get_event_loop()
+
+        # Launch Sonnet via executor (non-blocking)
+        sonnet_future = loop.run_in_executor(
+            None,
+            lambda: self.analyzer.scan_with_sonnet(
+                indicators=indicators,
+                recent_scans=recent_scans,
+                market_context=market_context,
+                web_research=web_research,
+                prescreen_direction=prescreen_direction,
+                local_confidence=local_conf,
+                live_edge_block=live_edge,
+                failed_criteria=failed_criteria,
+                recent_trades=recent_trades_ctx,
+            ),
         )
 
-        # Sonnet 4.6 handles everything in one subprocess:
-        # - Analysis + self-review (always)
-        # - Opus sub-agent delegation (when confidence 72-86%, handled internally)
+        # Speculatively launch Opus scalp eval in parallel ($0/call — no waste)
+        opus_future = None
+        if should_run_opus_parallel:
+            opus_pre_reasoning = (
+                f"LOCAL PRE-SCREEN: {prescreen_direction} {setup.get('type', 'unknown')} "
+                f"| local conf {local_score}% (passed threshold)"
+            )
+            if secondary_setup:
+                sec = secondary_setup
+                opus_pre_reasoning += (
+                    f"\nSECONDARY: {sec['direction']} {sec.get('type', '?')} "
+                    f"local conf {sec.get('confidence', '?')}%: "
+                    f"{sec.get('reasoning', '')[:200]}"
+                )
+            opus_future = loop.run_in_executor(
+                None,
+                lambda: self.analyzer.evaluate_scalp(
+                    indicators=indicators,
+                    primary_direction=prescreen_direction,
+                    setup_type=setup.get("type", "unknown"),
+                    local_confidence=local_score,
+                    ai_confidence=0,
+                    ai_reasoning=opus_pre_reasoning[:700],
+                    parallel_mode=True,
+                ),
+            )
+
+        # Await Sonnet result
+        sonnet_result = await sonnet_future
         final_result = sonnet_result
         final_confidence = final_result.get("confidence", 0)
         logger.info(f"AI: found={final_result.get('setup_found')}, confidence={final_confidence}%")
@@ -864,39 +902,20 @@ class TradingMonitor:
             )
             self._last_scan_detail = {"outcome": "ai_rejected", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
 
-            # --- Near-miss → Opus scalp evaluation → auto-execute ---
-            # If local confidence passed but AI rejected (not a hard QUICK REJECT),
-            # ask Opus if there's a quick scalp opportunity. If yes, auto-execute.
-            local_score = local_conf.get("score", 0)
+            # --- Near-miss → check parallel Opus result (already running) ---
+            # Opus was launched speculatively in parallel with Sonnet when local_score >= min_conf.
+            # If near-miss conditions met, await the already-running Opus result.
             ai_reasoning = final_result.get("reasoning", "")
             is_quick_reject = "QUICK REJECT" in ai_reasoning.upper()
 
-            if local_score >= min_conf and not is_quick_reject:
-                # Build enriched reasoning with secondary setup context for Opus
-                opus_reasoning = f"PRIMARY: {direction} rejected by Sonnet ({final_confidence}%): {ai_reasoning[:400]}"
-                if secondary_setup:
-                    sec_dir = secondary_setup["direction"]
-                    sec_type = secondary_setup.get("type", "?")
-                    sec_score = secondary_setup.get("confidence", "?")
-                    sec_reason = secondary_setup.get("reasoning", "")[:200]
-                    opus_reasoning += f"\nSECONDARY: {sec_dir} {sec_type} local conf {sec_score}%: {sec_reason}"
-
+            if local_score >= min_conf and not is_quick_reject and opus_future:
                 logger.info(
                     f"Near-miss: local {local_score}% >= {min_conf}%, "
-                    f"AI {final_confidence}%. Sending to Opus for bidirectional scalp eval."
+                    f"AI {final_confidence}%. Checking parallel Opus result..."
                 )
                 try:
-                    scalp_result = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: self.analyzer.evaluate_scalp(
-                            indicators=indicators,
-                            primary_direction=direction,
-                            setup_type=setup.get("type", "unknown"),
-                            local_confidence=local_score,
-                            ai_confidence=final_confidence,
-                            ai_reasoning=opus_reasoning[:700],
-                        ),
-                    )
+                    scalp_result = await opus_future
+                    opus_future = None  # Mark as consumed
                     if scalp_result.get("scalp_viable"):
                         # Opus picks the direction — may differ from pre-screen
                         opus_direction = scalp_result.get("direction", direction)
@@ -914,6 +933,7 @@ class TradingMonitor:
                         logger.info(f"Opus rejected both directions: {scalp_result.get('reasoning', '')[:150]}")
                 except Exception as e:
                     logger.warning(f"Opus scalp evaluation failed: {e}")
+                    opus_future = None
 
             # --- Force Open: 100% local confidence, AI rejected → user decides ---
             if local_score >= 100:
@@ -953,6 +973,11 @@ class TradingMonitor:
 
             # No cooldown — subscription is $0/call, scan again in 5 min
             return SCAN_INTERVAL_SECONDS
+
+        # Sonnet approved — discard speculative Opus result (fire-and-forget, $0 cost)
+        if opus_future:
+            logger.debug("Opus parallel result discarded (Sonnet approved)")
+            opus_future = None
 
         # --- Risk validation ---
         balance_info = self.ig.get_account_info()
@@ -1116,6 +1141,9 @@ class TradingMonitor:
             f"Current: {current_price:.0f} | P&L: {pnl_points:+.0f}pts "
             f"(${pnl_dollars:+.2f}) | Phase: {phase}"
         )
+
+        # --- Update state file for dashboard (every cycle) ---
+        self._write_state()
 
         # --- Stale data check ---
         if self.momentum_tracker.is_stale():
