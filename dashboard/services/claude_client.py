@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import subprocess
+import urllib.request
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -85,7 +86,7 @@ def _pick_tier(message: str) -> tuple[str, str, int]:
 
     # Tier 3: Opus — code changes, fixes, debugging
     if any(kw in msg_lower for kw in _DEEP_KEYWORDS):
-        return "opus", "high", 600
+        return "opus", "high", 3600
 
     # Tier 1: Haiku — pure status/info queries (short, no analysis needed)
     haiku_patterns = [
@@ -95,10 +96,10 @@ def _pick_tier(message: str) -> tuple[str, str, int]:
         "what has been", "which session", "is ig", "is market",
     ]
     if any(kw in msg_lower for kw in haiku_patterns) and len(message) < 200:
-        return "haiku", "low", 60
+        return "haiku", "low", 300
 
     # Tier 2: Sonnet — everything else (analysis, trade review, questions)
-    return "sonnet", "high", 180
+    return "sonnet", "high", 1200
 
 
 def chat(message: str, history: list[dict]) -> str:
@@ -142,8 +143,8 @@ def chat(message: str, history: list[dict]) -> str:
         return response
 
     except subprocess.TimeoutExpired:
-        mins = timeout // 60
-        return f"Claude Code timed out ({mins} min limit). Try a more specific question."
+        logger.warning(f"Chat subprocess timed out after {timeout}s for model={model}")
+        return "(still working — response will arrive via Telegram if it finishes)"
     except FileNotFoundError:
         return f"Claude Code binary not found at {CLAUDE_BIN}. Check installation."
     except Exception as e:
@@ -481,6 +482,41 @@ def _maybe_draft_skill(intent: str, count: int) -> None:
     if content:
         skill_file.write_text(content)
         logger.info(f"Auto-drafted skill: {skill_file} (triggered at {count} uses this week)")
+
+
+# ── Telegram fallback ─────────────────────────────────────────────────────────
+
+def send_telegram_message(text: str, parse_mode: str = "") -> bool:
+    """
+    Send a message to the configured Telegram chat using Bot API directly.
+    Returns True on success. Used for chat response fallback.
+    parse_mode: "HTML", "MarkdownV2", or "" (plain text, safest for arbitrary content).
+    """
+    try:
+        from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+        if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+            return False
+        # Truncate to Telegram max message length
+        if len(text) > 4096:
+            text = text[:4090] + "..."
+        body = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": text,
+        }
+        if parse_mode:
+            body["parse_mode"] = parse_mode
+        payload = json.dumps(body).encode()
+        tg_req = urllib.request.Request(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(tg_req, timeout=10) as resp:
+            return resp.status == 200
+    except Exception as e:
+        logger.debug(f"Telegram fallback send failed (non-fatal): {e}")
+        return False
 
 
 # ── Skill templates ────────────────────────────────────────────────────────────
