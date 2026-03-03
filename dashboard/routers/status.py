@@ -14,7 +14,6 @@ router = APIRouter()
 
 STATE_PATH = Path(__file__).parent.parent.parent / "storage" / "data" / "bot_state.json"
 CHAT_COSTS_PATH = Path(__file__).parent.parent.parent / "storage" / "data" / "chat_costs.json"
-FORCE_OPEN_PENDING_PATH = Path(__file__).parent.parent.parent / "storage" / "data" / "force_open_pending.json"
 
 
 def _chat_tokens_today() -> int:
@@ -46,21 +45,6 @@ def _next_scan_in(state: dict) -> int | None:
         if target.tzinfo is None:
             target = target.replace(tzinfo=timezone.utc)
         return max(0, int((target - datetime.now(timezone.utc)).total_seconds()))
-    except Exception:
-        return None
-
-
-def _read_force_open_pending() -> dict | None:
-    """Return pending force-open setup if exists and < 15 min old."""
-    try:
-        if not FORCE_OPEN_PENDING_PATH.exists():
-            return None
-        data = json.loads(FORCE_OPEN_PENDING_PATH.read_text())
-        ts = datetime.fromisoformat(data.get("timestamp", ""))
-        if (datetime.now() - ts).total_seconds() > 900:
-            FORCE_OPEN_PENDING_PATH.unlink(missing_ok=True)
-            return None
-        return data
     except Exception:
         return None
 
