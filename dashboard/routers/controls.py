@@ -4,7 +4,9 @@ POST /api/controls/restart     — sudo systemctl restart japan225-bot
 POST /api/controls/stop        — sudo systemctl stop japan225-bot
 POST /api/apply-fix            — apply unified diff, commit, push
 """
+import json
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -13,8 +15,10 @@ from dashboard.services import db_reader
 
 router = APIRouter()
 
-TRIGGER_PATH    = Path(__file__).parent.parent.parent / "storage" / "data" / "force_scan.trigger"
-CLEAR_CD_PATH   = Path(__file__).parent.parent.parent / "storage" / "data" / "clear_cooldown.trigger"
+TRIGGER_PATH         = Path(__file__).parent.parent.parent / "storage" / "data" / "force_scan.trigger"
+CLEAR_CD_PATH        = Path(__file__).parent.parent.parent / "storage" / "data" / "clear_cooldown.trigger"
+FORCE_OPEN_PENDING   = Path(__file__).parent.parent.parent / "storage" / "data" / "force_open_pending.json"
+FORCE_OPEN_TRIGGER   = Path(__file__).parent.parent.parent / "storage" / "data" / "force_open.trigger"
 
 
 def _systemctl(action: str) -> tuple[bool, str]:
@@ -70,6 +74,40 @@ async def stop():
     if not ok:
         raise HTTPException(500, f"Stop failed: {msg}")
     return {"ok": True, "message": "Bot stopped."}
+
+
+# ── Force Open ───────────────────────────────────────────────────────────────
+
+@router.get("/api/controls/force-open-pending")
+async def get_force_open_pending():
+    """Return the pending force-open setup if one exists and hasn't expired (15 min)."""
+    try:
+        if not FORCE_OPEN_PENDING.exists():
+            return {"pending": None}
+        data = json.loads(FORCE_OPEN_PENDING.read_text())
+        ts = datetime.fromisoformat(data.get("timestamp", ""))
+        age = (datetime.now() - ts).total_seconds()
+        if age > 900:
+            FORCE_OPEN_PENDING.unlink(missing_ok=True)
+            return {"pending": None}
+        return {"pending": data}
+    except Exception:
+        return {"pending": None}
+
+
+@router.post("/api/controls/force-open")
+async def force_open():
+    """User confirmed force-open — write trigger for monitor to execute immediately."""
+    if not FORCE_OPEN_PENDING.exists():
+        raise HTTPException(404, "No pending force-open setup (expired or already executed)")
+    try:
+        data = json.loads(FORCE_OPEN_PENDING.read_text())
+    except Exception:
+        raise HTTPException(400, "Could not read pending setup data")
+    FORCE_OPEN_TRIGGER.parent.mkdir(parents=True, exist_ok=True)
+    FORCE_OPEN_TRIGGER.write_text(json.dumps(data))
+    FORCE_OPEN_PENDING.unlink(missing_ok=True)
+    return {"ok": True, "message": f"Force-open queued: {data.get('direction')} {data.get('setup_type')} @ {data.get('entry')}"}
 
 
 # ── Apply Fix ─────────────────────────────────────────────────────────────────

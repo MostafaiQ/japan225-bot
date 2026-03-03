@@ -4,6 +4,14 @@
 # Updated 2026-03-02: _build_confluence() wired into all 4 setup paths. indicators_snapshot expanded with Phase 1 keys.
 # Updated 2026-03-02: bb_mid_bounce RSI 35→30, relaxed bounce_starting gate, BB_LOWER 80→150pts, new oversold_reversal type.
 # Updated 2026-03-02: pullback_depth, avg_candle_range, bb_width added to analyze_timeframe() + indicators_snapshot.
+# Updated 2026-03-03: 3 new SHORT setups: bb_mid_rejection, overbought_reversal, breakdown_continuation.
+# Updated 2026-03-03: Bear market improvements: dead_cat_bounce_short no longer requires daily bearish
+#   (fires on locally_bearish: below EMA50 + HA streak ≤-2); bear_flag_breakdown RSI floor 35→28;
+#   new vwap_rejection_short (no daily req); multi_tf_bearish works without rsi_4h (pre-screen safe).
+#   Total SHORT setups: 13 (bollinger_upper_rejection, ema50_rejection, bb_mid_rejection,
+#   overbought_reversal, breakdown_continuation, dead_cat_bounce_short, bear_flag_breakdown,
+#   vwap_rejection_short, high_volume_distribution, multi_tf_bearish, ema200_rejection,
+#   lower_lows_bearish_momentum, pivot_resistance_rejection).
 
 ## Functions
 
@@ -70,12 +78,26 @@ detect_setup(tf_daily, tf_4h, tf_15m, tf_5m=None) -> dict
   #   bollinger_mid_bounce:   near_mid ±150pts, RSI 30-65, bounce_starting (price>prev_close OR lower_wick>=20 OR HA bullish OR bullish candle pattern)
   #                           above_ema50 gate REMOVED. EMA50 status in reasoning string for AI.
   #   bollinger_lower_bounce: near_lower ±150pts, RSI 20-40, lower_wick >=15pts
+  #   extreme_oversold_reversal: RSI<22 + (4H near BB lower ±300pts OR 4H RSI<35) + reversal confirm (wick≥10 OR HA bullish OR candle pattern OR sweep). No daily req.
   #   oversold_reversal:      RSI<30 + daily bullish + reversal confirm (wick≥10 OR HA bullish OR candle pattern OR liquidity sweep)
   #   ema50_bounce:           DISABLED (ENABLE_EMA50_BOUNCE_SETUP=False)
   #
-  # SHORT paths:
+  # SHORT paths (13 total):
   #   bollinger_upper_rejection: near_upper ±150pts, RSI 55-75, below_ema50
   #   ema50_rejection:           price <=ema50+2, dist ≤150, RSI 50-70
+  #   bb_mid_rejection:          near_mid ±150pts, RSI 40-65, rejection (price<prev_close OR wick≥20 OR HA bearish OR bearish pattern)
+  #   overbought_reversal:       RSI>70 + daily bearish + reversal confirm (wick≥10 OR HA bearish OR bearish pattern OR swept_high)
+  #   breakdown_continuation:    price >100pts below BB mid, RSI 25-45, below EMA50, HA streak ≤-2, vol not LOW
+  #   dead_cat_bounce_short:     near BB mid/EMA9, RSI 43-62, below EMA50, HA reject.
+  #                              FIRES when daily bearish OR locally_bearish (below EMA50 + HA streak ≤-2)
+  #   bear_flag_breakdown:       price between BB lower–mid, RSI 28-52 (was 35), HA streak ≤-1, below EMA50/VWAP
+  #   vwap_rejection_short:      NEW — price tests VWAP from below + rejects, RSI 43-60, below EMA50. No daily req.
+  #   high_volume_distribution:  near BB upper/swept high, vol ratio ≥1.4, RSI 55-75, bearish reject
+  #   multi_tf_bearish:          3+/4 local factors (rsi_15m<48, daily_bear, below_ema50, below_vwap) + HA bear.
+  #                              FIXED: works in pre-screen (rsi_4h=None). Threshold 3/4 without 4H, 4/5 with.
+  #   ema200_rejection:          price near 15M EMA200 from below, daily bearish, RSI 50-70, rejection
+  #   lower_lows_bearish_momentum: strong bearish swing structure
+  #   pivot_resistance_rejection: price at daily pivot level with rejection
   #
   # SL/TP: DEFAULT_SL_DISTANCE=150, DEFAULT_TP_DISTANCE=400 (from settings.py)
 

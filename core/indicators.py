@@ -1082,6 +1082,74 @@ def detect_setup(
             })
             return result
 
+    # --- LONG Setup 5: Extreme Oversold Reversal (bear market snap-back) ---
+    # RSI < 22 — so extreme that even in a bear market a snap-back is likely.
+    # No daily trend requirement. Bypasses _strong_bearish_momentum filter intentionally.
+    # 4H condition: price near BB lower (within 300pts) OR 4H RSI < 35.
+    # Reversal confirmation: wick ≥10 OR HA bullish OR bullish candle pattern OR liquidity sweep.
+    if rsi_15m and rsi_15m < 22:
+        # 4H oversold confirmation: near 4H BB lower OR 4H RSI < 35
+        bb_lower_4h = tf_4h.get("bollinger_lower")
+        price_4h = tf_4h.get("price")
+        near_4h_bb_lower = (
+            bb_lower_4h is not None and price_4h is not None
+            and abs(price_4h - bb_lower_4h) <= 300
+        )
+        rsi_4h_extreme = rsi_4h is not None and rsi_4h < 35
+        _4h_oversold_ok = near_4h_bb_lower or rsi_4h_extreme
+
+        if _4h_oversold_ok:
+            candle_open_ext = tf_15m.get("open")
+            candle_low_ext  = tf_15m.get("low")
+            lower_wick_ext = (min(candle_open_ext, price) - candle_low_ext) if (candle_open_ext is not None and candle_low_ext is not None) else 0
+            ha_bull_ext = tf_15m.get("ha_bullish")
+            swept_low_ext = tf_15m.get("swept_low", False)
+            candle_patterns_ext = tf_15m.get("candlestick_patterns", [])
+            bullish_pattern_ext = any(p.get("direction") == "bullish" for p in candle_patterns_ext) if candle_patterns_ext else False
+            reversal_confirm_ext = lower_wick_ext >= 10 or ha_bull_ext or swept_low_ext or bullish_pattern_ext
+
+            if reversal_confirm_ext:
+                entry = price
+                sl = entry - DEFAULT_SL_DISTANCE
+                tp = entry + DEFAULT_TP_DISTANCE
+                _4h_note_parts = []
+                if rsi_4h_extreme:
+                    _4h_note_parts.append(f"4H RSI {rsi_4h:.1f}")
+                if near_4h_bb_lower:
+                    _4h_note_parts.append(f"4H near BB lower ({bb_lower_4h:.0f})")
+                rsi_4h_note = f" {' + '.join(_4h_note_parts)} — multi-TF extreme." if _4h_note_parts else ""
+                conf_list, counter_list = _build_confluence(tf_15m, "LONG", pivots=pivots)
+                confirm_ext_str = []
+                if lower_wick_ext >= 10:
+                    confirm_ext_str.append(f"wick {lower_wick_ext:.0f}pts")
+                if ha_bull_ext:
+                    confirm_ext_str.append("HA bullish")
+                if bullish_pattern_ext:
+                    confirm_ext_str.append("bullish candle pattern")
+                if swept_low_ext:
+                    confirm_ext_str.append("liquidity sweep")
+                reasoning = (
+                    f"LONG: Extreme oversold reversal on 15M. "
+                    f"RSI {rsi_15m:.1f} — extreme freefall snap-back candidate. "
+                    f"Reversal: {', '.join(confirm_ext_str)}. "
+                    f"{daily_str}.{rsi_4h_note} "
+                    f"HIGH-RISK: counter-trend in bear conditions — size down."
+                )
+                if conf_list:
+                    reasoning += f" Confluence: {', '.join(conf_list)}."
+                if counter_list:
+                    reasoning += f" Caution: {', '.join(counter_list)}."
+                result.update({
+                    "found": True,
+                    "type": "extreme_oversold_reversal",
+                    "direction": "LONG",
+                    "entry": round(entry, 1),
+                    "sl": round(sl, 1),
+                    "tp": round(tp, 1),
+                    "reasoning": reasoning,
+                })
+                return result
+
     # ============================================================
     # SHORT SETUPS (bidirectional — no daily gate, C1 in confidence penalizes counter-trend)
     # ============================================================
@@ -1280,6 +1348,414 @@ def detect_setup(
                 "reasoning": reasoning,
             })
             return result
+
+    # --- SHORT Setup 6: Dead Cat Bounce Short ---
+    # Bear market sell-the-rally: price bounced from oversold back up to resistance
+    # (BB mid or EMA9), HA turned bearish again. Classic bear trap continuation.
+    # Fires when daily is bearish OR when locally bearish structure is clear
+    # (below EMA50 + HA streak <= -2) — catches medium-term bears while daily EMA200 still bullish.
+    ema9_15m = tf_15m.get("ema9")
+    if bb_mid and rsi_15m:
+        rsi_ok_dcb = 43 <= rsi_15m <= 62
+        ha_bearish_dcb = tf_15m.get("ha_bullish") is False
+        ha_streak_dcb = tf_15m.get("ha_streak")
+        ha_turning_bear = ha_streak_dcb is not None and ha_streak_dcb <= -1
+        below_ema50_dcb = not tf_15m.get("above_ema50")
+        locally_bearish_dcb = below_ema50_dcb and ha_streak_dcb is not None and ha_streak_dcb <= -2
+        near_bb_mid_dcb = abs(price - bb_mid) <= 150
+        near_ema9_dcb = ema9_15m is not None and abs(price - ema9_15m) <= 100
+        at_resistance = near_bb_mid_dcb or near_ema9_dcb
+        cp_dir_dcb = tf_15m.get("candlestick_direction")
+        bearish_candle_dcb = cp_dir_dcb == "bearish"
+        fvg_bear_dcb = tf_15m.get("fvg_bearish", False)
+        rejection_confirm_dcb = ha_bearish_dcb or ha_turning_bear or bearish_candle_dcb or fvg_bear_dcb
+        bias_allows_dcb = (daily_bullish is False) or locally_bearish_dcb
+
+        if bias_allows_dcb and rsi_ok_dcb and below_ema50_dcb and at_resistance and rejection_confirm_dcb:
+            entry = price
+            sl = entry + DEFAULT_SL_DISTANCE
+            tp = entry - DEFAULT_TP_DISTANCE
+            res_str = f"BB mid ({bb_mid:.0f})" if near_bb_mid_dcb else f"EMA9 ({ema9_15m:.0f})"
+            confirm_parts_dcb = []
+            if ha_bearish_dcb or ha_turning_bear:
+                confirm_parts_dcb.append(f"HA streak {ha_streak_dcb}")
+            if bearish_candle_dcb:
+                confirm_parts_dcb.append("bearish candle")
+            if fvg_bear_dcb:
+                confirm_parts_dcb.append("bearish FVG overhead")
+            conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+            reasoning = (
+                f"SHORT: Dead cat bounce rejection at {res_str}. "
+                f"RSI {rsi_15m:.1f} (bounced but failing). Below EMA50. "
+                f"Rejection: {', '.join(confirm_parts_dcb)}. {short_daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "dead_cat_bounce_short",
+                "direction": "SHORT",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
+
+    # --- SHORT Setup 7: Bear Flag Breakdown ---
+    # Low-volume consolidation after a sharp drop, then momentum resumes down.
+    # Price coiling between BB lower and BB mid — the "flag". HA turning negative.
+    if bb_mid and bb_lower and rsi_15m:
+        rsi_ok_flag = 28 <= rsi_15m <= 52
+        ha_streak_flag = tf_15m.get("ha_streak")
+        ha_neg_flag = ha_streak_flag is not None and ha_streak_flag <= -1
+        vol_signal_flag = tf_15m.get("volume_signal", "NORMAL")
+        vol_low_flag = vol_signal_flag in ("LOW", "NORMAL")  # flag = low/normal volume consolidation
+        in_flag_zone = bb_lower <= price <= bb_mid  # between lower and mid band
+        below_ema50_flag = not tf_15m.get("above_ema50")
+        below_vwap_flag = tf_15m.get("above_vwap") is False
+        fvg_bear_flag = tf_15m.get("fvg_bearish", False)
+        bearish_overhead = below_ema50_flag or fvg_bear_flag or below_vwap_flag
+
+        if rsi_ok_flag and ha_neg_flag and vol_low_flag and in_flag_zone and bearish_overhead:
+            entry = price
+            sl = entry + DEFAULT_SL_DISTANCE
+            tp = entry - DEFAULT_TP_DISTANCE
+            conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+            overhead_str = []
+            if below_ema50_flag:
+                overhead_str.append("below EMA50")
+            if fvg_bear_flag:
+                overhead_str.append("bearish FVG overhead")
+            if below_vwap_flag:
+                overhead_str.append("below VWAP")
+            reasoning = (
+                f"SHORT: Bear flag breakdown on 15M. "
+                f"Price in flag zone ({bb_lower:.0f}–{bb_mid:.0f}). "
+                f"RSI {rsi_15m:.1f}, HA streak {ha_streak_flag}, vol={vol_signal_flag}. "
+                f"{', '.join(overhead_str)}. {short_daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "bear_flag_breakdown",
+                "direction": "SHORT",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
+
+    # --- SHORT Setup 8: VWAP Rejection Short ---
+    # In a downtrend, price rallies back to VWAP (intraday fair value) and fails.
+    # No daily requirement — VWAP is intraday, useful in any bear session.
+    vwap_15m = tf_15m.get("vwap")
+    if vwap_15m and rsi_15m and ema50_15m:
+        near_vwap_short = abs(price - vwap_15m) <= 120
+        rsi_ok_vwap = 43 <= rsi_15m <= 60
+        below_ema50_vwap = not tf_15m.get("above_ema50")
+        below_vwap_short = tf_15m.get("above_vwap") is False  # currently below VWAP
+        # Price must have just tested VWAP from below: prev_close < vwap, current near vwap
+        prev_close_vwap = tf_15m.get("prev_close")
+        tested_vwap = prev_close_vwap is not None and prev_close_vwap < vwap_15m and near_vwap_short
+        ha_bear_vwap = tf_15m.get("ha_bullish") is False
+        cp_dir_vwap = tf_15m.get("candlestick_direction")
+        bearish_candle_vwap = cp_dir_vwap == "bearish"
+        candle_high_vwap = tf_15m.get("high")
+        candle_open_vwap = tf_15m.get("open")
+        wick_vwap = (candle_high_vwap - max(candle_open_vwap or price, price)) if candle_high_vwap else 0
+        rejection_vwap = ha_bear_vwap or bearish_candle_vwap or wick_vwap >= 15
+
+        if near_vwap_short and rsi_ok_vwap and below_ema50_vwap and tested_vwap and rejection_vwap:
+            entry = price
+            sl = entry + DEFAULT_SL_DISTANCE
+            tp = entry - DEFAULT_TP_DISTANCE
+            conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+            confirm_parts_vwap = []
+            if ha_bear_vwap:
+                confirm_parts_vwap.append("HA bearish")
+            if bearish_candle_vwap:
+                confirm_parts_vwap.append("bearish candle")
+            if wick_vwap >= 15:
+                confirm_parts_vwap.append(f"wick {wick_vwap:.0f}pts")
+            reasoning = (
+                f"SHORT: VWAP rejection on 15M (VWAP={vwap_15m:.0f}). "
+                f"Price tested VWAP from below and rejected. "
+                f"RSI {rsi_15m:.1f}. Below EMA50. "
+                f"Rejection: {', '.join(confirm_parts_vwap) or 'HA/candle'}. {short_daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "vwap_rejection_short",
+                "direction": "SHORT",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
+
+    # --- SHORT Setup 9: High-Volume Distribution Short ---
+    # Institutional selling at resistance: heavy volume + upper band rejection.
+    # Price near BB upper OR swept a high, RSI 55-75, bearish candle/large wick.
+    if bb_upper and rsi_15m:
+        near_upper_hv = abs(price - bb_upper) <= 200
+        rsi_ok_hv = 55 <= rsi_15m <= 75
+        vol_ratio_hv = tf_15m.get("volume_ratio", 1.0) or 1.0
+        vol_high_hv = vol_ratio_hv >= 1.4 or tf_15m.get("volume_signal") in ("HIGH", "VERY_HIGH")
+        swept_high_hv = tf_15m.get("swept_high", False)
+        at_supply_hv = near_upper_hv or swept_high_hv
+        cp_dir_hv = tf_15m.get("candlestick_direction")
+        bearish_candle_hv = cp_dir_hv == "bearish"
+        candle_open_hv = tf_15m.get("open")
+        candle_high_hv = tf_15m.get("high")
+        upper_wick_hv = (candle_high_hv - max(candle_open_hv, price)) if (candle_open_hv and candle_high_hv) else 0
+        large_wick_hv = upper_wick_hv >= 20
+        ha_bear_hv = tf_15m.get("ha_bullish") is False
+        rejection_hv = bearish_candle_hv or large_wick_hv or ha_bear_hv
+
+        if at_supply_hv and rsi_ok_hv and vol_high_hv and rejection_hv:
+            entry = price
+            sl = entry + DEFAULT_SL_DISTANCE
+            tp = entry - DEFAULT_TP_DISTANCE
+            confirm_hv = []
+            if bearish_candle_hv:
+                confirm_hv.append("bearish candle")
+            if large_wick_hv:
+                confirm_hv.append(f"wick {upper_wick_hv:.0f}pts")
+            if ha_bear_hv:
+                confirm_hv.append("HA bearish")
+            if swept_high_hv:
+                confirm_hv.append("liquidity sweep")
+            conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+            reasoning = (
+                f"SHORT: High-volume distribution at BB upper ({bb_upper:.0f}). "
+                f"RSI {rsi_15m:.1f}, vol ratio {vol_ratio_hv:.2f}x. "
+                f"Rejection: {', '.join(confirm_hv)}. {short_daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "high_volume_distribution",
+                "direction": "SHORT",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
+
+    # --- SHORT Setup 10: Multi-Timeframe Bearish Alignment ---
+    # All timeframes pointing down simultaneously — bear market momentum confirmation.
+    # No specific level required: it's about full-stack alignment.
+    # Works in pre-screen (rsi_4h=None): uses 4 local factors; rsi_4h is bonus when available.
+    if rsi_15m:
+        rsi_15m_bear = rsi_15m < 48
+        rsi_4h_bear = rsi_4h is not None and rsi_4h < 48
+        daily_bear_mta = daily_bullish is False
+        below_ema50_mta = not tf_15m.get("above_ema50")
+        below_vwap_mta = tf_15m.get("above_vwap") is False
+        ha_bear_mta = tf_15m.get("ha_bullish") is False
+        ha_streak_mta = tf_15m.get("ha_streak")
+        # Score local factors (always available): rsi_15m, daily, ema50, vwap
+        local_score = sum([rsi_15m_bear, daily_bear_mta, below_ema50_mta, below_vwap_mta])
+        alignment_score = local_score + (1 if rsi_4h_bear else 0)
+        # Need at least 3/4 local factors + HA bear; if 4H available, need 4/5
+        threshold = 4 if rsi_4h is not None else 3
+        strong_alignment = alignment_score >= threshold and ha_bear_mta and rsi_15m_bear
+
+        if strong_alignment:
+            entry = price
+            sl = entry + DEFAULT_SL_DISTANCE
+            tp = entry - DEFAULT_TP_DISTANCE
+            align_parts = []
+            if rsi_15m_bear:
+                align_parts.append(f"15M RSI {rsi_15m:.1f}")
+            if rsi_4h_bear:
+                align_parts.append(f"4H RSI {rsi_4h:.1f}")
+            if daily_bear_mta:
+                align_parts.append("daily bearish")
+            if below_ema50_mta:
+                align_parts.append("below EMA50")
+            if below_vwap_mta:
+                align_parts.append("below VWAP")
+            conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+            total_factors = 5 if rsi_4h is not None else 4
+            reasoning = (
+                f"SHORT: Multi-TF bearish alignment ({alignment_score}/{total_factors} factors). "
+                f"HA streak {ha_streak_mta}. "
+                f"Aligned: {', '.join(align_parts)}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "multi_tf_bearish",
+                "direction": "SHORT",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
+
+    # --- SHORT Setup 11: EMA200 Rejection (major support → resistance) ---
+    # Price rallies up to EMA200 from below and gets rejected — turn of tide signal.
+    # Bear market intensity: price was able to touch EMA200 but couldn't break above.
+    ema200_15m = tf_15m.get("ema200")
+    if ema200_15m and rsi_15m:
+        near_ema200 = abs(price - ema200_15m) <= 200
+        rsi_ok_e200 = 50 <= rsi_15m <= 70
+        approaching_from_below = price < ema200_15m and tf_15m.get("prev_close", price) <= ema200_15m
+        candle_open_e200 = tf_15m.get("open")
+        candle_high_e200 = tf_15m.get("high")
+        wick_e200 = (candle_high_e200 - max(candle_open_e200, price)) if (candle_open_e200 and candle_high_e200) else 0
+        ha_bear_e200 = tf_15m.get("ha_bullish") is False
+        fvg_bear_e200 = tf_15m.get("fvg_bearish", False)
+        rejection_e200 = wick_e200 >= 15 or ha_bear_e200 or fvg_bear_e200
+
+        if near_ema200 and rsi_ok_e200 and approaching_from_below and rejection_e200 and daily_bullish is False:
+            entry = price
+            sl = entry + DEFAULT_SL_DISTANCE
+            tp = entry - DEFAULT_TP_DISTANCE
+            conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+            confirm_parts_e200 = []
+            if wick_e200 >= 15:
+                confirm_parts_e200.append(f"wick {wick_e200:.0f}pts")
+            if ha_bear_e200:
+                confirm_parts_e200.append("HA bearish")
+            if fvg_bear_e200:
+                confirm_parts_e200.append("bearish FVG")
+            reasoning = (
+                f"SHORT: EMA200 rejection on 15M ({ema200_15m:.0f}). "
+                f"Price {abs(price - ema200_15m):.0f}pts from EMA200 (approached from below). "
+                f"RSI {rsi_15m:.1f}. Rejection: {', '.join(confirm_parts_e200)}. {short_daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "ema200_rejection",
+                "direction": "SHORT",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
+
+    # --- SHORT Setup 12: Lower Lows Bearish Momentum ---
+    # Swing deterioration: new swing_low_20 < previous swing_low.
+    # Combined with bearish momentum (HA streak, RSI) → trend confirmation.
+    swing_low_20_curr = tf_15m.get("swing_low_20")
+    swing_low_20_prev = tf_15m.get("swing_low_20_prev")  # will check if available
+    if swing_low_20_curr and rsi_15m:
+        # If no prev available, compare to current low vs 20-bar low trend
+        prev_swing_low = tf_15m.get("swing_low_20_prev")
+        is_lower_low = prev_swing_low is not None and swing_low_20_curr < prev_swing_low
+        if not is_lower_low and len(tf_15m.get("lows", [])) >= 20:
+            # Fallback: check if current is at least 50pts below BB mid (deep pullback)
+            lows_recent = tf_15m.get("lows", [])[-20:]
+            if lows_recent:
+                is_lower_low = min(lows_recent[-5:]) < min(lows_recent[-20:-10])
+
+        rsi_ok_ll = 20 <= rsi_15m <= 50
+        ha_streak_ll = tf_15m.get("ha_streak")
+        ha_bearish_ll = ha_streak_ll is not None and ha_streak_ll <= -2
+        below_ema50_ll = not tf_15m.get("above_ema50")
+        vol_signal_ll = tf_15m.get("volume_signal", "NORMAL")
+        vol_ok_ll = vol_signal_ll != "LOW"
+
+        if is_lower_low and rsi_ok_ll and ha_bearish_ll and below_ema50_ll and vol_ok_ll:
+            entry = price
+            sl = entry + DEFAULT_SL_DISTANCE
+            tp = entry - DEFAULT_TP_DISTANCE
+            conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+            reasoning = (
+                f"SHORT: Lower lows bearish momentum on 15M. "
+                f"Swing deterioration: new low {swing_low_20_curr:.0f}. "
+                f"RSI {rsi_15m:.1f}, HA streak {ha_streak_ll}, vol={vol_signal_ll}. "
+                f"Below EMA50. {short_daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "lower_lows_bearish",
+                "direction": "SHORT",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
+
+    # --- SHORT Setup 13: Pivot Point Resistance Rejection ---
+    # Price tests Pivot Resistance (R1) and gets rejected with bearish confirmation.
+    # Daily pivots provide institutional support/resistance levels.
+    if pivots and rsi_15m:
+        pivot_r1 = pivots.get("r1")
+        if pivot_r1:
+            near_r1 = abs(price - pivot_r1) <= 150
+            rsi_ok_pr = 55 <= rsi_15m <= 75
+            candle_open_pr = tf_15m.get("open")
+            candle_high_pr = tf_15m.get("high")
+            wick_pr = (candle_high_pr - max(candle_open_pr, price)) if (candle_open_pr and candle_high_pr) else 0
+            ha_bear_pr = tf_15m.get("ha_bullish") is False
+            cp_dir_pr = tf_15m.get("candlestick_direction")
+            bearish_candle_pr = cp_dir_pr == "bearish"
+            rejection_pr = wick_pr >= 15 or ha_bear_pr or bearish_candle_pr
+
+            if near_r1 and rsi_ok_pr and rejection_pr and daily_bullish is False:
+                entry = price
+                sl = entry + DEFAULT_SL_DISTANCE
+                tp = entry - DEFAULT_TP_DISTANCE
+                conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+                confirm_parts_pr = []
+                if wick_pr >= 15:
+                    confirm_parts_pr.append(f"wick {wick_pr:.0f}pts")
+                if ha_bear_pr:
+                    confirm_parts_pr.append("HA bearish")
+                if bearish_candle_pr:
+                    confirm_parts_pr.append("bearish candle")
+                reasoning = (
+                    f"SHORT: Pivot R1 rejection on 15M ({pivot_r1:.0f}). "
+                    f"Price {abs(price - pivot_r1):.0f}pts from R1 (institutional resistance). "
+                    f"RSI {rsi_15m:.1f}. Rejection: {', '.join(confirm_parts_pr)}. {short_daily_str}."
+                )
+                if conf_list:
+                    reasoning += f" Confluence: {', '.join(conf_list)}."
+                if counter_list:
+                    reasoning += f" Caution: {', '.join(counter_list)}."
+                result.update({
+                    "found": True,
+                    "type": "pivot_r1_rejection",
+                    "direction": "SHORT",
+                    "entry": round(entry, 1),
+                    "sl": round(sl, 1),
+                    "tp": round(tp, 1),
+                    "reasoning": reasoning,
+                })
+                return result
 
     diag_parts = []
     if bb_mid is not None:

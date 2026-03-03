@@ -390,6 +390,50 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"send_scalp_executed failed: {e}")
 
+    async def send_force_open_alert(self, alert_data: dict):
+        """Send a force-open alert when local confidence is 100% but AI rejected.
+
+        Unlike regular trade alerts, force-open does NOT auto-execute.
+        User must explicitly press Force Open to proceed.
+        """
+        direction = alert_data.get("direction", "LONG")
+        ai_reasoning = alert_data.get("ai_reasoning", "")
+        text = "\n".join([
+            "🔓 <b>FORCE OPEN — 100% LOCAL</b> 🔓",
+            DIV,
+            f"{_dir(direction)}  |  {alert_data.get('session', '?')}",
+            DIV,
+            f"Entry:  {_price(alert_data.get('entry', 0))}",
+            f"SL:     {_price(alert_data.get('sl', 0))} 🔴",
+            f"TP:     {_price(alert_data.get('tp', 0))} 🟢",
+            DIV,
+            f"Setup:      {alert_data.get('setup_type', 'N/A')}",
+            f"Local:      🟢 <b>100% (12/12)</b>",
+            f"AI:         ❌ <b>REJECTED</b>",
+            DIV,
+            f"<i>AI reason:</i> {ai_reasoning[:250]}" if ai_reasoning else "",
+            DIV,
+            alert_data.get("reasoning", ""),
+            DIV,
+            f"⏳ Expires in <b>{TRADE_EXPIRY_MINUTES} min</b>",
+            "⚠️ <b>No auto-execute</b> — requires manual confirmation.",
+        ])
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔓 Force Open", callback_data="force_open"),
+            InlineKeyboardButton("❌ Skip",       callback_data="reject_force"),
+        ]])
+        try:
+            self.storage.set_pending_alert(alert_data)
+            await self.app.bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+            logger.info(f"Force open alert sent: {direction} 100% local, AI rejected")
+        except Exception as e:
+            logger.error(f"send_force_open_alert failed: {e}")
+
     async def send_position_update(self, pnl_points: float, phase: str, current_price: float):
         text = "\n".join([
             "📊 <b>Position Update</b>",
@@ -814,6 +858,45 @@ class TelegramBot:
             self.storage.clear_pending_alert()
             await query.edit_message_text(
                 query.message.text + "\n\n❌ <b>REJECTED</b> by user.",
+                parse_mode=ParseMode.HTML,
+            )
+
+        elif data == "force_open":
+            alert = self.storage.get_pending_alert()
+            if not alert:
+                await query.edit_message_text(
+                    "⏰ Alert already processed or expired.", parse_mode=ParseMode.HTML
+                )
+                return
+            ts = alert.get("timestamp", "")
+            if ts:
+                try:
+                    age = (datetime.now() - datetime.fromisoformat(ts)).total_seconds()
+                    if age > TRADE_EXPIRY_MINUTES * 60:
+                        self.storage.clear_pending_alert()
+                        await query.edit_message_text(
+                            "⏰ <b>Alert EXPIRED.</b> Setup may no longer be valid.",
+                            parse_mode=ParseMode.HTML,
+                        )
+                        return
+                except ValueError:
+                    pass
+            if not self.on_trade_confirm:
+                await query.edit_message_text(
+                    "⚠️ Trade execution not connected.", parse_mode=ParseMode.HTML
+                )
+                return
+            self.storage.clear_pending_alert()
+            await query.edit_message_text(
+                query.message.text + "\n\n🔓 <b>FORCE OPENED</b> — executing trade…",
+                parse_mode=ParseMode.HTML,
+            )
+            await self.on_trade_confirm(alert)
+
+        elif data == "reject_force":
+            self.storage.clear_pending_alert()
+            await query.edit_message_text(
+                query.message.text + "\n\n❌ <b>SKIPPED</b> by user.",
                 parse_mode=ParseMode.HTML,
             )
 

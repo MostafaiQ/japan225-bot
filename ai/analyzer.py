@@ -49,11 +49,15 @@ SETUPS — LONG (daily trend in reasoning; counter-trend allowed if strong confl
     → Caution if vol=LOW, but not auto-reject (late session vol naturally lower)
 
 SETUPS — SHORT (min confidence 75% — BOJ risk; counter-trend allowed if strong confluence):
-  bb_upper_rejection: price ±150pts BB_upper | RSI15M 55-75 | below EMA50
-  ema50_rejection:    price ≤ EMA50+2 | dist ≤150pts | RSI15M 50-70
-  bb_mid_rejection:   price ±150pts BB_mid | RSI15M 40-65 | rejection confirmed (price<prev_close OR wick/HA/candle)
-  overbought_reversal: RSI15M >70 | daily bearish | reversal confirmation (wick/HA/candle/sweep)
-  breakdown_continuation: price >100pts below BB_mid | RSI 25-45 | below EMA50 | HA streak ≤-2 | vol not LOW
+  bb_upper_rejection:      price ±150pts BB_upper | RSI15M 55-75 | below EMA50
+  ema50_rejection:         price ≤ EMA50+2 | dist ≤150pts | RSI15M 50-70
+  bb_mid_rejection:        price ±150pts BB_mid | RSI15M 40-65 | rejection confirmed (price<prev_close OR wick/HA/candle)
+  overbought_reversal:     RSI15M >70 | daily bearish | reversal confirmation (wick/HA/candle/sweep)
+  breakdown_continuation:  price >100pts below BB_mid | RSI 25-45 | below EMA50 | HA streak ≤-2 | vol not LOW
+  dead_cat_bounce_short:   price at BB_mid/EMA9 from below | RSI 43-62 | daily bearish | below EMA50 | HA turning bearish
+  bear_flag_breakdown:     RSI 35-52 | vol LOW/NORMAL (flag) | HA streak ≤-1 | price between BB_lower–BB_mid | below EMA50
+  high_volume_distribution: price ±200pts BB_upper OR swept_high | RSI 55-75 | vol ratio ≥1.4x | bearish candle/wick
+  multi_tf_bearish:        rsi_15m<48 AND rsi_4h<48 AND daily bearish AND below EMA50 AND below VWAP AND HA bearish (≥4/5 factors)
 
 RULES: RR ≥ 1.5 after spread(7pts). No trade: HIGH event <60min. SL=150 TP=400.
 VOLUME: HIGH(>1.5x)=conviction. LOW(<0.7x)=caution, weigh alongside other criteria. Not auto-reject.

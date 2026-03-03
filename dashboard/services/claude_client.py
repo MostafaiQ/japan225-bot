@@ -12,8 +12,9 @@ Context strategy (deadlock prevention):
   - CLAUDE.md in project root instructs Claude Code to use digests, not raw files.
 
 Tiered model selection:
-  - Quick queries (status, info, simple questions): Sonnet 4.6 → 5-15s response
-  - Deep queries (fix code, debug, push, complex analysis): Opus 4.6 high effort → 30-120s
+  - Tier 1 (Haiku): status/info queries (<200 chars) → 2-8s, timeout 60s
+  - Tier 2 (Sonnet): analysis, trade review, moderate → 10-30s, timeout 180s
+  - Tier 3 (Opus): code fixes, debugging, deploys → 30-120s, timeout 600s
 
 Usage tracking:
   - Every query is classified by intent and logged to chat_usage.json.
@@ -86,7 +87,7 @@ def _pick_tier(message: str) -> tuple[str, str, int]:
 
     # Tier 3: Opus — code changes, fixes, debugging
     if any(kw in msg_lower for kw in _DEEP_KEYWORDS):
-        return "opus", "high", 3600
+        return "opus", "high", 600
 
     # Tier 1: Haiku — pure status/info queries (short, no analysis needed)
     haiku_patterns = [
@@ -96,10 +97,10 @@ def _pick_tier(message: str) -> tuple[str, str, int]:
         "what has been", "which session", "is ig", "is market",
     ]
     if any(kw in msg_lower for kw in haiku_patterns) and len(message) < 200:
-        return "haiku", "low", 300
+        return "haiku", "low", 60
 
     # Tier 2: Sonnet — everything else (analysis, trade review, questions)
-    return "sonnet", "high", 1200
+    return "sonnet", "high", 180
 
 
 def chat(message: str, history: list[dict]) -> str:

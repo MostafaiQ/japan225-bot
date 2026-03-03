@@ -99,6 +99,8 @@ class TradingMonitor:
         self._overrides_path = Path(__file__).parent / "storage" / "data" / "dashboard_overrides.json"
         self._trigger_path   = Path(__file__).parent / "storage" / "data" / "force_scan.trigger"
         self._clear_cd_path  = Path(__file__).parent / "storage" / "data" / "clear_cooldown.trigger"
+        self._force_open_pending_path = Path(__file__).parent / "storage" / "data" / "force_open_pending.json"
+        self._force_open_trigger_path = Path(__file__).parent / "storage" / "data" / "force_open.trigger"
 
     # ============================================================
     # STARTUP
@@ -133,13 +135,15 @@ class TradingMonitor:
             logger.critical("IG connection failed after 3 attempts. Waiting for IG to recover.")
             await self.telegram.send_alert(
                 "⚠️ IG API unavailable (503/500 — likely weekend maintenance).\n"
-                "Telegram is online. Bot will retry IG every 1 minute.\n"
+                "Telegram is online. Bot will retry IG (backoff: 60s→120s→300s max).\n"
                 "Use /status for updates."
             )
+            _startup_backoff = 60
             while not connected:
                 self._write_state(phase="IG_DISCONNECTED")
-                await asyncio.sleep(60)
-                logger.info("Retrying IG connection...")
+                logger.info(f"Retrying IG connection in {_startup_backoff}s...")
+                await asyncio.sleep(_startup_backoff)
+                _startup_backoff = min(_startup_backoff * 2, 300)
                 if self.ig.connect():
                     connected = True
                     await self.telegram.send_alert("✅ IG reconnected. Bot resuming normal operation.")
@@ -328,6 +332,58 @@ class TradingMonitor:
             pass
         return False
 
+    def _write_force_open_pending(self, setup: dict, session: dict, current_price: float):
+        """Write pending force-open opportunity so dashboard can show Force Open button."""
+        try:
+            pending = {
+                "setup_type": setup.get("type"),
+                "direction": setup.get("direction"),
+                "entry": setup.get("entry", current_price),
+                "sl": setup.get("sl"),
+                "tp": setup.get("tp"),
+                "session": session.get("name", "unknown"),
+                "confidence": 100,
+                "reasoning": setup.get("reasoning", "")[:300],
+                "ai_analysis": setup.get("reasoning", "")[:300],
+                "timestamp": datetime.now().isoformat(),
+            }
+            self._force_open_pending_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._force_open_pending_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(pending))
+            tmp.replace(self._force_open_pending_path)
+            logger.info(f"Force-open pending: {setup.get('direction')} {setup.get('type')} @ {setup.get('entry')}")
+        except Exception as e:
+            logger.warning(f"_write_force_open_pending failed: {e}")
+
+    async def _check_force_open_trigger(self):
+        """Execute force-open trade if dashboard user clicked Force Open button."""
+        try:
+            if not self._force_open_trigger_path.exists():
+                return
+            data = json.loads(self._force_open_trigger_path.read_text())
+            self._force_open_trigger_path.unlink(missing_ok=True)
+            # Remove pending file too — trade is being executed
+            self._force_open_pending_path.unlink(missing_ok=True)
+
+            # Compute real lot size from current balance
+            balance_info = await asyncio.get_event_loop().run_in_executor(None, self.ig.get_account_info)
+            balance = balance_info.get("balance", 0) if balance_info else 0
+            if balance > 0:
+                entry = float(data.get("entry", 0))
+                sl = float(data.get("sl", 0))
+                sl_dist = abs(entry - sl) if sl else DEFAULT_SL_DISTANCE
+                data["lots"] = self.risk.get_safe_lot_size(balance, entry, sl_distance=sl_dist)
+            else:
+                data["lots"] = 0.01
+
+            logger.info(f"Force-open trigger received: {data.get('direction')} {data.get('setup_type')} lots={data.get('lots')}")
+            await self.telegram.send_alert(
+                f"USER FORCE-OPEN: {data.get('direction')} {data.get('setup_type')} @ {data.get('entry')} | lots={data.get('lots')}"
+            )
+            await self._on_trade_confirm(data)
+        except Exception as e:
+            logger.warning(f"_check_force_open_trigger failed: {e}")
+
     # ============================================================
     # MAIN CYCLE
     # ============================================================
@@ -336,16 +392,18 @@ class TradingMonitor:
         """Dispatches to scanning or monitoring based on position state."""
         try:
             self._reload_overrides()
+            await self._check_force_open_trigger()
 
             if not self.ig.ensure_connected():
                 self._ig_fail_count = getattr(self, '_ig_fail_count', 0) + 1
-                logger.warning("IG reconnection failed. Sleeping 60s.")
-                if self._ig_fail_count == 1 or self._ig_fail_count % 10 == 0:
+                _backoff = min(60 * (2 ** (self._ig_fail_count - 1)), 300)
+                logger.warning(f"IG reconnection failed (attempt {self._ig_fail_count}). Sleeping {_backoff}s.")
+                if self._ig_fail_count == 1 or self._ig_fail_count % 5 == 0:
                     await self.telegram.send_alert(
-                        f"⚠️ IG API unreachable (attempt {self._ig_fail_count}, ~{self._ig_fail_count} min). "
-                        f"Retrying every 60s."
+                        f"⚠️ IG API unreachable (attempt {self._ig_fail_count}). "
+                        f"Next retry in {_backoff}s."
                     )
-                await asyncio.sleep(60)
+                await asyncio.sleep(_backoff)
                 return
 
             if getattr(self, '_ig_fail_count', 0) > 0:
@@ -528,6 +586,10 @@ class TradingMonitor:
 
         prescreen_direction = setup["direction"]
         logger.info(f"Pre-screen: {prescreen_direction} {setup['type']} ({entry_timeframe}) detected. Checking local confidence...")
+
+        # Write force-open pending for extreme setups (local_score=100) so dashboard shows button
+        if setup.get("local_score") == 100:
+            self._write_force_open_pending(setup, session, current_price)
 
         # No AI cooldown — subscription is $0/call, always escalate if setup found
 
@@ -741,6 +803,40 @@ class TradingMonitor:
                         logger.info(f"Opus rejected scalp: {scalp_result.get('reasoning', '')[:150]}")
                 except Exception as e:
                     logger.warning(f"Opus scalp evaluation failed: {e}")
+
+            # --- Force Open: 100% local confidence, AI rejected → user decides ---
+            if local_score >= 100:
+                criteria_detail = f"{local_conf.get('passed_criteria', 12)}/{local_conf.get('total_criteria', 12)}"
+                logger.info(
+                    f"Force open offered: 100% local ({criteria_detail}), AI rejected. "
+                    f"Sending to Telegram for user decision."
+                )
+                fo_entry = current_price
+                fo_sl = setup.get("sl", fo_entry - (150 if direction == "LONG" else -150))
+                fo_tp = setup.get("tp", fo_entry + (400 if direction == "LONG" else -400))
+                fo_sl_dist = abs(fo_entry - fo_sl)
+
+                # Compute lots (same as regular trade path)
+                fo_balance_info = self.ig.get_account_info()
+                fo_balance = fo_balance_info.get("balance", 0) if fo_balance_info else 0
+                fo_lots = self.risk.get_safe_lot_size(fo_balance, fo_entry, sl_distance=fo_sl_dist) if fo_balance > 0 else CONTRACT_SIZE
+
+                force_alert = {
+                    "direction": direction,
+                    "setup_type": setup.get("type", "unknown"),
+                    "entry": fo_entry,
+                    "sl": fo_sl,
+                    "tp": fo_tp,
+                    "lots": fo_lots,
+                    "confidence": local_score,
+                    "session": session["name"],
+                    "reasoning": f"100% local confidence ({criteria_detail}). AI rejected.",
+                    "ai_reasoning": ai_reasoning[:300],
+                    "force_open": True,
+                    "timestamp": datetime.now().isoformat(),
+                    "local_confidence": local_score,
+                }
+                await self.telegram.send_force_open_alert(force_alert)
 
             # No cooldown — subscription is $0/call, scan again in 5 min
             return SCAN_INTERVAL_SECONDS
@@ -1253,6 +1349,9 @@ class TradingMonitor:
         self.momentum_tracker = MomentumTracker(direction, actual_entry)
         self._position_empty_count = 0
 
+        # Clean up pending force-open file — trade is now open
+        self._force_open_pending_path.unlink(missing_ok=True)
+
         await self.telegram.send_alert(
             f"Trade #{trade_num} OPENED\n"
             f"{direction} {alert_data.get('lots')} lots @ {actual_entry:.0f}\n"
@@ -1269,6 +1368,9 @@ class TradingMonitor:
                 if self._trigger_path.exists():
                     self._trigger_path.unlink(missing_ok=True)
                     logger.info("Dashboard force-scan trigger detected (poll). Waking main loop.")
+                    self._force_scan_event.set()
+                if self._force_open_trigger_path.exists():
+                    logger.info("Dashboard force-open trigger detected (poll). Waking main loop.")
                     self._force_scan_event.set()
                 if self._clear_cd_path.exists():
                     self._clear_cd_path.unlink()

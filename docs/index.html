@@ -755,7 +755,7 @@
 const S = {
   url:    localStorage.getItem('apiUrl')   || '',
   token:  localStorage.getItem('apiToken') || '',
-  tab:    'overview',
+  tab:    localStorage.getItem('activeTab') || 'overview',
   logType: 'scan',
   chat:   [],          // history [{role,content}]
   historyUpdatedAt: '', // last known server timestamp for cross-device sync
@@ -819,6 +819,7 @@ function switchTab(btn, name) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   S.tab = name;
+  localStorage.setItem('activeTab', name);
   const loaders = { overview: loadOverview, history: loadHistory, logs: loadLogs, config: loadConfig };
   if (loaders[name]) loaders[name]();
   if (name === 'chat') { const b = document.getElementById('chatBox'); if (b) b.scrollTop = b.scrollHeight; }
@@ -1281,12 +1282,12 @@ async function _postAndPoll(msg, thinkEl, attach) {
         const tier = d.tier || 'sonnet';
         _updateTierBadge(thinkEl, tier);
         _savePendingJobs(d.job_id, Date.now(), tier);
-        _startJobPolling(d.job_id, thinkEl);
+        _startJobPolling(d.job_id, thinkEl, tier);
       } else if (d.response) {
         if (thinkEl) { if (thinkEl._elapsedTimer) clearInterval(thinkEl._elapsedTimer); thinkEl.remove(); }
-        S.chat.push({ role:'assistant', content: d.response });
+        S.chat.push({ role:'assistant', content: d.response, tier: tier });
         _saveHistory();
-        addMsg('assistant', d.response);
+        addMsg('assistant', d.response, null, tier);
         _refreshChatCost();
       }
     } catch(_) {
@@ -1353,7 +1354,7 @@ function _addThinkingBubble(startMs, tier) {
   return d;
 }
 
-function _startJobPolling(jobId, thinkEl) {
+function _startJobPolling(jobId, thinkEl, tier) {
   const statusEl = thinkEl ? thinkEl.querySelector('.think-status') : null;
   let attempt = 0;
 
@@ -1375,9 +1376,9 @@ function _startJobPolling(jobId, thinkEl) {
         _cleanup();
         const reply = d.response || '';
         if (reply) {
-          S.chat.push({ role:'assistant', content: reply });
+          S.chat.push({ role:'assistant', content: reply, tier: tier });
           _saveHistory();
-          addMsg('assistant', reply);
+          addMsg('assistant', reply, null, tier);
           _refreshChatCost();
         }
       }
@@ -1394,7 +1395,7 @@ function _startJobPolling(jobId, thinkEl) {
               S.historyUpdatedAt = h.updated_at;
               localStorage.setItem('chatHistory', JSON.stringify(S.chat));
               const box = document.getElementById('chatBox');
-              if (box) { box.innerHTML = ''; S.chat.forEach(m => addMsg(m.role, m.content)); }
+              if (box) { box.innerHTML = ''; S.chat.forEach(m => addMsg(m.role, m.content, null, m.tier)); }
               return;
             }
           } catch(_) {}
@@ -1406,7 +1407,7 @@ function _startJobPolling(jobId, thinkEl) {
   const timer = setInterval(poll, 4000);
   S.pendingJobs[jobId] = { timer, thinkEl };
 }
-function addMsg(role, text, time) {
+function addMsg(role, text, time, tier) {
   const box = document.getElementById('chatBox');
   const d = document.createElement('div');
   d.className = 'chat-row ' + role;
@@ -1418,10 +1419,13 @@ function addMsg(role, text, time) {
     : esc(text).replace(/\n/g,'<br>');
   // Store raw text for reply-to (use data-attr + event handler for XSS safety)
   const replyBtn = `<button class="reply-btn" title="Reply">↩</button>`;
+  const tierBadge = (role === 'assistant' && tier)
+    ? `<span style="font-size:10px;padding:1px 6px;border-radius:8px;color:#fff;background:${_tierColors[tier]||'#6366f1'};margin-left:4px;">${_tierLabels[tier]||tier}</span>`
+    : '';
   d.innerHTML = `<div class="chat-avatar ${avatarClass}">${avatarLabel}</div>
     <div class="chat-body">
       <div class="bubble${role === 'assistant' ? ' md' : ''}">${content}</div>
-      <div class="chat-time">${t} ${replyBtn}</div>
+      <div class="chat-time">${t}${tierBadge} ${replyBtn}</div>
     </div>`;
   box.appendChild(d);
   // Wire reply button safely (no inline onclick with user content)
@@ -1452,7 +1456,7 @@ async function _pollHistory() {
       S.chat = d.messages;
       localStorage.setItem('chatHistory', JSON.stringify(S.chat));
       const box = document.getElementById('chatBox');
-      if (box) { box.innerHTML = ''; S.chat.forEach(m => addMsg(m.role, m.content)); }
+      if (box) { box.innerHTML = ''; S.chat.forEach(m => addMsg(m.role, m.content, null, m.tier)); }
     }
   } catch(_) {}
 }
@@ -1669,7 +1673,14 @@ function fmtDt(iso) {
   if (!S.url) {
     showNotConfigured();   // shows "Click ⚙ to configure" — no modal, no blocking overlay
   } else {
-    loadOverview();
+    // Restore saved tab (default: overview)
+    const savedTab = S.tab;
+    const tabBtn = document.querySelector(`.tab[data-tab="${savedTab}"]`);
+    if (tabBtn && savedTab !== 'overview') {
+      switchTab(tabBtn, savedTab);
+    } else {
+      loadOverview();
+    }
   }
   // Restore draft text in chat input (before _initChat so it's visible immediately)
   const _draft = localStorage.getItem('chatDraft');

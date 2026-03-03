@@ -100,9 +100,14 @@ def compute_confidence(
     rsi_daily = tf_daily.get("rsi")
 
     # Setup-type-aware flags — used by C1, C5, C10, C11, C12
-    _oversold_setup = setup_type in ("bollinger_lower_bounce", "oversold_reversal")
+    _oversold_setup = setup_type in ("bollinger_lower_bounce", "oversold_reversal", "extreme_oversold_reversal")
     _overbought_setup = setup_type in ("overbought_reversal",)
-    _breakdown_setup = setup_type in ("breakdown_continuation",)
+    _breakdown_setup = setup_type in (
+        "breakdown_continuation", "bear_flag_breakdown", "multi_tf_bearish"
+    )
+    # Dead cat and distribution shorts: always daily-bearish by definition (no C1 issue).
+    # multi_tf_bearish: C4 (price can be anywhere when all TFs align).
+    _multi_tf_short = setup_type == "multi_tf_bearish"
 
     # ---- Criterion 1: Daily Trend Aligned (oversold-exempt) ----
     # Oversold bounces (bb_lower_bounce, oversold_reversal) pass C1 even when daily is bearish.

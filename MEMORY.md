@@ -125,6 +125,7 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 - monitor.py: Near-miss → Opus scalp auto-execute. No user confirmation for scalps. `_execute_scalp()` builds alert, validates R:R >= 1.2, opens trade, notifies via Telegram.
 - monitor.py: Normal trade alerts auto-execute after 2 min if user doesn't respond. `_auto_execute_after_timeout()` asyncio background task.
 - telegram_bot.py: `send_scalp_executed()` replaces old 3-button `send_near_miss_alert()`. Notification-only (no buttons). Near-miss callback handlers removed.
+- monitor.py + telegram_bot.py: Force Open feature. When local confidence == 100% (12/12) but AI rejects, Telegram alert with Force Open / Skip buttons. 15min TTL. No auto-execute — requires explicit user confirmation. Uses same `pending_alert` + `on_trade_confirm` flow as regular trades. Callback data: `force_open` / `reject_force`.
 
 ## Dashboard Fixes Applied (2026-03-01)
 - monitor.py: _last_scan_detail added to bot_state.json. Scan records written for ALL active-session outcomes (no_setup, cooldown, low_conf, event_block, friday_block). Previously only Haiku-rejected and Sonnet/Opus scans wrote records.
@@ -140,11 +141,12 @@ Live trading active 2026-03-01. Historical backtest (bad): 613 trades, 0.8% WR �
 
 ---
 
-## Setup Types (detect_setup — updated 2026-03-02)
+## Setup Types (detect_setup — updated 2026-03-03)
 | Type | Direction | Trigger | RSI | Gate |
 |------|-----------|---------|-----|------|
 | bollinger_mid_bounce | LONG | price ±150pts from BB mid | 30-65 | bounce_starting OR (RSI<40 + wick/HA/candle pattern) |
 | bollinger_lower_bounce | LONG | price ±150pts from BB lower | 20-40 | lower_wick ≥15pts (no EMA50 gate) |
+| extreme_oversold_reversal | LONG | RSI <22 + 4H near BB lower(300pts) or 4H RSI<35 | <22 | wick≥10 OR HA bullish OR candle pattern OR sweep. No daily req. |
 | oversold_reversal | LONG | RSI <30 + daily bullish | <30 | wick≥10 OR HA bullish OR candle pattern OR sweep |
 | bollinger_upper_rejection | SHORT | price ±150pts from BB upper | 55-75 | below_ema50 |
 | ema50_rejection | SHORT | price ≤ema50+2, dist ≤150 | 50-70 | daily bearish |
@@ -180,8 +182,8 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
   C7/C8 (event/blackout) hard-blocked BEFORE Sonnet. No cooldown on AI reject.
   Proportional formula: score=30+int(passed*70/12). 12/12=100%, 7/12=70%, 8/12=76%.
   LONG needs 7/12 (70≥70), SHORT needs 8/12 (76≥75).
-- C5/C10/C11 now setup-type-aware: bb_lower_bounce + oversold_reversal get lenient treatment
-  (below-EMA50 expected, bearish HA expected, 4H bearish expected for mean-reversion).
+- C5/C10/C11 now setup-type-aware: bb_lower_bounce + oversold_reversal + extreme_oversold_reversal
+  get lenient treatment (below-EMA50 expected, bearish HA expected, 4H bearish expected for mean-reversion).
 - Sonnet 4.6: adaptive thinking. Mean-reversion bounce rules in system prompt.
   **Conditional Opus**: --agents only loaded when local conf 60-86%. Clear approve (≥87%) or
   reject (≤59%) → no Opus overhead. Saves ~25-30s on non-borderline calls.
@@ -254,6 +256,7 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 HTML parse_mode. REPLY_KB (4×2) always visible. `/menu` → inline panel.
 Commands: `/status /balance /journal /today /stats /cost /force /stop /pause /resume /close /kill`
 `/kill`=emergency close (no confirm). `/close`=confirm dialog. Trade alerts: CONFIRM/REJECT (15min TTL).
+Force Open alert: when local confidence 100% (12/12) but AI rejected. Two buttons: Force Open / Skip. 15min TTL. No auto-execute.
 _nav_kb(ctx)=contextual inline row after every response. _dispatch_menu()=shared handler.
 
 ## DB + Digests

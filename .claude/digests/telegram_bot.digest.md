@@ -69,6 +69,7 @@ Section headers (── Info ──, ── Controls ──) use callback_data="
 ## Alert methods
 send_alert(message: str)                    → plain HTML message
 send_trade_alert(trade_data: dict)          → CONFIRM / REJECT inline buttons, stores in self.pending_alert. Auto-executes after 2 min if no response.
+send_force_open_alert(alert_data: dict)     → Force Open / Skip inline buttons. 100% local confidence, AI rejected. 15min TTL. No auto-execute — requires explicit user click. Uses same pending_alert slot.
 send_scalp_executed(alert_data, scalp_result) → notification-only (no buttons). Opus-approved scalp auto-executed.
 send_position_update(pnl_pts, phase, price) → milestone or phase change, colored P&L
 send_adverse_alert(message, tier, deal_id)  → tier-colored alert with Close now / Hold inline buttons
@@ -76,6 +77,8 @@ send_adverse_alert(message, tier, deal_id)  → tier-colored alert with Close no
 ## Inline button callbacks (CallbackQueryHandler)
 confirm_trade     → checks expiry → on_trade_confirm(alert_data) → clears pending_alert
 reject_trade      → clears pending_alert, appends REJECTED to message
+force_open        → checks expiry → on_trade_confirm(alert_data) → clears pending_alert (same flow as confirm_trade)
+reject_force      → clears pending_alert, appends SKIPPED to message
 close_position:<id> → validates deal_id match → run_in_executor(ig.close_position()) → records in DB
 hold_position     → appends "Holding position" to message
 noop              → no-op

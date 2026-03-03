@@ -49,7 +49,7 @@ SHORT_RSI_LOW/HIGH=55/75
 # HAIKU_MIN_SCORE=60 → requires 6/12 criteria (6/12=65≥60).
 # MIN_CONFIDENCE_LONG=70 → requires 7/12 (7/12=70≥70).
 # MIN_CONFIDENCE_SHORT=75 → requires 8/12 (8/12=76≥75).
-# Oversold setups (bb_lower_bounce, oversold_reversal): C1/C5/C10/C11 have relaxed gates.
+# Oversold setups (bb_lower_bounce, oversold_reversal, extreme_oversold_reversal): C1/C5/C10/C11 have relaxed gates.
 
 ## format_confidence_breakdown(result: dict) -> str
 # Human-readable string for Telegram/logging. Shows ✓/✗ per criterion.

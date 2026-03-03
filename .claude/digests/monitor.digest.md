@@ -9,7 +9,9 @@ __init__(): creates Storage, IGClient, RiskManager, TelegramBot, ExitManager, AI
 
 start(): initializes Telegram FIRST (always available), then writes bot_state.json(phase=STARTING),
   then connects IG (3 fast retries). If IG fails → writes phase=IG_DISCONNECTED, sends Telegram alert,
-  retries IG every 1 min until recovered (never exits). Once IG connected → startup_sync() → main loop.
+  retries IG with exponential backoff (60s→120s→240s→300s max) until recovered (never exits).
+  _main_cycle() also uses backoff on ensure_connected() failures: 60→120→240→300s cap, _ig_fail_count tracks attempts.
+  Once IG connected → startup_sync() → main loop.
 
 startup_sync(): reconciles DB ↔ IG on every restart. 4 cases:
   - IG has / DB none → write DB, init MomentumTracker, alert
@@ -83,6 +85,13 @@ _execute_scalp(scalp_result, direction, setup, session, current_price, local_con
 Near-miss flow (in _scanning_cycle, after AI rejection):
   Triggers when: local_score >= min_conf AND not QUICK REJECT AND final_confidence >= 40
   → evaluate_scalp() via Opus → if scalp_viable → _execute_scalp() (no user confirmation)
+
+Force Open flow (in _scanning_cycle, after AI rejection):
+  Triggers when: local_score >= 100 (12/12 criteria pass)
+  → computes lots (balance + risk), builds force_alert dict
+  → telegram.send_force_open_alert() → user sees Force Open / Skip buttons
+  → 15min TTL, NO auto-execute. User must explicitly click Force Open.
+  → on Force Open: same _on_trade_confirm() path as regular trades
 
 _on_trade_confirm(alert_data): re-fetches price, checks drift vs PRICE_DRIFT_ABORT_PTS,
   calls ig.open_position(), open_trade_atomic(), inits MomentumTracker
