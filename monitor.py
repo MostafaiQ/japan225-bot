@@ -189,16 +189,33 @@ class TradingMonitor:
             # IG has a position we didn't know about (crashed after open, before DB write)
             pos = ig_positions[0]
             logger.warning("RECOVERY: IG has position not in DB. Syncing.")
-            self.storage.set_position_open({
-                "deal_id": pos.get("deal_id"),
-                "direction": pos.get("direction"),
-                "lots": pos.get("size"),
-                "entry_price": pos.get("level"),
-                "stop_level": pos.get("stop_level"),
-                "limit_level": pos.get("limit_level"),
-                "opened_at": pos.get("created", datetime.now(timezone.utc).isoformat()),
-                "confidence": 0,
-            })
+            direction_raw = (pos.get("direction") or "BUY").upper()
+            direction_log = "LONG" if direction_raw in ("BUY", "LONG") else "SHORT"
+            self.storage.open_trade_atomic(
+                trade={
+                    "deal_id": pos.get("deal_id"),
+                    "direction": direction_log,
+                    "lots": pos.get("size"),
+                    "entry_price": pos.get("level"),
+                    "stop_loss": pos.get("stop_level"),
+                    "take_profit": pos.get("limit_level"),
+                    "balance_before": 0,
+                    "confidence": 0,
+                    "setup_type": "recovered",
+                    "session": "unknown",
+                    "ai_analysis": "Position recovered on startup — opened while bot was offline",
+                },
+                position={
+                    "deal_id": pos.get("deal_id"),
+                    "direction": direction_log,
+                    "lots": pos.get("size"),
+                    "entry_price": pos.get("level"),
+                    "stop_level": pos.get("stop_level"),
+                    "limit_level": pos.get("limit_level"),
+                    "opened_at": pos.get("created", datetime.now(timezone.utc).isoformat()),
+                    "confidence": 0,
+                },
+            )
             # Init momentum tracker for recovered position
             direction = "LONG" if (pos.get("direction") or "BUY").upper() in ("BUY", "LONG") else "SHORT"
             self.momentum_tracker = MomentumTracker(direction, float(pos.get("level") or 0))
@@ -1189,14 +1206,23 @@ class TradingMonitor:
         )
         new_balance = account.get("balance", 0) if account else 0
 
-        # Get last known price
+        # Get last known price — try multiple sources
         last_price = 0
         if self.momentum_tracker and self.momentum_tracker._prices:
             last_price = self.momentum_tracker._prices[-1]["price"]
+        if not last_price:
+            # Fallback: compute from balance change
+            old_balance = self.storage.get_account_state().get("balance", 0) or 0
+            if new_balance and old_balance:
+                pnl_from_balance = new_balance - old_balance
+                lots = float(pos_state.get("lots") or 1)
+                if lots and CONTRACT_SIZE:
+                    pnl_points_est = pnl_from_balance / (lots * CONTRACT_SIZE)
+                    last_price = entry + pnl_points_est if logical_direction == "LONG" else entry - pnl_points_est
 
         pnl_points = (
             last_price - entry if logical_direction == "LONG" else entry - last_price
-        )
+        ) if last_price else 0
         pnl_dollars = pnl_points * float(pos_state.get("lots") or 0) * CONTRACT_SIZE
 
         # Determine result (TP/SL best guess)
@@ -1572,6 +1598,8 @@ def main():
     def signal_handler(sig, frame):
         logger.info(f"Signal {sig} received. Stopping...")
         monitor.running = False
+        # Wake up any sleeping await (scan interval, force_scan_event, etc.)
+        loop.call_soon_threadsafe(monitor._force_scan_event.set)
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
