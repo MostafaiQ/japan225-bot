@@ -130,7 +130,20 @@ async def chat(body: ChatRequest):
             reply = await asyncio.to_thread(_chat, body.message, body.history)
             _jobs[job_id].update({"status": "done", "response": reply})
         except Exception as e:
-            _jobs[job_id].update({"status": "error", "response": f"Claude error: {e}"})
+            reply = f"Claude error: {e}"
+            _jobs[job_id].update({"status": "error", "response": reply})
+        # Persist assistant reply to chat_history.json so it survives
+        # client disconnect / refresh — user will see it when they reconnect.
+        try:
+            h = _read_history()
+            msgs = h.get("messages", [])
+            # Append the user message if not already present (client may have saved it)
+            if not msgs or msgs[-1].get("content") != body.message:
+                msgs.append({"role": "user", "content": body.message})
+            msgs.append({"role": "assistant", "content": reply})
+            _write_history(msgs)
+        except Exception:
+            pass  # non-fatal — client can still get response via poll
 
     asyncio.create_task(_run())
     return {"job_id": job_id, "status": "pending"}

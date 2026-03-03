@@ -33,10 +33,10 @@ SKILLS_DIR = Path.home() / ".claude" / "skills"
 CLAUDE_BIN = "/home/ubuntu/.local/bin/claude"
 CHAT_COSTS_FILE = PROJECT_ROOT / "storage" / "data" / "chat_costs.json"
 
-# Rough cost estimate: claude-sonnet-4-5 (what claude CLI uses by default)
-# $3/M input tokens, $15/M output tokens. 1 token ≈ 4 chars.
-_SONNET_INPUT_PER_CHAR  = 3.0  / 1_000_000 / 4   # $/char input
-_SONNET_OUTPUT_PER_CHAR = 15.0 / 1_000_000 / 4   # $/char output
+# Rough cost estimate: claude-opus-4-6 with extended thinking
+# $15/M input tokens, $75/M output tokens. 1 token ≈ 4 chars.
+_SONNET_INPUT_PER_CHAR  = 15.0 / 1_000_000 / 4   # $/char input
+_SONNET_OUTPUT_PER_CHAR = 75.0 / 1_000_000 / 4   # $/char output
 
 # Rolling summary: keep last 2 raw turns + a compressed summary of everything older.
 # Summary is maintained as a single paragraph, updated after each assistant reply.
@@ -77,13 +77,14 @@ def chat(message: str, history: list[dict]) -> str:
 
     try:
         result = subprocess.run(
-            [CLAUDE_BIN, "--print", "--dangerously-skip-permissions"],
+            [CLAUDE_BIN, "--print", "--dangerously-skip-permissions",
+             "--model", "claude-opus-4-6", "--effort", "high"],
             input=prompt,
             capture_output=True,
             text=True,
             cwd=str(PROJECT_ROOT),
             env=env,
-            timeout=180,
+            timeout=600,
         )
         response = result.stdout.strip()
         if not response:
@@ -96,7 +97,7 @@ def chat(message: str, history: list[dict]) -> str:
         return response
 
     except subprocess.TimeoutExpired:
-        return "Claude Code timed out (3 min limit). Try a more specific question."
+        return "Claude Code timed out (10 min limit). Try a more specific question."
     except FileNotFoundError:
         return f"Claude Code binary not found at {CLAUDE_BIN}. Check installation."
     except Exception as e:

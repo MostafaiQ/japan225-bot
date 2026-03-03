@@ -648,7 +648,7 @@
         </div>
         <div id="chatBox" class="chat-box"></div>
         <div class="chat-input-wrap">
-          <textarea id="chatInput" class="chat-input" rows="1" placeholder="Message Claude…" onkeydown="chatKey(event)"></textarea>
+          <textarea id="chatInput" class="chat-input" rows="1" placeholder="Message Claude…" onkeydown="chatKey(event)" oninput="localStorage.setItem('chatDraft',this.value)"></textarea>
           <button class="btn btn-primary chat-send-btn" id="chatBtn" onclick="sendChat()">↑</button>
         </div>
       </div>
@@ -1168,6 +1168,7 @@ async function sendChat() {
   const msg = inp.value.trim();
   if (!msg || !S.url) { if (!S.url) openSettings(); return; }
   inp.value = '';
+  localStorage.removeItem('chatDraft');
   addMsg('user', msg);
   if (S.chat.length >= 20) S.chat.splice(0, 2);
   S.chat.push({ role:'user', content: msg });
@@ -1184,7 +1185,7 @@ async function sendChat() {
       const d = await req('POST', '/api/chat', { message: msg, history: S.chat });
       posted = true;
       if (d.job_id) {
-        localStorage.setItem('pendingJob', JSON.stringify({ job_id: d.job_id }));
+        localStorage.setItem('pendingJob', JSON.stringify({ job_id: d.job_id, startTime: Date.now() }));
         _startJobPolling(d.job_id, thinkEl);
         // button stays disabled until job finishes (managed inside _startJobPolling)
       } else if (d.response) {
@@ -1197,17 +1198,17 @@ async function sendChat() {
         btn.disabled = false; btn.innerHTML = 'Send';
       }
     } catch(_) {
-      // ngrok dropped — keep thinking bubble, retry in 5s
-      if (statusEl) statusEl.textContent = 'Reconnecting…';
+      // ngrok dropped — keep thinking bubble, retry in 5s (preserve elapsed span)
+      if (statusEl) { const tn = statusEl.firstChild; if (tn && tn.nodeType === 3) tn.textContent = 'Reconnecting… '; }
       await new Promise(r => setTimeout(r, 5000));
-      if (statusEl) statusEl.textContent = 'Retrying…';
+      if (statusEl) { const tn = statusEl.firstChild; if (tn && tn.nodeType === 3) tn.textContent = 'Retrying… '; }
     }
   }
 }
 
 const _thinkPhrases = ['Thinking…', 'Reading files…', 'Checking logs…', 'Still working…', 'Almost done…', 'Finalising…'];
 
-function _addThinkingBubble() {
+function _addThinkingBubble(startMs) {
   const box = document.getElementById('chatBox');
   const d = document.createElement('div');
   d.className = 'chat-row assistant';
@@ -1218,14 +1219,16 @@ function _addThinkingBubble() {
     </div>`;
   box.appendChild(d);
   box.scrollTop = box.scrollHeight;
-  // Elapsed timer
-  const startMs = Date.now();
+  // Elapsed timer — use provided startMs (for recovery) or now
+  const origin = startMs || Date.now();
   const elapsedEl = d.querySelector('.think-elapsed');
-  d._elapsedTimer = setInterval(() => {
-    const s = Math.floor((Date.now() - startMs) / 1000);
+  const tick = () => {
+    const s = Math.floor((Date.now() - origin) / 1000);
     if (s < 60) elapsedEl.textContent = s + 's';
     else { const m = Math.floor(s/60); elapsedEl.textContent = m + 'm ' + (s%60) + 's'; }
-  }, 1000);
+  };
+  tick(); // show immediately so recovered jobs don't flash "0s"
+  d._elapsedTimer = setInterval(tick, 1000);
   return d;
 }
 
@@ -1253,9 +1256,33 @@ function _startJobPolling(jobId, thinkEl) {
         addMsg('assistant', reply);
         _refreshChatCost();
       }
-    } catch(_) {
-      // ngrok down — show reconnecting status, keep polling
-      if (statusEl) statusEl.textContent = 'Reconnecting…';
+    } catch(err) {
+      // ngrok down — show reconnecting status, keep polling (preserve elapsed span)
+      if (statusEl) {
+        const msg = (err.message && err.message.includes('404')) ? 'Job expired… ' : 'Reconnecting… ';
+        const tn = statusEl.firstChild; if (tn && tn.nodeType === 3) tn.textContent = msg;
+        // If job expired (server restarted), check if response landed in history
+        if (err.message && err.message.includes('404')) {
+          try {
+            const h = await req('GET', '/api/chat/history');
+            if (h.messages && h.messages.length > S.chat.length) {
+              // Server has the response — recover it
+              clearInterval(S.pendingJob && S.pendingJob.timer);
+              localStorage.removeItem('pendingJob');
+              S.pendingJob = null;
+              if (thinkEl) { if (thinkEl._elapsedTimer) clearInterval(thinkEl._elapsedTimer); thinkEl.remove(); }
+              const btn = document.getElementById('chatBtn');
+              if (btn) { btn.disabled = false; btn.innerHTML = '↑'; }
+              S.chat = h.messages;
+              S.historyUpdatedAt = h.updated_at;
+              localStorage.setItem('chatHistory', JSON.stringify(S.chat));
+              const box = document.getElementById('chatBox');
+              if (box) { box.innerHTML = ''; S.chat.forEach(m => addMsg(m.role, m.content)); }
+              return; // stop polling
+            }
+          } catch(_) {}
+        }
+      }
     }
   };
 
@@ -1293,6 +1320,8 @@ function _saveHistory() {
 // ── Cross-device chat sync: poll server every 5s ──────────────────────────
 async function _pollHistory() {
   if (!S.url) return;
+  // Never re-render while a job is in-flight — it destroys the thinking bubble
+  if (S.pendingJob) return;
   try {
     const d = await req('GET', '/api/chat/history');
     if (d.updated_at && d.updated_at !== S.historyUpdatedAt &&
@@ -1500,13 +1529,16 @@ function fmtDt(iso) {
   }
   _initChat();                                                         // server-first, localStorage fallback
   _refreshChatCost();                                                  // show cost badge immediately
+  // Restore draft text in chat input
+  const _draft = localStorage.getItem('chatDraft');
+  if (_draft) { const _inp = document.getElementById('chatInput'); if (_inp) _inp.value = _draft; }
   // Recover any job that was in-flight when page was refreshed
   const _savedJob = localStorage.getItem('pendingJob');
   if (_savedJob) {
     try {
-      const { job_id } = JSON.parse(_savedJob);
+      const { job_id, startTime } = JSON.parse(_savedJob);
       if (job_id) {
-        const thinkEl = _addThinkingBubble();
+        const thinkEl = _addThinkingBubble(startTime);
         _startJobPolling(job_id, thinkEl);
       }
     } catch(_) { localStorage.removeItem('pendingJob'); }
