@@ -902,6 +902,8 @@ function renderPos(p) {
   const pnl = p.unrealised_pnl ?? 0;
   const pClass = pnl >= 0 ? 'c-long' : 'c-short';
   const pSign  = pnl >= 0 ? '+' : '';
+  const size   = parseFloat(p.size ?? 0);
+  const pnlDollars = pnl * size;
   const dir    = p.direction === 'LONG'
     ? '<span class="badge b-long">▲ LONG</span>'
     : '<span class="badge b-short">▼ SHORT</span>';
@@ -913,7 +915,10 @@ function renderPos(p) {
   el.innerHTML = `
     <div class="flex-between" style="margin-bottom:12px;">
       ${dir}
-      <div class="pnl-big ${pClass}">${pSign}${pnl.toFixed(0)}</div>
+      <div style="text-align:right;">
+        <div class="pnl-big ${pClass}">${pSign}${pnl.toFixed(0)} pts</div>
+        <div style="font-size:13px;opacity:0.7;margin-top:2px;" class="${pClass}">${pSign}$${Math.abs(pnlDollars).toFixed(2)}</div>
+      </div>
     </div>
     <div class="stat-row"><span class="stat-label">Entry</span><span class="stat-value">${fmt1(p.entry_price)}</span></div>
     <div class="stat-row"><span class="stat-label">Current</span><span class="stat-value">${fmt1(p.current_price)}</span></div>
