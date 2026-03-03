@@ -308,6 +308,21 @@ def build_scan_prompt(
             f"  → Confirm or reject. You may suggest opposite direction or NO TRADE.\n"
         )
 
+    # Secondary setup block (bidirectional context)
+    secondary_block = ""
+    sec = market_context.get("secondary_setup")
+    if sec:
+        sec_dir = sec.get("direction", "?")
+        sec_type = sec.get("type", "?")
+        sec_conf = sec.get("confidence", "?")
+        sec_passed = sec.get("passed_criteria", "?")
+        sec_reason = sec.get("reasoning", "")[:200]
+        secondary_block = (
+            f"\nSECONDARY SETUP: {sec_dir} | {sec_type} | Local: {sec_conf}% ({sec_passed}/12)\n"
+            f"  {sec_reason}\n"
+            f"  → Consider this direction if primary doesn't work.\n"
+        )
+
     local_conf_block = ""
     if local_confidence:
         criteria = local_confidence.get("criteria", {})
@@ -348,7 +363,7 @@ def build_scan_prompt(
 
     return (
         f"Japan 225 CFD analysis — {now}\n"
-        f"{prescreen_block}{local_conf_block}"
+        f"{prescreen_block}{secondary_block}{local_conf_block}"
         f"\nTIMEFRAME SNAPSHOT:\n{_fmt_indicators(indicators)}\n"
         f"\nRECENT SCANS (last 5):\n{_fmt_recent_scans(recent_scans)}\n"
         f"\nMARKET CONTEXT: session={market_context.get('session_name','?')} | "
@@ -416,7 +431,7 @@ class AIAnalyzer:
         # Build CLI command — only include Opus sub-agent when borderline confidence
         # --tools "" disables all tools → Sonnet responds directly from prompt data (no file reads/commands)
         # This cuts response time from 60-180s to 10-30s by eliminating CLAUDE.md loading + tool calls.
-        cmd = [CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions", "--tools", ""]
+        cmd = [CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions", "--fast", "--tools", ""]
         if use_opus_agent:
             from config.settings import OPUS_MODEL
             agents_json = json.dumps({

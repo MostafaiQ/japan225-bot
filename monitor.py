@@ -564,36 +564,66 @@ class TradingMonitor:
         if not candles_4h:
             logger.warning("Failed to fetch 4H candles — pre-screen will degrade gracefully.")
 
-        # --- Local pre-screen (zero AI cost) ---
-        # detect_setup() requires above_ema200_fallback to be bool (True=bullish, False=bearish).
+        # --- Local pre-screen — BIDIRECTIONAL (zero AI cost) ---
+        # Run detect_setup() for BOTH directions independently.
         # 4H data now available at pre-screen for extreme_oversold_reversal and other setups.
-        setup = detect_setup(
-            tf_daily=tf_daily,
-            tf_4h=tf_4h,
-            tf_15m=tf_15m,
+        setup_long = detect_setup(
+            tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_15m,
+            exclude_direction="SHORT",
+        )
+        setup_short = detect_setup(
+            tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_15m,
+            exclude_direction="LONG",
         )
         entry_timeframe = "15m"
 
-        # --- 5M fallback: if 15M finds nothing, try 5M with 15M structure alignment ---
-        if not setup["found"] and tf_5m:
-            setup_5m = detect_setup(tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_5m)
-            if setup_5m["found"] and self._5m_aligns_with_15m(setup_5m, tf_15m):
-                setup = setup_5m
-                setup["type"] += "_5m"
-                entry_timeframe = "5m"
-                logger.info(f"5M fallback: {setup['direction']} {setup['type']} detected")
+        # --- 5M fallback: for each direction that didn't find on 15M, try 5M ---
+        if not setup_long["found"] and tf_5m:
+            setup_5m_long = detect_setup(tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_5m, exclude_direction="SHORT")
+            if setup_5m_long["found"] and self._5m_aligns_with_15m(setup_5m_long, tf_15m):
+                setup_long = setup_5m_long
+                setup_long["type"] += "_5m"
+                setup_long["_entry_tf"] = "5m"
+                logger.info(f"5M fallback: LONG {setup_long['type']} detected")
 
-        if not setup["found"]:
-            logger.info(f"Pre-screen: no setup. {setup['reasoning'][:80]}")
-            self._last_scan_detail = {"outcome": "no_setup", "price": current_price, "details": setup["reasoning"][:80]}
+        if not setup_short["found"] and tf_5m:
+            setup_5m_short = detect_setup(tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_5m, exclude_direction="LONG")
+            if setup_5m_short["found"] and self._5m_aligns_with_15m(setup_5m_short, tf_15m):
+                setup_short = setup_5m_short
+                setup_short["type"] += "_5m"
+                setup_short["_entry_tf"] = "5m"
+                logger.info(f"5M fallback: SHORT {setup_short['type']} detected")
+
+        # Neither direction found a setup
+        if not setup_long["found"] and not setup_short["found"]:
+            reasoning = setup_long.get("reasoning", "") or setup_short.get("reasoning", "")
+            logger.info(f"Pre-screen: no setup (both dirs). {reasoning[:80]}")
+            self._last_scan_detail = {"outcome": "no_setup", "price": current_price, "details": reasoning[:80]}
             self.storage.save_scan({
                 "timestamp": datetime.now().isoformat(), "session": session["name"],
                 "price": current_price, "indicators": {}, "market_context": {},
-                "analysis": {"setup_found": False, "reasoning": setup["reasoning"][:120]},
+                "analysis": {"setup_found": False, "reasoning": reasoning[:120]},
                 "setup_found": False, "confidence": None, "action_taken": "no_setup", "api_cost": 0,
             })
             return SCAN_INTERVAL_SECONDS
 
+        # Log both directions for debugging
+        if setup_long["found"]:
+            logger.info(f"Pre-screen LONG: {setup_long['type']} ({setup_long.get('_entry_tf', '15m')})")
+        if setup_short["found"]:
+            logger.info(f"Pre-screen SHORT: {setup_short['type']} ({setup_short.get('_entry_tf', '15m')})")
+
+        # Pick primary setup for now — confidence scoring below will finalize
+        # If only one direction found, that's the primary
+        if setup_long["found"] and not setup_short["found"]:
+            setup = setup_long
+        elif setup_short["found"] and not setup_long["found"]:
+            setup = setup_short
+        else:
+            # Both found — pick primary after confidence scoring (use LONG as placeholder)
+            setup = setup_long
+
+        entry_timeframe = setup.get("_entry_tf", "15m")
         prescreen_direction = setup["direction"]
         logger.info(f"Pre-screen: {prescreen_direction} {setup['type']} ({entry_timeframe}) detected. Checking local confidence...")
 
@@ -604,23 +634,90 @@ class TradingMonitor:
         # No AI cooldown — subscription is $0/call, always escalate if setup found
         # tf_4h and tf_daily already set from pre-screen fetch above
 
-        # --- Local confidence score ---
+        # --- Local confidence score — BIDIRECTIONAL ---
         web_research = {"timestamp": datetime.now().isoformat()}
         try:
             web_research = self.researcher.research()
         except Exception as e:
             logger.warning(f"Web research failed: {e}")
 
-        local_conf = compute_confidence(
-            direction=prescreen_direction,
-            tf_daily=tf_daily,
-            tf_4h=tf_4h,
-            tf_15m=tf_15m,
-            upcoming_events=web_research.get("economic_calendar", []),
-            web_research=web_research,
-            setup_type=setup.get("type"),
-        )
-        logger.info(f"Local confidence: {local_conf['score']}% ({prescreen_direction})")
+        conf_long = None
+        conf_short = None
+        secondary_setup = None  # Will hold the non-primary direction's context
+
+        if setup_long["found"]:
+            conf_long = compute_confidence(
+                direction="LONG",
+                tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_15m,
+                upcoming_events=web_research.get("economic_calendar", []),
+                web_research=web_research,
+                setup_type=setup_long.get("type"),
+            )
+            logger.info(f"Local confidence LONG: {conf_long['score']}%")
+
+        if setup_short["found"]:
+            conf_short = compute_confidence(
+                direction="SHORT",
+                tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_15m,
+                upcoming_events=web_research.get("economic_calendar", []),
+                web_research=web_research,
+                setup_type=setup_short.get("type"),
+            )
+            logger.info(f"Local confidence SHORT: {conf_short['score']}%")
+
+        # --- Pick primary direction based on confidence ---
+        # Rules:
+        #   - If only one direction found: that's primary, no secondary
+        #   - If both found: higher confidence = primary, other = secondary
+        #   - If both found and scores equal: LONG takes priority (lower threshold)
+        if conf_long and conf_short:
+            if conf_short["score"] > conf_long["score"]:
+                setup = setup_short
+                local_conf = conf_short
+                secondary_setup = {
+                    "direction": "LONG",
+                    "type": setup_long.get("type"),
+                    "confidence": conf_long["score"],
+                    "reasoning": setup_long.get("reasoning", "")[:200],
+                    "criteria": conf_long.get("criteria", {}),
+                    "passed_criteria": conf_long.get("passed_criteria", 0),
+                }
+            else:
+                setup = setup_long
+                local_conf = conf_long
+                secondary_setup = {
+                    "direction": "SHORT",
+                    "type": setup_short.get("type"),
+                    "confidence": conf_short["score"],
+                    "reasoning": setup_short.get("reasoning", "")[:200],
+                    "criteria": conf_short.get("criteria", {}),
+                    "passed_criteria": conf_short.get("passed_criteria", 0),
+                }
+            entry_timeframe = setup.get("_entry_tf", "15m")
+            prescreen_direction = setup["direction"]
+            logger.info(
+                f"Bidirectional: primary={prescreen_direction} {local_conf['score']}%, "
+                f"secondary={secondary_setup['direction']} {secondary_setup['confidence']}%"
+            )
+        elif conf_long:
+            local_conf = conf_long
+            setup = setup_long
+        elif conf_short:
+            local_conf = conf_short
+            setup = setup_short
+        else:
+            # Should not happen (at least one setup found), but safety fallback
+            local_conf = compute_confidence(
+                direction=prescreen_direction,
+                tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_15m,
+                upcoming_events=web_research.get("economic_calendar", []),
+                web_research=web_research,
+                setup_type=setup.get("type"),
+            )
+
+        entry_timeframe = setup.get("_entry_tf", "15m")
+        prescreen_direction = setup["direction"]
+        logger.info(f"Primary: {prescreen_direction} {setup['type']} ({entry_timeframe}) conf={local_conf['score']}%")
 
         # --- Hard blocks: C7/C8 are non-negotiable regardless of score or AI opinion ---
         criteria = local_conf.get("criteria", {})
@@ -714,6 +811,10 @@ class TradingMonitor:
         market_context["session_name"]         = session.get("name", "")
         market_context["entry_timeframe"]      = entry_timeframe
 
+        # Secondary setup context for bidirectional AI awareness
+        if secondary_setup:
+            market_context["secondary_setup"] = secondary_setup
+
         sonnet_result = self.analyzer.scan_with_sonnet(
             indicators=indicators,
             recent_scans=recent_scans,
@@ -771,6 +872,15 @@ class TradingMonitor:
             is_quick_reject = "QUICK REJECT" in ai_reasoning.upper()
 
             if local_score >= min_conf and not is_quick_reject:
+                # Build enriched reasoning with secondary setup context for Opus
+                opus_reasoning = f"PRIMARY: {direction} rejected by Sonnet ({final_confidence}%): {ai_reasoning[:400]}"
+                if secondary_setup:
+                    sec_dir = secondary_setup["direction"]
+                    sec_type = secondary_setup.get("type", "?")
+                    sec_score = secondary_setup.get("confidence", "?")
+                    sec_reason = secondary_setup.get("reasoning", "")[:200]
+                    opus_reasoning += f"\nSECONDARY: {sec_dir} {sec_type} local conf {sec_score}%: {sec_reason}"
+
                 logger.info(
                     f"Near-miss: local {local_score}% >= {min_conf}%, "
                     f"AI {final_confidence}%. Sending to Opus for bidirectional scalp eval."
@@ -784,7 +894,7 @@ class TradingMonitor:
                             setup_type=setup.get("type", "unknown"),
                             local_confidence=local_score,
                             ai_confidence=final_confidence,
-                            ai_reasoning=ai_reasoning[:500],
+                            ai_reasoning=opus_reasoning[:700],
                         ),
                     )
                     if scalp_result.get("scalp_viable"):

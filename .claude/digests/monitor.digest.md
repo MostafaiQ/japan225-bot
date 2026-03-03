@@ -1,4 +1,4 @@
-# monitor.py — DIGEST
+# monitor.py — DIGEST (updated 2026-03-03)
 # Purpose: Main VM process. Entry point. async event loop. Handles scan + monitor + Telegram.
 
 ## class TradingMonitor
@@ -44,20 +44,21 @@ _scanning_cycle() -> int (sleep seconds):
   5. asyncio.gather(15M, 5M, 4H) parallel → then await Daily sequential (avoids 28 req/min burst)
      Cold start: all 4 sequential (rate limit). Warm: 5M+15M+4H parallel, Daily time-gated.
      All use candle caching: full fetch on first call, delta on subsequent (see ig_client.digest.md)
-  6. detect_setup(tf_daily, tf_4h, tf_15m) — 15M tried first. 4H available at pre-screen.
-  6b. 5M FALLBACK: if 15M no setup + tf_5m available → detect_setup(tf_daily, tf_4h, tf_5m)
-      → _5m_aligns_with_15m() guard: LONG needs 15M RSI<65 + price within 300pts of 15M BB mid/lower
-        SHORT needs 15M RSI>35 + price within 300pts of 15M BB upper. Missing data → pass through.
-      → setup["type"] += "_5m", entry_timeframe="5m". Logged: "5M fallback: LONG bollinger_mid_bounce_5m"
-      → entry_tf for volume logging = tf_5m when entry_timeframe="5m", else tf_15m
-  7. fetch 4H candles (AI_ESCALATION_CANDLES=220) → 1 API call (daily already fetched in step 5, reused here)
-  8. researcher.research() → web data
-  9. compute_confidence() → extract criteria dict (11 criteria, C1-C11)
-  9b. HARD BLOCKS: C7(no_event_1hr) + C8(no_friday_monthend) fail → skip immediately
-  9c. if score < HAIKU_MIN_SCORE (60%) → skip (true technical junk)
-  9d. write_context() — generates storage/context/*.md for Claude CLI to read
-  9e. market_context["prescreen_setup"] = {type, reasoning, session} — injected before Sonnet call
-  10. scan_with_sonnet(failed_criteria=...) — single subprocess, Sonnet 4.6 + Opus sub-agent
+  6. BIDIRECTIONAL detect_setup(): two calls with exclude_direction="SHORT" and "LONG"
+  6b. 5M FALLBACK (per-direction): if 15M no setup → try 5M with _5m_aligns_with_15m() guard
+      → LONG: 15M RSI<65 + price within 300pts of 15M BB mid/lower
+        SHORT: 15M RSI>35 + price within 300pts of 15M BB upper. Missing data → pass through.
+      → setup["type"] += "_5m", entry_timeframe="5m".
+  7. researcher.research() → web data
+  8. BIDIRECTIONAL compute_confidence(): scored for BOTH directions that found setups
+     → Primary = highest confidence score. Secondary stored as context for AI.
+     → If only one direction found: that's primary, no secondary.
+  8b. HARD BLOCKS: C7(no_event_1hr) + C8(no_friday_monthend) fail → skip immediately
+  8c. if score < HAIKU_MIN_SCORE (60%) → skip (true technical junk)
+  8d. write_context() — generates storage/context/*.md for Claude CLI to read
+  8e. market_context["prescreen_setup"] + market_context["secondary_setup"] — injected before Sonnet
+  9. scan_with_sonnet(failed_criteria=...) — single subprocess, Sonnet 4.6 + Opus sub-agent
+      Sonnet sees SECONDARY SETUP block in prompt (other direction's type/conf/reasoning)
       Sonnet handles everything: analysis + Opus delegation for borderline 72-86% (internally)
       → logs: AI reasoning (first 200 chars)
   12. save_scan(), action_taken = pending_* (if confirmed) or ai_rejected_* (if not)
@@ -83,9 +84,10 @@ _execute_scalp(scalp_result, direction, setup, session, current_price, local_con
   Validates R:R >= 1.5 after spread. Gets balance, computes lots. Calls send_scalp_executed() then _on_trade_confirm().
 
 Near-miss flow (in _scanning_cycle, after AI rejection):
-  Triggers when: local_score >= min_conf AND not QUICK REJECT AND final_confidence >= 40
+  Triggers when: local_score >= min_conf AND not QUICK REJECT
+  → Builds enriched opus_reasoning: primary rejection + secondary setup context (if available)
   → evaluate_scalp(primary_direction=direction) via Opus — BIDIRECTIONAL single call
-  → Opus evaluates BOTH directions using Sonnet's rejection reasoning as context
+  → Opus evaluates BOTH directions using Sonnet's rejection reasoning + secondary setup as context
   → Opus picks the best direction (may differ from pre-screen direction) or rejects both
   → if scalp_viable → _execute_scalp(direction=opus_direction) (auto-execute, no user confirmation)
   Mechanical bidirectional retry REMOVED — Opus handles both directions in one call.

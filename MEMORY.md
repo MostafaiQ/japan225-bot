@@ -10,10 +10,11 @@ Digests live in `.claude/digests/`. Read only the digest(s) relevant to your tas
 Oracle VM: monitor.py (24/7, systemd: japan225-bot)
   SCANNING (no position): every 5min active sessions, 30min off-hours
     → fetch 15M+5M parallel, then Daily sequential (cached, delta fetches after 1st)
-    → detect_setup() on 15M first
-    → if 15M no setup → 5M fallback (same detect_setup, 15M alignment guard)
+    → BIDIRECTIONAL detect_setup(): LONG + SHORT checked independently (exclude_direction)
+    → 5M fallback: per-direction (if 15M no setup → try 5M with alignment guard)
     → 5M setups tagged with _5m suffix. entry_timeframe passed to AI prompts.
-    → NO cooldown ($0/call subscription) → fetch 4H → compute_confidence()
+    → NO cooldown ($0/call subscription) → compute_confidence() for BOTH directions
+    → Primary = highest confidence. Secondary context passed to AI.
     → if score >= 60%: Sonnet 4.6 scan (with Opus sub-agent for borderline 72-86%)
     → Single subprocess: Sonnet analyzes, delegates to Opus sub-agent internally when needed
     → if AI confirms & risk passes: Telegram CONFIRM/REJECT alert (15min TTL)
@@ -105,7 +106,7 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 - indicators.py: `_strong_bearish_momentum` filter now bypassed when RSI < 35 (deeply oversold = bounce setups allowed). `extreme_oversold_reversal` widened from RSI < 22 to RSI < 28. Works without 4H at pre-screen (RSI < 25 fallback).
 - indicators.py: `exclude_direction` parameter added to detect_setup() for bidirectional retry.
 - monitor.py: 4H fetch moved to pre-screen (parallel with 15M+5M). detect_setup() now gets full tf_4h data. No extra API calls — just reordered.
-- monitor.py: Bidirectional retry after AI rejection. If AI rejects direction X, tries detect_setup(exclude_direction=X) for opposite direction Y. Evaluates via Opus scalper. Covers both near-miss scalps AND opposite-direction bounces.
+- monitor.py: FULL bidirectional scanning pipeline. detect_setup() runs for BOTH directions (exclude_direction="SHORT" then "LONG"). compute_confidence() scored for both. Primary = higher confidence. Secondary setup context passed to Sonnet prompt (SECONDARY SETUP block) and to Opus scalp eval (enriched ai_reasoning). 5M fallback also bidirectional.
 - confidence.py: C1 (daily_trend) now exempts `_breakdown_setup` (breakdown_continuation, bear_flag_breakdown, multi_tf_bearish) for SHORT direction.
 - analyzer.py: Expanded BREAKDOWN/MOMENTUM SHORT RULES in Sonnet system prompt.
 - Root cause: On 2026-03-03, Nikkei dropped 4,004pts (57,688→53,684, -7%). Bot ran 67 scans but AI rejected all 54 setups. 43 missed moves of 150+pts.
@@ -132,8 +133,12 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 - confidence.py: C5/C10/C11 now setup-type-aware. bb_lower_bounce + oversold_reversal: below-EMA50=expected, bearish HA=expected, 4H bearish passes if multi-TF oversold or daily bullish. LONG_RSI_LOW 35→30. C2 near_bb_lower 80→150.
 - analyzer.py: Conditional Opus (--agents only when local conf 60-86%). Mean-reversion bounce rules in system prompt. Parse error auto-retry. WebResearcher: real news (Google News RSS), JP holidays (nager.date), CNN Fear & Greed.
 - Scan analyzer data (2026-03-02): 29 missed moves of 150+pts, 48% AI LONG miss rate, RSI 20-35 zone averaged +327pts. These changes target 65-72% reduction in missed moves.
-- analyzer.py: `evaluate_scalp()` — BIDIRECTIONAL single Opus call. Receives Sonnet's rejection reasoning + all indicators. Evaluates BOTH directions. Opus picks the best play (direction may differ from pre-screen). SL 60-120pts (structure-based), TP 150-300pts. Enforces R:R >= 1.5 after spread.
-- monitor.py: Near-miss → Opus bidirectional scalp auto-execute. Opus picks direction. Mechanical bidirectional retry REMOVED (Opus handles both in single call). No user confirmation for scalps. `_execute_scalp()` uses Opus-picked direction.
+- analyzer.py: `--fast` flag added to ALL Claude CLI calls (Sonnet + Opus). Same model, faster output, $0 cost.
+- analyzer.py: `evaluate_scalp()` — BIDIRECTIONAL single Opus call. Receives Sonnet's rejection reasoning + secondary setup context + all indicators. Evaluates BOTH directions. Opus picks the best play (direction may differ from pre-screen). SL 60-120pts (structure-based), TP 150-300pts. Enforces R:R >= 1.5 after spread.
+- analyzer.py: `build_scan_prompt()` now includes SECONDARY SETUP block when bidirectional scan finds both directions.
+- monitor.py: Near-miss → Opus bidirectional scalp auto-execute. Opus picks direction. Mechanical bidirectional retry REMOVED (Opus handles both in single call). No user confirmation for scalps. `_execute_scalp()` uses Opus-picked direction. AI confidence gate REMOVED (was >= 40%, now any non-quick-reject goes to Opus).
+- ig_client.py: CRITICAL — `trailing_stop_distance` kwarg removed from `create_open_position()`. Not supported by trading_ig library. This caused ALL trade executions to fail silently. Root cause of 0 trades.
+- telegram_bot.py: HTML parse fallback — if HTML alert fails, retry as plain text. Prevents silent alert failures.
 - monitor.py: Normal trade alerts auto-execute after 2 min if user doesn't respond. `_auto_execute_after_timeout()` asyncio background task.
 - telegram_bot.py: `send_scalp_executed()` replaces old 3-button `send_near_miss_alert()`. Notification-only (no buttons). Near-miss callback handlers removed.
 - monitor.py + telegram_bot.py: Force Open feature. When local confidence == 100% (12/12) but AI rejects, Telegram alert with Force Open / Skip buttons. 15min TTL. No auto-execute — requires explicit user confirmation. Uses same `pending_alert` + `on_trade_confirm` flow as regular trades. Callback data: `force_open` / `reject_force`.
@@ -181,9 +186,10 @@ WFO best swing: SL=150 TP=600 PF=0.74 | best scalp: SL=60 TP=300 PF=0.91 (scalp 
   Swing: blown by day 4 (SL=150 too wide for $20). Scalp: survives 10d but -32% ($13.60 final).
 PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 
-## AI Pipeline (updated 2026-03-02) — Single subprocess: Sonnet 4.6 + Opus sub-agent
+## AI Pipeline (updated 2026-03-03) — Single subprocess: Sonnet 4.6 + Opus sub-agent
 - **Auth: Claude Code CLI (OAuth/subscription) — no ANTHROPIC_API_KEY used in analyzer.**
-  Single `claude --model sonnet-4-6 --print --agents {...}` subprocess per scan.
+  Single `claude --model sonnet-4-6 --print --fast --agents {...}` subprocess per scan.
+  `--fast` on ALL CLI calls (Sonnet + Opus). Same model, faster output, $0 extra cost.
   ANTHROPIC_API_KEY is stripped from env before each call to force OAuth.
 - Opus sub-agent: defined via `--agents` flag. Sonnet delegates to it for borderline 72-86% calls.
   Both models run within the same subprocess — no extra Node.js startup overhead.

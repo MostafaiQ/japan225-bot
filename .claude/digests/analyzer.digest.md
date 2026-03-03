@@ -1,5 +1,6 @@
-# ai/analyzer.py — DIGEST (updated 2026-03-02)
+# ai/analyzer.py — DIGEST (updated 2026-03-03)
 # Single-subprocess pipeline: Sonnet 4.6 primary, Opus 4.6 sub-agent for borderline/oversold setups.
+# --fast flag on ALL CLI calls (Sonnet + Opus). Same model, faster output, $0 extra cost.
 # Haiku pre-gate REMOVED. Separate Opus subprocess REMOVED. All in one `claude` invocation with --agents flag.
 # AUTH: Claude Code CLI subprocess (OAuth/subscription). No ANTHROPIC_API_KEY used.
 # JSON output via prompt schema + regex parser. No tool use schemas.
@@ -14,7 +15,8 @@ _cost always 0.0. _tokens always zeros. Kept for interface compat with save_scan
 __init__(): total_cost=0.0 (subscription, always zero)
 
 _run_claude(model, system_prompt, user_prompt, use_opus_agent=False, timeout=180) -> str
-  # subprocess.run([CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions", ...agents_json...])
+  # subprocess.run([CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions", "--fast", ...agents_json...])
+  # --fast flag on ALL calls (Sonnet + Opus). Same model, faster output.
   # If use_opus_agent=True: agents_json defines "opus_reviewer" sub-agent (model=OPUS_MODEL)
   # If use_opus_agent=False: no --agents flag, standard Sonnet run only
   # Strips ANTHROPIC_API_KEY from env to force OAuth.
@@ -58,6 +60,7 @@ Passed as <system> block in _run_claude.
 Compact format. Appends JSON schema template at end.
 Includes path to storage/context/ files as a note.
 PRE-SCREEN line includes `Entry TF: {entry_tf}`.
+SECONDARY SETUP block: shown when bidirectional scan finds both directions. Includes direction, type, conf, reasoning.
 failed_criteria → FAILED LOCAL CRITERIA block.
 Role block: 5-step analysis (structure → quality → risk → edge → opus review if borderline).
 Key formatters:
