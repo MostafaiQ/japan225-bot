@@ -65,13 +65,17 @@ Key formatters:
   _fmt_recent_scans(scans)      → 1-line per scan summary
   _fmt_web_research(web)        → 3 lines, HIGH-impact calendar only
 
-## evaluate_scalp(indicators, direction, setup_type, local_confidence, ai_confidence, ai_reasoning) -> dict
-  # Opus evaluates near-miss setups for quick scalp opportunity.
+## evaluate_scalp(indicators, primary_direction, setup_type, local_confidence, ai_confidence, ai_reasoning) -> dict
+  # BIDIRECTIONAL Opus scalp evaluation. Evaluates BOTH directions in single call.
   # Called when Sonnet rejected but local conf passed and AI conf >= 40%.
+  # Key insight: Sonnet's rejection reasoning contains the opposite thesis
+  #   (e.g. "too oversold, bounce likely" → LONG case; "overbought, distribution" → SHORT case).
+  # Opus receives full context: primary setup, Sonnet's reasoning, all indicators.
+  # Opus picks the BEST direction (may differ from primary_direction) or rejects both.
   # Uses OPUS_MODEL directly (no sub-agent), timeout=90s.
-  # Opus picks BOTH SL (60-120pts, structure-based: swing lows, BB, pivots, fib) and TP (150-300pts, nearest target).
+  # SL (60-120pts, structure-based: swing lows, BB, pivots, fib) and TP (150-300pts, nearest target).
   # Enforces effective R:R >= 1.5 after spread (7pts). Clamps SL to [60,120], TP to [150,300].
-  # Returns: {scalp_viable: bool, tp_distance: int, sl_distance: int, effective_rr: float, reasoning: str, confidence: int}
+  # Returns: {scalp_viable: bool, direction: str, tp_distance: int, sl_distance: int, effective_rr: float, reasoning: str, confidence: int}
 
 ## load_prompt_learnings(data_dir=None) -> str
 Reads storage/data/prompt_learnings.json. Returns compact block (last 5 entries).

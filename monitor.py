@@ -773,24 +773,27 @@ class TradingMonitor:
             if local_score >= min_conf and not is_quick_reject and final_confidence >= 40:
                 logger.info(
                     f"Near-miss: local {local_score}% >= {min_conf}%, "
-                    f"AI {final_confidence}% >= 40%. Sending to Opus for scalp eval."
+                    f"AI {final_confidence}% >= 40%. Sending to Opus for bidirectional scalp eval."
                 )
                 try:
                     scalp_result = await asyncio.get_event_loop().run_in_executor(
                         None,
                         lambda: self.analyzer.evaluate_scalp(
                             indicators=indicators,
-                            direction=direction,
+                            primary_direction=direction,
                             setup_type=setup.get("type", "unknown"),
                             local_confidence=local_score,
                             ai_confidence=final_confidence,
-                            ai_reasoning=ai_reasoning[:300],
+                            ai_reasoning=ai_reasoning[:500],
                         ),
                     )
                     if scalp_result.get("scalp_viable"):
+                        # Opus picks the direction — may differ from pre-screen
+                        opus_direction = scalp_result.get("direction", direction)
+                        logger.info(f"Opus scalp: {opus_direction} (pre-screen was {direction})")
                         await self._execute_scalp(
                             scalp_result=scalp_result,
-                            direction=direction,
+                            direction=opus_direction,
                             setup=setup,
                             session=session,
                             current_price=current_price,
@@ -798,7 +801,7 @@ class TradingMonitor:
                             final_confidence=final_confidence,
                         )
                     else:
-                        logger.info(f"Opus rejected scalp: {scalp_result.get('reasoning', '')[:150]}")
+                        logger.info(f"Opus rejected both directions: {scalp_result.get('reasoning', '')[:150]}")
                 except Exception as e:
                     logger.warning(f"Opus scalp evaluation failed: {e}")
 
@@ -836,59 +839,7 @@ class TradingMonitor:
                 }
                 await self.telegram.send_force_open_alert(force_alert)
 
-            # --- Bidirectional retry: if AI rejected direction X, check opposite direction ---
-            opposite_dir = "LONG" if direction == "SHORT" else "SHORT"
-            alt_setup = detect_setup(
-                tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_15m,
-                exclude_direction=direction,
-            )
-            if not alt_setup["found"] and tf_5m:
-                alt_5m = detect_setup(
-                    tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_5m,
-                    exclude_direction=direction,
-                )
-                if alt_5m["found"] and self._5m_aligns_with_15m(alt_5m, tf_15m):
-                    alt_setup = alt_5m
-                    alt_setup["type"] += "_5m"
-
-            if alt_setup["found"]:
-                logger.info(f"Bidirectional retry: {opposite_dir} {alt_setup['type']} found after {direction} rejected")
-                # Quick local confidence check for the alternate setup
-                alt_conf = compute_confidence(
-                    direction=opposite_dir, tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_15m,
-                    upcoming_events=web_research.get("economic_calendar", []),
-                    web_research=web_research, setup_type=alt_setup.get("type"),
-                )
-                if alt_conf["score"] >= HAIKU_MIN_SCORE:
-                    logger.info(f"Alt {opposite_dir} local conf: {alt_conf['score']}%. Sending to Opus for scalp eval.")
-                    try:
-                        alt_scalp = await asyncio.get_event_loop().run_in_executor(
-                            None,
-                            lambda: self.analyzer.evaluate_scalp(
-                                indicators=indicators,
-                                direction=opposite_dir,
-                                setup_type=alt_setup.get("type", "unknown"),
-                                local_confidence=alt_conf["score"],
-                                ai_confidence=0,
-                                ai_reasoning=f"Bidirectional retry after {direction} rejection",
-                            ),
-                        )
-                        if alt_scalp.get("scalp_viable"):
-                            await self._execute_scalp(
-                                scalp_result=alt_scalp,
-                                direction=opposite_dir,
-                                setup=alt_setup,
-                                session=session,
-                                current_price=current_price,
-                                local_conf=alt_conf,
-                                final_confidence=alt_conf["score"],
-                            )
-                        else:
-                            logger.info(f"Opus rejected alt {opposite_dir} scalp: {alt_scalp.get('reasoning', '')[:150]}")
-                    except Exception as e:
-                        logger.warning(f"Alt direction scalp eval failed: {e}")
-                else:
-                    logger.info(f"Alt {opposite_dir} local conf too low: {alt_conf['score']}%")
+            # Bidirectional retry removed — Opus evaluates both directions in single call above
 
             # No cooldown — subscription is $0/call, scan again in 5 min
             return SCAN_INTERVAL_SECONDS

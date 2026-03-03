@@ -820,7 +820,10 @@ class TelegramBot:
 
     async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
-        await query.answer()
+        try:
+            await query.answer()
+        except Exception:
+            pass  # query expired — still process the button press
         data  = query.data
 
         if data == "confirm_trade":

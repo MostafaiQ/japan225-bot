@@ -84,12 +84,11 @@ _execute_scalp(scalp_result, direction, setup, session, current_price, local_con
 
 Near-miss flow (in _scanning_cycle, after AI rejection):
   Triggers when: local_score >= min_conf AND not QUICK REJECT AND final_confidence >= 40
-  → evaluate_scalp() via Opus → if scalp_viable → _execute_scalp() (no user confirmation)
-
-Bidirectional retry (in _scanning_cycle, after AI rejection + near-miss):
-  → detect_setup(exclude_direction=rejected_dir) → opposite direction setup
-  → compute_confidence() for alt direction → if >= HAIKU_MIN_SCORE → Opus scalp eval
-  → if scalp_viable → _execute_scalp() (auto-execute, no user confirmation)
+  → evaluate_scalp(primary_direction=direction) via Opus — BIDIRECTIONAL single call
+  → Opus evaluates BOTH directions using Sonnet's rejection reasoning as context
+  → Opus picks the best direction (may differ from pre-screen direction) or rejects both
+  → if scalp_viable → _execute_scalp(direction=opus_direction) (auto-execute, no user confirmation)
+  Mechanical bidirectional retry REMOVED — Opus handles both directions in one call.
 
 Force Open flow (in _scanning_cycle, after AI rejection):
   Triggers when: local_score >= 100 (12/12 criteria pass)

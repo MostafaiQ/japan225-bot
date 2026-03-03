@@ -324,6 +324,7 @@
     .chat-input-wrap {
       border-top:1px solid var(--border); padding:12px 8px 12px 0; display:flex; align-items:flex-end; gap:8px;
     }
+    .drag-over { outline:2px dashed var(--accent);outline-offset:-4px;background:rgba(99,102,241,.06); }
     .chat-input {
       flex:1; padding:12px 18px;
       background: linear-gradient(180deg, rgba(255,255,255,.04) 0%, rgba(255,255,255,.02) 100%);
@@ -664,14 +665,11 @@
           <span id="replyPreview" style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;"></span>
           <button onclick="cancelReply()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;padding:0 2px;">✕</button>
         </div>
-        <!-- Attachment preview bar (hidden until file selected) -->
-        <div id="attachBar" style="display:none;align-items:center;gap:8px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:6px;font-size:12px;color:var(--text-dim);">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:.6;"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
-          <span id="attachName" style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;"></span>
-          <button onclick="cancelAttach()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;padding:0 2px;">✕</button>
+        <!-- Attachment preview bar (hidden until files selected) -->
+        <div id="attachBar" style="display:none;flex-wrap:wrap;gap:6px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:6px;font-size:12px;color:var(--text-dim);">
         </div>
         <div class="chat-input-wrap">
-          <input type="file" id="fileInput" style="display:none;" accept="image/*,.txt,.log,.json,.py,.csv,.md" onchange="onFileSelect(event)">
+          <input type="file" id="fileInput" style="display:none;" accept="image/*,.txt,.log,.json,.py,.csv,.md" multiple onchange="onFileSelect(event)">
           <button class="icon-btn" onclick="document.getElementById('fileInput').click()" title="Attach file or screenshot" style="flex-shrink:0;align-self:flex-end;width:38px;height:38px;">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
           </button>
@@ -1209,37 +1207,86 @@ function cancelReply() {
   document.getElementById('replyBar').style.display = 'none';
 }
 
-// ── File attachment ─────────────────────────────────────────────────────
-let _attachData = null; // {name, b64, size}
+// ── File attachment (multi-file) ─────────────────────────────────────
+let _attachments = []; // [{name, b64, size}, ...]
 
 function onFileSelect(ev) {
-  const file = ev.target.files && ev.target.files[0];
-  if (!file) return;
-  if (file.size > 10 * 1024 * 1024) { alert('Max file size: 10 MB'); ev.target.value = ''; return; }
+  const files = ev.target.files;
+  if (!files || !files.length) return;
+  for (const file of files) {
+    if (_attachments.length >= 5) { alert('Max 5 files per message'); break; }
+    if (file.size > 10 * 1024 * 1024) { alert(`${file.name}: max 10 MB`); continue; }
+    _readFile(file);
+  }
+  ev.target.value = '';
+}
+
+function _readFile(file) {
   const reader = new FileReader();
   reader.onload = () => {
-    // result is "data:<mime>;base64,<data>" — strip prefix
     const b64 = reader.result.split(',')[1] || '';
-    _attachData = { name: file.name, b64, size: file.size };
-    const bar = document.getElementById('attachBar');
-    const nameEl = document.getElementById('attachName');
-    const sizeKB = (file.size / 1024).toFixed(1);
-    if (nameEl) nameEl.textContent = `${file.name} (${sizeKB} KB)`;
-    bar.style.display = 'flex';
+    _attachments.push({ name: file.name, b64, size: file.size });
+    _renderAttachBar();
   };
   reader.readAsDataURL(file);
 }
 
+function _renderAttachBar() {
+  const bar = document.getElementById('attachBar');
+  if (!_attachments.length) { bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  bar.innerHTML = _attachments.map((a, i) => {
+    const kb = (a.size / 1024).toFixed(1);
+    return `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--card);border:1px solid var(--border);border-radius:4px;padding:2px 8px;">
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+      ${esc(a.name)} (${kb} KB)
+      <button onclick="_removeAttach(${i})" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:12px;padding:0 2px;">✕</button>
+    </span>`;
+  }).join('') + `<button onclick="cancelAttach()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:11px;padding:0 4px;">Clear all</button>`;
+}
+
+function _removeAttach(idx) {
+  _attachments.splice(idx, 1);
+  _renderAttachBar();
+}
+
 function cancelAttach() {
-  _attachData = null;
+  _attachments = [];
   document.getElementById('attachBar').style.display = 'none';
   document.getElementById('fileInput').value = '';
+}
+
+// ── Drag & drop ─────────────────────────────────────────────────────
+function _initDragDrop() {
+  const chatPanel = document.getElementById('tab-chat');
+  if (!chatPanel) return;
+  let dragCount = 0;
+  chatPanel.addEventListener('dragenter', (e) => {
+    e.preventDefault(); dragCount++;
+    chatPanel.classList.add('drag-over');
+  });
+  chatPanel.addEventListener('dragleave', (e) => {
+    e.preventDefault(); dragCount--;
+    if (dragCount <= 0) { dragCount = 0; chatPanel.classList.remove('drag-over'); }
+  });
+  chatPanel.addEventListener('dragover', (e) => e.preventDefault());
+  chatPanel.addEventListener('drop', (e) => {
+    e.preventDefault(); dragCount = 0;
+    chatPanel.classList.remove('drag-over');
+    const files = e.dataTransfer.files;
+    if (!files || !files.length) return;
+    for (const file of files) {
+      if (_attachments.length >= 5) break;
+      if (file.size > 10 * 1024 * 1024) continue;
+      _readFile(file);
+    }
+  });
 }
 
 async function sendChat() {
   const inp = document.getElementById('chatInput');
   let msg = inp.value.trim();
-  if (!msg && !_attachData) return; // need text or file
+  if (!msg && !_attachments.length) return; // need text or file
   if (!S.url) { openSettings(); return; }
 
   // Prepend reply context if active
@@ -1251,31 +1298,36 @@ async function sendChat() {
   inp.value = '';
   localStorage.removeItem('chatDraft');
 
-  // Build display message (with attachment indicator)
+  // Build display message (with attachment indicators)
   let displayMsg = msg;
-  if (_attachData) displayMsg += (msg ? '\n' : '') + `[Attached: ${_attachData.name}]`;
-  addMsg('user', displayMsg || '[file attached]');
+  if (_attachments.length) displayMsg += (msg ? '\n' : '') + _attachments.map(a => `[Attached: ${a.name}]`).join('\n');
+  addMsg('user', displayMsg || '[files attached]');
   if (S.chat.length >= 40) S.chat.splice(0, 2);
-  S.chat.push({ role:'user', content: displayMsg || '[file attached]' });
+  S.chat.push({ role:'user', content: displayMsg || '[files attached]' });
   _saveHistory();
 
-  // Capture attachment before clearing
-  const attach = _attachData;
-  if (_attachData) cancelAttach();
+  // Capture attachments before clearing
+  const attachList = _attachments.length ? [..._attachments] : null;
+  if (_attachments.length) cancelAttach();
 
   // Show thinking bubble — button stays enabled for more messages
   const thinkEl = _addThinkingBubble();
   // Fire POST in background — does NOT block further sends
-  _postAndPoll(msg || '[file attached]', thinkEl, attach);
+  _postAndPoll(msg || '[files attached]', thinkEl, attachList);
 }
 
-async function _postAndPoll(msg, thinkEl, attach) {
+async function _postAndPoll(msg, thinkEl, attachList) {
   const statusEl = thinkEl ? thinkEl.querySelector('.think-status') : null;
   let posted = false;
   while (!posted) {
     try {
       const payload = { message: msg, history: S.chat };
-      if (attach) { payload.attachment_b64 = attach.b64; payload.attachment_name = attach.name; }
+      if (attachList && attachList.length) {
+        payload.attachments = attachList.map(a => ({ b64: a.b64, name: a.name }));
+        // backward compat: also send first file as attachment_b64/name
+        payload.attachment_b64 = attachList[0].b64;
+        payload.attachment_name = attachList[0].name;
+      }
       const d = await req('POST', '/api/chat', payload);
       posted = true;
       const tier = d.tier || 'sonnet';
@@ -1707,6 +1759,7 @@ function fmtDt(iso) {
   if (_draft) { const _inp = document.getElementById('chatInput'); if (_inp) _inp.value = _draft; }
   // Load history + recover pending jobs (awaited to prevent race conditions)
   await _initChat();
+  _initDragDrop();
   _refreshChatCost();                                                  // show cost badge immediately
   setInterval(() => { if (S.tab === 'overview' && S.url) loadOverview(); }, 15000);  // overview auto-refresh
   setInterval(() => { if (S.url) req('GET', '/api/status').then(() => setConn('ok', 'Connected')).catch(() => setConn('err', 'Error')); }, 15000);  // connection check on all tabs

@@ -99,10 +99,16 @@ async def get_chat_costs():
 
 # ── Claude chat (async job system) ────────────────────────────────────────────
 
+class _Attachment(BaseModel):
+    b64: str
+    name: str
+
 class ChatRequest(BaseModel):
     message: str
     history: list[dict] = []
-    # Optional file attachment: base64-encoded content + original filename
+    # Multi-file attachments (new format)
+    attachments: list[_Attachment] = []
+    # Legacy single-file attachment (backward compat)
     attachment_b64: str | None = None
     attachment_name: str | None = None
 
@@ -139,42 +145,43 @@ async def chat(body: ChatRequest):
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {"status": "pending", "response": None, "created": monotonic(), "tier": tier}
 
-    # Resolve attachment before spawning task (save to temp file if provided)
-    attachment_path: str | None = None
-    attachment_suffix: str | None = None
-    if body.attachment_b64 and body.attachment_name:
+    # Resolve attachments before spawning task (save to temp files)
+    _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+    attachment_paths: list[tuple[str, str, str]] = []  # (path, suffix, name)
+
+    # Build unified list: prefer new `attachments` array, fallback to legacy single
+    raw_attachments: list[tuple[str, str]] = []  # (b64, name)
+    if body.attachments:
+        raw_attachments = [(a.b64, a.name) for a in body.attachments[:5]]
+    elif body.attachment_b64 and body.attachment_name:
+        raw_attachments = [(body.attachment_b64, body.attachment_name)]
+
+    for att_b64, att_name in raw_attachments:
         try:
-            raw = base64.b64decode(body.attachment_b64)
-            suffix = Path(body.attachment_name).suffix.lower() or ".bin"
+            raw = base64.b64decode(att_b64)
+            suffix = Path(att_name).suffix.lower() or ".bin"
             tmp = tempfile.NamedTemporaryFile(
                 prefix="j225_attach_", suffix=suffix, delete=False
             )
             tmp.write(raw)
             tmp.close()
-            attachment_path = tmp.name
-            attachment_suffix = suffix
+            attachment_paths.append((tmp.name, suffix, att_name))
         except Exception:
-            attachment_path = None
+            continue
 
     effective_message = body.message
-    if attachment_path:
-        name = body.attachment_name or "attachment"
-        # For images: tell Claude to read the file (its Read tool handles images natively)
-        if attachment_suffix in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
-            effective_message = (
-                f"{body.message}\n\n"
-                f"[Attached image saved at: {attachment_path} — please read and analyse it]"
-            )
-        else:
-            # Text/log/JSON: inject content directly into the message
-            try:
-                content = Path(attachment_path).read_text(errors="replace")[:6000]
-                effective_message = (
-                    f"{body.message}\n\n"
-                    f"[Attached file: {name}]\n```\n{content}\n```"
-                )
-            except Exception:
-                effective_message = body.message
+    if attachment_paths:
+        parts = [body.message]
+        for att_path, att_suffix, att_name in attachment_paths:
+            if att_suffix in _IMAGE_EXTS:
+                parts.append(f"\n[Attached image saved at: {att_path} — please read and analyse it]")
+            else:
+                try:
+                    content = Path(att_path).read_text(errors="replace")[:6000]
+                    parts.append(f"\n[Attached file: {att_name}]\n```\n{content}\n```")
+                except Exception:
+                    pass
+        effective_message = "\n".join(parts)
 
     async def _run() -> None:
         from dashboard.services.claude_client import chat as _chat, send_telegram_message
@@ -192,15 +199,15 @@ async def chat(body: ChatRequest):
             # Append the user message if not already present (client may have saved it)
             if not msgs or msgs[-1].get("content") != effective_message:
                 msgs.append({"role": "user", "content": effective_message})
-            msgs.append({"role": "assistant", "content": reply})
+            msgs.append({"role": "assistant", "content": reply, "tier": tier})
             _write_history(msgs)
         except Exception:
             pass  # non-fatal — client can still get response via poll
 
-        # Clean up temp attachment file
-        if attachment_path:
+        # Clean up temp attachment files
+        for att_path, _, _ in attachment_paths:
             try:
-                Path(attachment_path).unlink(missing_ok=True)
+                Path(att_path).unlink(missing_ok=True)
             except Exception:
                 pass
 

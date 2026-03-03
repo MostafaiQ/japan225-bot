@@ -559,60 +559,65 @@ class AIAnalyzer:
     def evaluate_scalp(
         self,
         indicators: dict,
-        direction: str,
+        primary_direction: str,
         setup_type: str,
         local_confidence: int,
         ai_confidence: int,
         ai_reasoning: str,
     ) -> dict:
         """
-        Opus evaluates a near-miss setup for a quick scalp opportunity.
-        Called when Sonnet rejected but local confidence passed and AI conf >= 40%.
-        Opus picks BOTH SL and TP from structure (support/resistance levels).
-        Returns: {scalp_viable, tp_distance, sl_distance, reasoning, confidence}
+        Opus evaluates BOTH directions for a quick scalp opportunity.
+        Called when Sonnet rejected the primary direction. Opus uses Sonnet's rejection
+        reasoning as context — the reasons for rejecting one direction often contain
+        the thesis for the opposite direction.
+
+        Returns: {scalp_viable, direction, tp_distance, sl_distance, reasoning, confidence}
+        Note: direction may differ from primary_direction — Opus picks the best play.
         """
         indicator_block = _fmt_indicators(indicators)
+        opposite_direction = "LONG" if primary_direction == "SHORT" else "SHORT"
 
         system_prompt = (
             "You are a scalp-trade evaluator for Japan 225 Cash CFD ($1/pt, spread ~7pts).\n"
-            "A setup was detected by local indicators and passed local confidence scoring,\n"
-            "but the primary AI (Sonnet) rejected it. Your job: decide if there's a quick\n"
-            "scalp opportunity (get in, grab profits, get out) even though the full\n"
-            "400pt swing target may not be achievable.\n\n"
-            "YOU MUST PICK BOTH SL AND TP FROM STRUCTURE:\n"
-            "- SL: Place below nearest support (LONG) or above nearest resistance (SHORT).\n"
-            "  Use swing lows, BB lower, pivot S1/S2, fib levels, PDL for LONG SL placement.\n"
-            "  Use swing highs, BB upper, pivot R1/R2, fib levels, PDH for SHORT SL placement.\n"
-            "  BOUNDS: 60-120pts. Tighter = better R:R. Japan 225 has 30-80pt wicks on 15M.\n"
-            "  SL < 60 = noise stops you out. SL > 120 = swing trade, not a scalp.\n\n"
-            "- TP: Place at nearest obstacle (resistance for LONG, support for SHORT).\n"
-            "  Use BB mid/upper, EMA50, pivot levels, VWAP, PDH/PDL, fib levels.\n"
+            "A setup was detected and passed local confidence scoring, but the primary AI\n"
+            "(Sonnet) rejected it. Your job: evaluate BOTH directions for a quick scalp.\n\n"
+            "CRITICAL INSIGHT: Sonnet's rejection reasoning often contains the opposite thesis.\n"
+            "If Sonnet rejected SHORT because 'too oversold, bounce likely' — that IS the LONG case.\n"
+            "If Sonnet rejected LONG because 'overbought, distribution' — that IS the SHORT case.\n"
+            "Don't treat the directions independently — use the full market picture.\n\n"
+            "DECISION FLOW:\n"
+            f"1. Consider {primary_direction} scalp: Is there a quick play despite Sonnet's concerns?\n"
+            f"   Sometimes Sonnet is right about the swing but wrong about the scalp.\n"
+            f"2. Consider {opposite_direction} scalp: Does Sonnet's rejection reasoning\n"
+            f"   actually support a scalp in the opposite direction?\n"
+            "3. Pick the BEST one (or neither). You must choose ONE direction or reject both.\n\n"
+            "SL/TP PLACEMENT FROM STRUCTURE:\n"
+            "- SL: Nearest support (LONG) / resistance (SHORT). Use swing lows/highs, BB,\n"
+            "  pivot S1-S2/R1-R2, fib levels, PDL/PDH. BOUNDS: 60-120pts.\n"
+            "- TP: Nearest obstacle. Use BB mid/upper, EMA50, pivots, VWAP, PDH/PDL, fibs.\n"
             "  BOUNDS: 150-300pts.\n\n"
-            "R:R REQUIREMENTS (after 7pt spread):\n"
-            "  Effective R:R = (TP - 7) / (SL + 7) must be >= 1.5\n"
-            "  This is critical — low win rate on near-miss trades means R:R must compensate.\n"
-            "  Example: SL=80, TP=200 → (200-7)/(80+7) = 2.22 ✓\n"
-            "  Example: SL=100, TP=150 → (150-7)/(100+7) = 1.34 ✗ REJECT\n\n"
-            "OTHER RULES:\n"
-            "- If price is oversold (RSI<35) with daily bullish, bounce to BB mid is common.\n"
-            "- If no clear scalp target exists within 300pts, reject.\n"
-            "- If Sonnet's rejection reason is about a concrete imminent risk (high-impact event,\n"
-            "  major breakdown, gap risk), respect it and reject.\n"
-            "- Be decisive. This is a scalp — quick in, quick out.\n"
-            "- Explain WHERE you placed SL and TP and WHY (which technical level)."
+            "R:R REQUIREMENT: (TP - 7) / (SL + 7) >= 1.5  (7pt spread adjustment)\n\n"
+            "RULES:\n"
+            "- If Sonnet's rejection is about imminent risk (events, gap), respect it for BOTH.\n"
+            "- Oversold RSI<30 + daily bullish = bounce to BB mid is high-probability LONG scalp.\n"
+            "- Deeply oversold 4H RSI<25 = snap-back bounce even in bear market.\n"
+            "- Extended move (price far from EMA50) = reversion likely toward the mean.\n"
+            "- Be decisive. Pick the direction with better R:R and clearer structure.\n"
+            "- Explain WHERE SL/TP are placed and WHY."
         )
 
         user_prompt = (
-            f"DIRECTION: {direction} | SETUP: {setup_type}\n"
+            f"PRIMARY SETUP: {primary_direction} {setup_type}\n"
             f"LOCAL CONFIDENCE: {local_confidence}% (passed threshold)\n"
             f"SONNET CONFIDENCE: {ai_confidence}% (rejected)\n"
             f"SONNET REASONING: {ai_reasoning}\n\n"
             f"INDICATORS:\n{indicator_block}\n\n"
+            f"Evaluate BOTH {primary_direction} and {opposite_direction}. Pick the best scalp.\n"
             f"Output ONLY valid JSON:\n"
-            f'{{"scalp_viable": true, "sl_distance": 85, "tp_distance": 200, '
-            f'"reasoning": "SL below swing low at X, TP at BB mid at Y", "confidence": 65}}\n'
+            f'{{"scalp_viable": true, "direction": "LONG", "sl_distance": 85, "tp_distance": 200, '
+            f'"reasoning": "LONG better because [...]. SL below X, TP at Y", "confidence": 65}}\n'
             f"or\n"
-            f'{{"scalp_viable": false, "reasoning": "Sonnet was right because..."}}'
+            f'{{"scalp_viable": false, "reasoning": "Neither direction offers good R:R because..."}}'
         )
 
         raw, tokens = self._run_claude(
