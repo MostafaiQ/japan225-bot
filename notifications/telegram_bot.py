@@ -5,6 +5,7 @@ Features:
   - Persistent ReplyKeyboard at the bottom (always-visible quick nav)
   - Context-aware inline nav buttons after every command response
   - Full /menu inline panel on demand
+  - /chat or free-text → Claude AI (same as dashboard chat)
   - HTML formatting: 🟢/🔴 P&L, ▲/▼ direction, <code> prices, <b> labels
   - Edge-case handling throughout (IG down, no position, double-tap, etc.)
 """
@@ -73,10 +74,11 @@ REPLY_KB = ReplyKeyboardMarkup(
         ["📈 Stats",     "📒 Journal"],
         ["📅 Today",     "💸 Cost"],
         ["⚡ Force Scan", "🔄 Menu"],
+        ["💬 Chat"],
     ],
     resize_keyboard=True,
     is_persistent=True,
-    input_field_placeholder="Choose an action…",
+    input_field_placeholder="Choose an action or type to chat…",
 )
 
 # Map reply-keyboard button text → callback data (or special token)
@@ -89,6 +91,7 @@ _KB_MAP = {
     "💸 Cost":       "menu_cost",
     "⚡ Force Scan": "menu_force",
     "🔄 Menu":       "__menu__",
+    "💬 Chat":       "__chat__",
 }
 
 # ── Contextual nav keyboards (1-row, shown after each command) ─────────────
@@ -148,6 +151,7 @@ class TelegramBot:
             ("resume",  self._cmd_resume),
             ("close",   self._cmd_close),
             ("kill",    self._cmd_kill),
+            ("chat",    self._cmd_chat),
         ]:
             self.app.add_handler(CommandHandler(cmd, fn))
 
@@ -431,23 +435,65 @@ class TelegramBot:
     # ── Reply-keyboard text handler ────────────────────────────────────────
 
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Route persistent keyboard taps; ignore unknown text gracefully."""
+        """Route persistent keyboard taps; forward unknown text to Claude chat."""
         text = (update.message.text or "").strip()
         cb = _KB_MAP.get(text)
         if cb == "__menu__":
             await self._cmd_menu(update, context)
             return
+        if cb == "__chat__":
+            await update.message.reply_text(
+                "💬 <b>Chat mode</b> — just type your message and I'll forward it to Claude.\n"
+                "Use any keyboard button to go back to bot controls.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=REPLY_KB,
+            )
+            return
         if cb:
-            # Simulate a callback query routed through _handle_callback
-            # by calling the right branch of _dispatch_menu
             await self._dispatch_menu(cb, update.message)
             return
-        # Unknown text — gentle redirect
-        await update.message.reply_text(
-            "Tap <b>🔄 Menu</b> for the full panel, or use the keyboard below.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=REPLY_KB,
-        )
+        # No matching button — forward to Claude chat
+        await self._claude_chat(update.message, text)
+
+    # ── Claude chat (same backend as dashboard) ─────────────────────────
+
+    async def _cmd_chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /chat <message> — or just /chat to explain chat mode."""
+        text = (update.message.text or "").strip()
+        # Strip the /chat prefix
+        msg = text[5:].strip() if len(text) > 5 else ""
+        if not msg:
+            await update.message.reply_text(
+                "💬 <b>Chat mode</b> — just type your message directly.\n"
+                "Any text that isn't a button press gets forwarded to Claude.\n\n"
+                "Or: <code>/chat your question here</code>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=REPLY_KB,
+            )
+            return
+        await self._claude_chat(update.message, msg)
+
+    async def _claude_chat(self, msg, text: str):
+        """Forward text to Claude chat backend and reply with response."""
+        # Send "typing" indicator
+        await msg.reply_chat_action("typing")
+        try:
+            from dashboard.services.claude_client import chat as claude_chat
+            # Run in executor (blocking subprocess)
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(None, claude_chat, text, [])
+            if not response:
+                response = "(no response from Claude)"
+            # Telegram max message = 4096 chars. Split if needed.
+            for i in range(0, len(response), 4096):
+                chunk = response[i:i + 4096]
+                await msg.reply_text(chunk, reply_markup=REPLY_KB)
+        except Exception as e:
+            logger.error(f"Claude chat via Telegram failed: {e}")
+            await msg.reply_text(
+                f"Claude error: {str(e)[:200]}",
+                reply_markup=REPLY_KB,
+            )
 
     # ── Command handlers ───────────────────────────────────────────────────
 
