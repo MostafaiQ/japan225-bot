@@ -104,7 +104,8 @@ def get_trade_history(limit: int = 50) -> list[dict]:
             rows = conn.execute(
                 "SELECT trade_number, deal_id, opened_at, closed_at, direction, lots, "
                 "entry_price, exit_price, stop_loss, take_profit, pnl, "
-                "duration_minutes, phase_at_close, result, notes "
+                "balance_before, balance_after, confidence, setup_type, session, "
+                "ai_analysis, duration_minutes, phase_at_close, result, notes "
                 "FROM trades ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
         result = []
@@ -116,8 +117,15 @@ def get_trade_history(limit: int = 50) -> list[dict]:
                 d["duration"] = f"{h}h {m}m" if h else f"{m}m"
             else:
                 d["duration"] = "—"
-            d["exit_phase"]    = d.pop("phase_at_close", None)
-            d["close_reason"]  = d.pop("notes", None)
+            d["exit_phase"]   = d.pop("phase_at_close", None)
+            d["close_reason"] = d.pop("notes", None)
+            # Parse ai_analysis JSON for notes
+            raw_ai = d.get("ai_analysis")
+            if isinstance(raw_ai, str):
+                try:
+                    d["ai_analysis"] = json.loads(raw_ai)
+                except Exception:
+                    d["ai_analysis"] = {"reasoning": raw_ai}
             result.append(d)
         return result
     except Exception:
@@ -164,6 +172,16 @@ def get_ai_calls_today() -> int:
         return int(r["c"]) if r else 0
     except Exception:
         return 0
+
+
+def get_account_state() -> dict:
+    """Get account state for dashboard display."""
+    try:
+        with _conn() as conn:
+            row = conn.execute("SELECT * FROM account_state WHERE id=1").fetchone()
+        return dict(row) if row else {}
+    except Exception:
+        return {}
 
 
 def db_exists() -> bool:

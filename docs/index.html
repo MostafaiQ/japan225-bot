@@ -611,17 +611,20 @@
     <!-- ── History ── -->
     <div id="tab-history" class="tab-panel">
       <div class="card">
-        <div class="flex-between" style="margin-bottom:14px;">
-          <div class="card-title" style="margin-bottom:0">Trade Journal</div>
-          <div class="flex-row">
-            <span id="histStats" style="font-size:12px;color:var(--text-muted);font-weight:600;background:var(--bg);padding:3px 10px;border-radius:5px;border:1px solid var(--border);"></span>
-            <button class="btn btn-ghost btn-sm" onclick="loadHistory()">Refresh</button>
-          </div>
+        <div class="flex-between" style="margin-bottom:12px;">
+          <div class="card-title" style="margin-bottom:0">Trading Journal</div>
+          <button class="btn btn-ghost btn-sm" onclick="loadHistory()">Refresh</button>
         </div>
+        <!-- Summary stats bar -->
+        <div id="histSummary" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;"></div>
         <div class="tbl-wrap">
-          <table>
-            <thead><tr><th>Date</th><th>Dir</th><th>Entry</th><th>Exit</th><th>PnL (pts)</th><th>Duration</th><th>Phase</th><th>Reason</th></tr></thead>
-            <tbody id="histBody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+          <table id="histTable">
+            <thead><tr>
+              <th>#</th><th>Date</th><th>Instrument</th><th>Dir</th><th>Lots</th>
+              <th>Entry</th><th>SL</th><th>TP</th><th>Exit</th>
+              <th>P/L ($)</th><th>Balance</th><th>Notes</th>
+            </tr></thead>
+            <tbody id="histBody"><tr><td colspan="12" class="empty">Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -1128,35 +1131,81 @@ async function saveRestart() {
 // ══════════════════════════════════════════════
 //  HISTORY
 // ══════════════════════════════════════════════
+function _aiNotes(t) {
+  // Extract useful notes from ai_analysis or close_reason
+  const ai = t.ai_analysis;
+  let parts = [];
+  if (ai && typeof ai === 'object') {
+    if (ai.reasoning)    parts.push(ai.reasoning);
+    if (ai.why_entry)    parts.push('Entry: ' + ai.why_entry);
+    if (ai.risk_notes)   parts.push('Risk: ' + ai.risk_notes);
+    if (ai.lesson)       parts.push('Lesson: ' + ai.lesson);
+  } else if (typeof ai === 'string' && ai) {
+    parts.push(ai);
+  }
+  if (t.close_reason) parts.push(t.close_reason);
+  if (t.exit_phase && t.exit_phase !== '—') parts.push('Phase: ' + t.exit_phase);
+  return parts.join(' · ') || '—';
+}
+
 async function loadHistory() {
   if (!S.url) return;
   try {
     const d = await req('GET', '/api/history');
     const trades = d.trades || [];
+    const acc    = d.account  || {};
     const wins   = trades.filter(t => (t.pnl ?? 0) > 0).length;
-    const totPnl = trades.reduce((s,t) => s + (t.pnl ?? 0), 0);
-    document.getElementById('histStats').textContent = trades.length
-      ? `${trades.length} trades · ${wins}W/${trades.length-wins}L · ${totPnl >= 0 ? '+' : ''}${totPnl.toFixed(0)} pts` : '';
+    const losses = trades.length - wins;
+    const wr     = trades.length ? Math.round(wins / trades.length * 100) : 0;
+    const startBal = acc.starting_balance ?? null;
+    const curBal   = acc.balance ?? null;
+    const totPnlDollar = (curBal != null && startBal != null) ? (curBal - startBal) : null;
+
+    // Summary stats bar
+    const sumEl = document.getElementById('histSummary');
+    const statCard = (label, val, color) =>
+      `<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">${label}</div>
+        <div style="font-size:18px;font-weight:700;color:${color||'var(--text)'};">${val}</div>
+      </div>`;
+    sumEl.innerHTML = [
+      statCard('Starting Balance', startBal != null ? '$'+startBal.toFixed(2) : '—', ''),
+      statCard('Current Balance',  curBal   != null ? '$'+curBal.toFixed(2)   : '—', curBal > startBal ? 'var(--long)' : curBal < startBal ? 'var(--short)' : ''),
+      statCard('Total P/L',        totPnlDollar != null ? (totPnlDollar>=0?'+':'')+('$'+Math.abs(totPnlDollar).toFixed(2)) : '—', totPnlDollar >= 0 ? 'var(--long)' : 'var(--short)'),
+      statCard('Win Rate',         trades.length ? `${wins}W / ${losses}L (${wr}%)` : '—', wr >= 50 ? 'var(--long)' : 'var(--short)'),
+    ].join('');
+
     const tb = document.getElementById('histBody');
-    if (!trades.length) { tb.innerHTML = '<tr><td colspan="8" class="empty">No trades yet</td></tr>'; return; }
-    tb.innerHTML = trades.map(t => {
-      const pnl = t.pnl ?? 0;
-      const pc  = pnl >= 0 ? 'c-long' : 'c-short';
+    if (!trades.length) { tb.innerHTML = '<tr><td colspan="12" class="empty">No trades yet</td></tr>'; return; }
+
+    // Trades in chronological order for running balance
+    const ordered = [...trades].reverse();
+    tb.innerHTML = ordered.map((t, i) => {
+      const pnl     = t.pnl ?? 0;
+      const pc      = pnl >= 0 ? 'var(--long)' : 'var(--short)';
+      const num     = t.trade_number ?? (i + 1);
+      const notes   = _aiNotes(t);
+      const pnlStr  = `<span style="color:${pc};font-weight:700;">${pnl>=0?'+':''}$${Math.abs(pnl).toFixed(2)}</span>`;
+      const balStr  = t.balance_after != null ? '$' + (+t.balance_after).toFixed(2) : '—';
       return `<tr>
-        <td>${fmtDt(t.opened_at)}</td>
+        <td style="color:var(--text-muted);font-weight:600;">${num}</td>
+        <td style="white-space:nowrap;">${fmtDt(t.opened_at)}</td>
+        <td style="color:var(--text-muted);">Japan 225</td>
         <td>${t.direction==='LONG'
-          ? '<span class="badge b-long">L</span>'
-          : '<span class="badge b-short">S</span>'}</td>
+          ? '<span class="badge b-long">LONG</span>'
+          : '<span class="badge b-short">SHORT</span>'}</td>
+        <td>${t.lots ?? '—'}</td>
         <td>${fmt1(t.entry_price)}</td>
+        <td style="color:var(--short);">${fmt1(t.stop_loss)}</td>
+        <td style="color:var(--long);">${fmt1(t.take_profit)}</td>
         <td>${fmt1(t.exit_price)}</td>
-        <td class="${pc}" style="font-weight:700;">${(pnl>=0?'+':'')+pnl.toFixed(0)}</td>
-        <td>${t.duration || '—'}</td>
-        <td>${t.exit_phase || '—'}</td>
-        <td style="font-size:11px;">${t.close_reason || '—'}</td>
+        <td>${pnlStr}</td>
+        <td style="font-weight:600;">${balStr}</td>
+        <td style="font-size:11px;max-width:280px;color:var(--text-muted);">${esc(notes)}</td>
       </tr>`;
     }).join('');
   } catch(e) {
-    document.getElementById('histBody').innerHTML = `<tr><td colspan="8" class="empty">Error: ${esc(e.message)}</td></tr>`;
+    document.getElementById('histBody').innerHTML = `<tr><td colspan="12" class="empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
