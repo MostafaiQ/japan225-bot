@@ -72,10 +72,17 @@ async def run_scan():
         )
         return
     
-    # --- Connect to IG ---
-    if not ig.connect():
-        logger.error("Failed to connect to IG API")
-        await send_standalone_message("SCAN FAILED: IG API connection error")
+    # --- Connect to IG (retry up to 3 times) ---
+    connected = False
+    for attempt in range(1, 4):
+        if ig.connect():
+            connected = True
+            break
+        logger.warning(f"IG connect attempt {attempt}/3 failed, retrying in 5s...")
+        await asyncio.sleep(5)
+    if not connected:
+        logger.error("Failed to connect to IG API after 3 attempts")
+        await send_standalone_message("SCAN FAILED: IG API unreachable after 3 retries (transient — monitor still scanning on VPS)")
         return
     
     # --- Get market info ---
