@@ -99,8 +99,10 @@ def compute_confidence(
     rsi_4h = tf_4h.get("rsi")
     rsi_daily = tf_daily.get("rsi")
 
-    # Setup-type-aware flag — used by C1, C5, C10, C11, C12
+    # Setup-type-aware flags — used by C1, C5, C10, C11, C12
     _oversold_setup = setup_type in ("bollinger_lower_bounce", "oversold_reversal")
+    _overbought_setup = setup_type in ("overbought_reversal",)
+    _breakdown_setup = setup_type in ("breakdown_continuation",)
 
     # ---- Criterion 1: Daily Trend Aligned (oversold-exempt) ----
     # Oversold bounces (bb_lower_bounce, oversold_reversal) pass C1 even when daily is bearish.
@@ -127,10 +129,18 @@ def compute_confidence(
     else:  # SHORT
         if above_ema200_daily is not None:
             c1 = not bool(above_ema200_daily)
-            reasons["daily_trend"] = f"Daily EMA200: {'below (bearish)' if c1 else 'above (not bearish)'}"
+            if not c1 and _overbought_setup:
+                c1 = True
+                reasons["daily_trend"] = f"Daily EMA200: above (overbought exempt — counter-trend reversal)"
+            else:
+                reasons["daily_trend"] = f"Daily EMA200: {'below (bearish)' if c1 else 'above (not bearish)'}"
         elif above_ema50_daily is not None:
             c1 = not bool(above_ema50_daily)
-            reasons["daily_trend"] = f"Daily EMA200 N/A, using EMA50: {'below' if c1 else 'above'}"
+            if not c1 and _overbought_setup:
+                c1 = True
+                reasons["daily_trend"] = f"Daily EMA50: above (overbought exempt — counter-trend reversal)"
+            else:
+                reasons["daily_trend"] = f"Daily EMA200 N/A, using EMA50: {'below' if c1 else 'above'}"
         else:
             c1 = False
             reasons["daily_trend"] = "Daily EMA data unavailable"
@@ -233,10 +243,15 @@ def compute_confidence(
             f"Price {'at/below' if c4 else 'above'} BB mid ({bb_mid:.0f})" if bb_mid else "BB mid unavailable"
         )
     else:
-        c4 = bb_mid is not None and price >= bb_mid
-        reasons["tp_viable"] = (
-            f"Price {'at/above' if c4 else 'below'} BB mid ({bb_mid:.0f})" if bb_mid else "BB mid unavailable"
-        )
+        if _breakdown_setup:
+            # Breakdown continuation: price below BB mid is EXPECTED (that's the setup trigger)
+            c4 = True
+            reasons["tp_viable"] = f"Breakdown: price below BB mid (expected — targeting BB lower/beyond)"
+        else:
+            c4 = bb_mid is not None and price >= bb_mid
+            reasons["tp_viable"] = (
+                f"Price {'at/above' if c4 else 'below'} BB mid ({bb_mid:.0f})" if bb_mid else "BB mid unavailable"
+            )
     criteria["tp_viable"] = c4
 
     # ---- Criterion 5: Price Structure (setup-type-aware) ----
@@ -257,8 +272,19 @@ def compute_confidence(
             c5 = bool(above_ema50_15m) if above_ema50_15m is not None else False
             reasons["structure"] = f"Price {'above' if c5 else 'below'} EMA50 on 15M"
     else:
-        c5 = (not bool(above_ema50_15m)) if above_ema50_15m is not None else False
-        reasons["structure"] = f"Price {'below (bearish)' if c5 else 'above (not bearish)'} EMA50 on 15M"
+        if _overbought_setup and bool(above_ema50_15m):
+            # Overbought: above EMA50 is EXPECTED at the reversal point
+            swept_high = tf_15m.get("swept_high", False)
+            cp_dir_s = tf_15m.get("candlestick_direction")
+            bearish_candle = cp_dir_s == "bearish"
+            c_open_s = tf_15m.get("open")
+            c_high_s = tf_15m.get("high")
+            upper_wick_s = (c_high_s - max(c_open_s, price)) if (c_open_s is not None and c_high_s is not None) else 0
+            c5 = swept_high or bearish_candle or upper_wick_s >= 15 or not bool(above_ema50_15m)
+            reasons["structure"] = f"Overbought structure: above EMA50 (expected) | reversal={'Y' if c5 else 'N'}"
+        else:
+            c5 = (not bool(above_ema50_15m)) if above_ema50_15m is not None else False
+            reasons["structure"] = f"Price {'below (bearish)' if c5 else 'above (not bearish)'} EMA50 on 15M"
     criteria["structure"] = c5
 
     # ---- Criterion 6: Macro / 4H Aligned ----
@@ -337,8 +363,16 @@ def compute_confidence(
                 c10 = bool(above_ema50_4h)
                 reasons["trend_4h"] = f"4H EMA50: {'above (bullish)' if c10 else 'below (bearish)'}"
         else:
-            c10 = not bool(above_ema50_4h)
-            reasons["trend_4h"] = f"4H EMA50: {'below (bearish)' if c10 else 'above (not bearish)'}"
+            if _overbought_setup and bool(above_ema50_4h):
+                # Overbought: 4H above EMA50 is expected; pass if RSI_4H > 55 or daily bearish
+                rsi_4h_overbought = rsi_4h is not None and rsi_4h > 55
+                c10 = rsi_4h_overbought or not bool(above_ema200_daily)
+                rsi_4h_str_ob = f"{rsi_4h:.1f}" if rsi_4h is not None else "N/A"
+                daily_str_ob = "bearish" if not above_ema200_daily else "bullish"
+                reasons["trend_4h"] = f"4H EMA50: above (expected for overbought) | 4H RSI={rsi_4h_str_ob} | daily={daily_str_ob}"
+            else:
+                c10 = not bool(above_ema50_4h)
+                reasons["trend_4h"] = f"4H EMA50: {'below (bearish)' if c10 else 'above (not bearish)'}"
     else:
         c10 = True  # default pass if 4H data unavailable
         reasons["trend_4h"] = "4H EMA50 unavailable — defaulting pass"
@@ -363,8 +397,16 @@ def compute_confidence(
                 c11 = bool(ha_bullish)
                 reasons["ha_aligned"] = f"HA 15M: {'bullish' if c11 else 'bearish'}{streak_str}"
         else:
-            c11 = not bool(ha_bullish)
-            reasons["ha_aligned"] = f"HA 15M: {'bearish (aligned SHORT)' if c11 else 'bullish (counter-HA)'}{streak_str}"
+            if _overbought_setup and bool(ha_bullish):
+                # Overbought: bullish HA expected at reversal point
+                streak_weakening_ob = ha_streak is not None and ha_streak <= 2
+                cp_dir_ha = tf_15m.get("candlestick_direction")
+                bearish_pattern_ha = cp_dir_ha == "bearish"
+                c11 = streak_weakening_ob or bearish_pattern_ha or (rsi_15m is not None and rsi_15m > 70)
+                reasons["ha_aligned"] = f"HA 15M: bullish (expected for overbought){streak_str} | streak_weakening={'Y' if streak_weakening_ob else 'N'}"
+            else:
+                c11 = not bool(ha_bullish)
+                reasons["ha_aligned"] = f"HA 15M: {'bearish (aligned SHORT)' if c11 else 'bullish (counter-HA)'}{streak_str}"
     else:
         c11 = True  # default pass if HA unavailable (older candle data)
         reasons["ha_aligned"] = "HA unavailable — defaulting pass"

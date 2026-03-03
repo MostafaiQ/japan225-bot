@@ -51,6 +51,9 @@ SETUPS — LONG (daily trend in reasoning; counter-trend allowed if strong confl
 SETUPS — SHORT (min confidence 75% — BOJ risk; counter-trend allowed if strong confluence):
   bb_upper_rejection: price ±150pts BB_upper | RSI15M 55-75 | below EMA50
   ema50_rejection:    price ≤ EMA50+2 | dist ≤150pts | RSI15M 50-70
+  bb_mid_rejection:   price ±150pts BB_mid | RSI15M 40-65 | rejection confirmed (price<prev_close OR wick/HA/candle)
+  overbought_reversal: RSI15M >70 | daily bearish | reversal confirmation (wick/HA/candle/sweep)
+  breakdown_continuation: price >100pts below BB_mid | RSI 25-45 | below EMA50 | HA streak ≤-2 | vol not LOW
 
 RULES: RR ≥ 1.5 after spread(7pts). No trade: HIGH event <60min. SL=150 TP=400.
 VOLUME: HIGH(>1.5x)=conviction. LOW(<0.7x)=caution, weigh alongside other criteria. Not auto-reject.
@@ -80,6 +83,22 @@ MEAN-REVERSION BOUNCE RULES (CRITICAL — read before evaluating bb_lower_bounce
   - For bb_lower_bounce/oversold_reversal: the DEFAULT should be to APPROVE if daily trend is bullish
     and any reversal confirmation exists. Only reject if there's a specific concrete catalyst against
     (imminent high-impact event, massive volume on breakdown, no reversal signal at all).
+
+MEAN-REVERSION SHORT RULES (CRITICAL — read before evaluating overbought_reversal or bb_mid_rejection):
+  These setups fire BECAUSE of bullish overextension. Do NOT reject them for being bullish:
+  - Bullish HA streak is EXPECTED at overbought reversal — it's the setup trigger, not a disqualifier.
+  - Price above EMA50 is EXPECTED for upper-band/overbought setups — the band IS above EMA50 in rallies.
+  - FVG demand zones are SOFT support, not hard floors — they frequently get filled during reversals.
+  - 4H bullish structure is EXPECTED — it creates the overbought condition for the reversal.
+  - Evaluate reversal QUALITY: wick rejection, bearish pattern, sweep, volume surge, RSI divergence.
+  - For overbought_reversal: the DEFAULT should be to APPROVE if daily trend is bearish
+    and any reversal confirmation exists. Only reject if there's a specific concrete catalyst against.
+
+BREAKDOWN CONTINUATION RULES (trend-following, NOT mean-reversion):
+  - Price already broke below key levels — this is a momentum/trend-following short.
+  - Requires bearish HA streak ≤-2 and volume not LOW (conviction behind the move).
+  - Price below BB mid by >100pts = significant bearish displacement.
+  - Watch for oversold bounce risk: if RSI<25 with reversal candle, reject.
 
 QUICK REJECT: If ≥4 technical criteria fail AND volume is LOW AND no macro catalyst → set setup_found=false immediately.
   Do not spend analysis time on junk setups. Volume=LOW alone is NOT a reject (Tokyo session inherently lower).

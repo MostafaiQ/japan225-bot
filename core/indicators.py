@@ -1135,6 +1135,139 @@ def detect_setup(
             })
             return result
 
+    # --- SHORT Setup 3: BB Mid Rejection (mirror of bb_mid_bounce LONG) ---
+    # Price rallied up to BB mid as resistance and got rejected — heading back down.
+    if bb_mid and rsi_15m:
+        near_mid_pts = abs(price - bb_mid) <= 150
+        rsi_ok_short_mid = 40 <= rsi_15m <= 65
+        prev_close_s = tf_15m.get("prev_close")
+        rejection_starting = prev_close_s is not None and price < prev_close_s
+        # Relaxed rejection gate: accept alternative reversal signals
+        if not rejection_starting and rsi_15m > 50:
+            candle_open_r = tf_15m.get("open")
+            candle_high_r = tf_15m.get("high")
+            upper_wick_r = (candle_high_r - max(candle_open_r, price)) if (candle_open_r is not None and candle_high_r is not None) else 0
+            ha_bear = tf_15m.get("ha_bullish") is False
+            cp_dir_r = tf_15m.get("candlestick_direction")
+            bearish_pattern_r = cp_dir_r == "bearish"
+            rejection_starting = upper_wick_r >= 20 or ha_bear or bearish_pattern_r
+
+        if near_mid_pts and rsi_ok_short_mid and rejection_starting:
+            entry = price
+            sl = entry + DEFAULT_SL_DISTANCE
+            tp = entry - DEFAULT_TP_DISTANCE
+
+            below_ema50_s = not tf_15m.get("above_ema50")
+            ema50_note_s = "below EMA50" if below_ema50_s else "above EMA50 (AI to evaluate)"
+            conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+            reasoning = (
+                f"SHORT: BB mid rejection on 15M. "
+                f"Price {abs(price - bb_mid):.0f}pts from mid ({bb_mid:.0f}). "
+                f"RSI {rsi_15m:.1f} in zone. {ema50_note_s}. {short_daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "bb_mid_rejection",
+                "direction": "SHORT",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
+
+    # --- SHORT Setup 4: Overbought Reversal (mirror of oversold_reversal LONG) ---
+    # RSI > 70 = extremely overbought. If daily bearish → textbook mean-reversion short.
+    if rsi_15m and rsi_15m > 70 and daily_bullish is False:
+        candle_open_ob = tf_15m.get("open")
+        candle_high_ob = tf_15m.get("high")
+        upper_wick_ob = (candle_high_ob - max(candle_open_ob, price)) if (candle_open_ob is not None and candle_high_ob is not None) else 0
+        ha_bear_ob = tf_15m.get("ha_bullish") is False
+        swept_high_ob = tf_15m.get("swept_high", False)
+        cp_dir_ob = tf_15m.get("candlestick_direction")
+        bearish_pattern_ob = cp_dir_ob == "bearish"
+        reversal_confirm_ob = upper_wick_ob >= 10 or ha_bear_ob or bearish_pattern_ob or swept_high_ob
+
+        if reversal_confirm_ob:
+            entry = price
+            sl = entry + DEFAULT_SL_DISTANCE
+            tp = entry - DEFAULT_TP_DISTANCE
+            rsi_4h_note_ob = f" 4H RSI {rsi_4h:.1f} — multi-TF overbought." if rsi_4h and rsi_4h > 60 else ""
+            conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+            confirm_str_ob = []
+            if upper_wick_ob >= 10:
+                confirm_str_ob.append(f"wick {upper_wick_ob:.0f}pts")
+            if ha_bear_ob:
+                confirm_str_ob.append("HA bearish")
+            if bearish_pattern_ob:
+                confirm_str_ob.append("bearish candle pattern")
+            if swept_high_ob:
+                confirm_str_ob.append("liquidity sweep")
+            reasoning = (
+                f"SHORT: Overbought reversal on 15M. "
+                f"RSI {rsi_15m:.1f} extremely overbought in daily downtrend. "
+                f"Reversal: {', '.join(confirm_str_ob)}. "
+                f"{short_daily_str}.{rsi_4h_note_ob}"
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "overbought_reversal",
+                "direction": "SHORT",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
+
+    # --- SHORT Setup 5: Breakdown Continuation (trend-following short) ---
+    # Price already broke below key levels and keeps falling with momentum.
+    # Not mean-reversion — this is a trend continuation play.
+    if bb_mid and rsi_15m and ema50_15m:
+        dist_below_mid = price - bb_mid  # negative when below mid
+        below_mid_significant = dist_below_mid < -100
+        rsi_ok_breakdown = 25 <= rsi_15m <= 45
+        below_ema50_bd = not tf_15m.get("above_ema50")
+        ha_streak_bd = tf_15m.get("ha_streak")
+        ha_bearish_momentum = ha_streak_bd is not None and ha_streak_bd <= -2
+        vol_signal_bd = tf_15m.get("volume_signal", "NORMAL")
+        vol_ok_bd = vol_signal_bd != "LOW"
+
+        if below_mid_significant and rsi_ok_breakdown and below_ema50_bd and ha_bearish_momentum and vol_ok_bd:
+            entry = price
+            sl = entry + DEFAULT_SL_DISTANCE
+            tp = entry - DEFAULT_TP_DISTANCE
+
+            conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+            reasoning = (
+                f"SHORT: Breakdown continuation on 15M. "
+                f"Price {abs(dist_below_mid):.0f}pts below BB mid ({bb_mid:.0f}). "
+                f"RSI {rsi_15m:.1f}, HA streak {ha_streak_bd}. "
+                f"Below EMA50, vol={vol_signal_bd}. {short_daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "breakdown_continuation",
+                "direction": "SHORT",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
+
     diag_parts = []
     if bb_mid is not None:
         mid_dist = abs(price - bb_mid)
