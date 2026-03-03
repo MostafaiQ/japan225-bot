@@ -379,6 +379,8 @@ class IGClient:
                 currency_code=CURRENCY,
                 expiry=EXPIRY,
                 order_type="MARKET",
+                level=None,
+                quote_id=None,
                 force_open=True,
                 guaranteed_stop=guaranteed_stop,
                 stop_level=stop_level,
