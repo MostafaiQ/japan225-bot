@@ -82,14 +82,14 @@ async def run_scan():
         await asyncio.sleep(5)
     if not connected:
         logger.error("Failed to connect to IG API after 3 attempts")
-        await send_standalone_message("SCAN FAILED: IG API unreachable after 3 retries (transient — monitor still scanning on VPS)")
+        pass  # Silent — VPS monitor is still scanning
         return
     
     # --- Get market info ---
     market = ig.get_market_info()
     if not market:
         logger.error("Failed to get market info")
-        await send_standalone_message("SCAN FAILED: Market data unavailable")
+        pass  # Silent
         return
     
     if market.get("market_status") != "TRADEABLE":
@@ -106,7 +106,7 @@ async def run_scan():
     
     if not all_prices.get("m15"):
         logger.error("Failed to fetch 15M price data")
-        await send_standalone_message("SCAN FAILED: Price data unavailable")
+        pass  # Silent
         return
     
     # --- Calculate indicators ---
