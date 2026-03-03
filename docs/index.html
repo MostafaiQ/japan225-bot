@@ -1236,9 +1236,8 @@ function _startJobPolling(jobId, thinkEl) {
 
   const poll = async () => {
     attempt++;
-    const elapsedSpan = statusEl ? statusEl.querySelector('.think-elapsed') : null;
     const phrase = _thinkPhrases[Math.min(Math.floor(attempt / 2), _thinkPhrases.length - 1)];
-    if (statusEl) { statusEl.innerHTML = phrase + (elapsedSpan ? ' <span class="think-elapsed" style="color:var(--text-muted);font-size:11px;">' + (elapsedSpan?.textContent||'') + '</span>' : ''); }
+    if (statusEl) { const tn = statusEl.firstChild; if (tn && tn.nodeType === 3) tn.textContent = phrase + ' '; }
     try {
       const d = await req('GET', '/api/chat/status/' + jobId);
       if (d.status === 'done' || d.status === 'error') {
