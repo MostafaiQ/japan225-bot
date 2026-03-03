@@ -905,7 +905,20 @@ def detect_setup(
     daily_str = "Daily bullish" if daily_bullish else ("Daily bearish (counter-trend)" if daily_bullish is False else "Daily N/A")
 
     # ============================================================
+    # Strong bearish momentum filter — skip LONG bounce setups during freefall.
+    # When HA streak <= -2 AND price making new lows, bounces are likely fakeouts.
+    # Let SHORT setups handle it instead.
+    # ============================================================
+    _ha_streak_filter = tf_15m.get("ha_streak")
+    _prev_close_filter = tf_15m.get("prev_close")
+    _strong_bearish_momentum = (
+        _ha_streak_filter is not None and _ha_streak_filter <= -2
+        and _prev_close_filter is not None and price < _prev_close_filter
+    )
+
+    # ============================================================
     # LONG SETUPS (bidirectional — no daily gate, C1 in confidence penalizes counter-trend)
+    # Skipped when strong bearish momentum is detected — defers to SHORT setups.
     # ============================================================
     # --- LONG Setup 1: Bollinger Mid Bounce ---
     if bb_mid and rsi_15m:
@@ -924,7 +937,7 @@ def detect_setup(
             bullish_pattern = any(p.get("direction") == "bullish" for p in candle_patterns) if candle_patterns else False
             bounce_starting = lower_wick_b >= 20 or ha_bull or bullish_pattern
 
-        if near_mid_pts and rsi_ok_long and bounce_starting:
+        if near_mid_pts and rsi_ok_long and bounce_starting and not _strong_bearish_momentum:
             entry = price
             sl = entry - DEFAULT_SL_DISTANCE
             if ema50_15m:
@@ -967,7 +980,7 @@ def detect_setup(
         else:
             rejection_l = False
 
-        if near_lower_pts and rsi_ok_lower and rejection_l:
+        if near_lower_pts and rsi_ok_lower and rejection_l and not _strong_bearish_momentum:
             entry = price
             sl = entry - DEFAULT_SL_DISTANCE
             tp = entry + DEFAULT_TP_DISTANCE
@@ -1023,7 +1036,7 @@ def detect_setup(
     # --- LONG Setup 4: Oversold Reversal (extreme mean-reversion) ---
     # Fires when RSI < 30 and daily is bullish — textbook oversold reversal in uptrend.
     # Weaker reversal confirmation: any wick, HA turn, or candle pattern suffices.
-    if rsi_15m and rsi_15m < 30 and daily_bullish:
+    if rsi_15m and rsi_15m < 30 and daily_bullish and not _strong_bearish_momentum:
         candle_open_os = tf_15m.get("open")
         candle_low_os  = tf_15m.get("low")
         lower_wick_os = (min(candle_open_os, price) - candle_low_os) if (candle_open_os is not None and candle_low_os is not None) else 0

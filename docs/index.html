@@ -1195,7 +1195,7 @@ async function sendChat() {
         _saveHistory();
         addMsg('assistant', d.response);
         _refreshChatCost();
-        btn.disabled = false; btn.innerHTML = 'Send';
+        btn.disabled = false; btn.innerHTML = '↑';
       }
     } catch(_) {
       // ngrok dropped — keep thinking bubble, retry in 5s (preserve elapsed span)
@@ -1249,7 +1249,7 @@ function _startJobPolling(jobId, thinkEl) {
         S.pendingJob = null;
         if (thinkEl) { if (thinkEl._elapsedTimer) clearInterval(thinkEl._elapsedTimer); thinkEl.remove(); }
         const btn = document.getElementById('chatBtn');
-        if (btn) { btn.disabled = false; btn.innerHTML = 'Send'; }
+        if (btn) { btn.disabled = false; btn.innerHTML = '↑'; }
         const reply = d.response || '(no response)';
         S.chat.push({ role:'assistant', content: reply });
         _saveHistory();
@@ -1335,8 +1335,9 @@ async function _pollHistory() {
   } catch(_) {}
 }
 
-// ── Init chat: server first, localStorage fallback ────────────────────────
+// ── Init chat: server first, localStorage fallback, then recover pending job ─
 async function _initChat() {
+  let historyLoaded = false;
   if (S.url) {
     try {
       const d = await req('GET', '/api/chat/history');
@@ -1347,26 +1348,45 @@ async function _initChat() {
         const box = document.getElementById('chatBox');
         box.innerHTML = '';
         S.chat.forEach(m => addMsg(m.role, m.content));
-        return;
+        historyLoaded = true;
       }
     } catch(_) {}
   }
-  // Fallback: localStorage
-  const saved = localStorage.getItem('chatHistory');
-  if (saved) {
+  if (!historyLoaded) {
+    const saved = localStorage.getItem('chatHistory');
+    if (saved) {
+      try {
+        const hist = JSON.parse(saved);
+        if (Array.isArray(hist) && hist.length > 0) {
+          S.chat = hist;
+          const box = document.getElementById('chatBox');
+          box.innerHTML = '';
+          hist.forEach(m => addMsg(m.role, m.content));
+          historyLoaded = true;
+        }
+      } catch(_) {}
+    }
+  }
+  if (!historyLoaded) _addWelcomeMsg();
+
+  // Recover pending job AFTER history is rendered (prevents race condition
+  // where _initChat wipes the thinking bubble added by concurrent recovery)
+  const savedJob = localStorage.getItem('pendingJob');
+  if (savedJob) {
     try {
-      const hist = JSON.parse(saved);
-      if (Array.isArray(hist) && hist.length > 0) {
-        S.chat = hist;
-        const box = document.getElementById('chatBox');
-        box.innerHTML = '';
-        hist.forEach(m => addMsg(m.role, m.content));
-        return;
+      const { job_id, startTime } = JSON.parse(savedJob);
+      if (job_id) {
+        // If response already landed in server history, no need to poll
+        const lastMsg = S.chat.length > 0 ? S.chat[S.chat.length - 1] : null;
+        if (lastMsg && lastMsg.role === 'assistant') {
+          localStorage.removeItem('pendingJob');
+        } else {
+          const thinkEl = _addThinkingBubble(startTime);
+          _startJobPolling(job_id, thinkEl);
+        }
       }
-    } catch(_) {}
+    } catch(_) { localStorage.removeItem('pendingJob'); }
   }
-  // No history anywhere — show welcome
-  _addWelcomeMsg();
 }
 
 function _addWelcomeMsg() {
@@ -1520,29 +1540,19 @@ function fmtDt(iso) {
 // ══════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════
-(function init() {
+(async function init() {
   document.getElementById('lTabScan').style.color = 'var(--primary)';
   if (!S.url) {
     showNotConfigured();   // shows "Click ⚙ to configure" — no modal, no blocking overlay
   } else {
     loadOverview();
   }
-  _initChat();                                                         // server-first, localStorage fallback
-  _refreshChatCost();                                                  // show cost badge immediately
-  // Restore draft text in chat input
+  // Restore draft text in chat input (before _initChat so it's visible immediately)
   const _draft = localStorage.getItem('chatDraft');
   if (_draft) { const _inp = document.getElementById('chatInput'); if (_inp) _inp.value = _draft; }
-  // Recover any job that was in-flight when page was refreshed
-  const _savedJob = localStorage.getItem('pendingJob');
-  if (_savedJob) {
-    try {
-      const { job_id, startTime } = JSON.parse(_savedJob);
-      if (job_id) {
-        const thinkEl = _addThinkingBubble(startTime);
-        _startJobPolling(job_id, thinkEl);
-      }
-    } catch(_) { localStorage.removeItem('pendingJob'); }
-  }
+  // Load history + recover pending jobs (awaited to prevent race conditions)
+  await _initChat();
+  _refreshChatCost();                                                  // show cost badge immediately
   setInterval(() => { if (S.tab === 'overview' && S.url) loadOverview(); }, 15000);  // overview auto-refresh
   setInterval(_tickCountdown, 1000);                                   // live countdown ticker
   setInterval(_pollHistory, 5000);                                     // cross-device chat sync
