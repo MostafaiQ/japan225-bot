@@ -1281,6 +1281,36 @@ function _initDragDrop() {
   });
 }
 
+// ── Clipboard paste (Ctrl+V / Cmd+V image) ──────────────────────────
+function _initClipboardPaste() {
+  document.addEventListener('paste', (e) => {
+    // Only handle when chat tab is active
+    const chatTab = document.getElementById('tab-chat');
+    if (!chatTab || !chatTab.classList.contains('active')) return;
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    let handled = false;
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (!file) continue;
+        if (_attachments.length >= 5) break;
+        e.preventDefault();
+        // Give it a timestamp-based name since clipboard images have none
+        const ext = item.type.split('/')[1] || 'png';
+        const named = new File([file], `clipboard-${Date.now()}.${ext}`, { type: item.type });
+        _readFile(named);
+        handled = true;
+      }
+    }
+    // If we pasted an image, focus the chat input so user can type a caption
+    if (handled) {
+      const inp = document.getElementById('chatInput');
+      if (inp) inp.focus();
+    }
+  });
+}
+
 async function sendChat() {
   const inp = document.getElementById('chatInput');
   let msg = inp.value.trim();
@@ -1758,6 +1788,7 @@ function fmtDt(iso) {
   // Load history + recover pending jobs (awaited to prevent race conditions)
   await _initChat();
   _initDragDrop();
+  _initClipboardPaste();
   _refreshChatCost();                                                  // show cost badge immediately
   setInterval(() => { if (S.tab === 'overview' && S.url) loadOverview(); }, 15000);  // overview auto-refresh
   setInterval(() => { if (S.url) req('GET', '/api/status').then(() => setConn('ok', 'Connected')).catch(() => setConn('err', 'Error')); }, 15000);  // connection check on all tabs
