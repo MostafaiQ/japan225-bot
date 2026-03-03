@@ -558,7 +558,7 @@ class TradingMonitor:
             tf_15m=tf_15m,
             upcoming_events=web_research.get("economic_calendar", []),
             web_research=web_research,
-            setup_type=prescreen_result.get("type"),
+            setup_type=setup.get("type"),
         )
         logger.info(f"Local confidence: {local_conf['score']}% ({prescreen_direction})")
 
@@ -1267,6 +1267,7 @@ class TradingMonitor:
         while self.running:
             try:
                 if self._trigger_path.exists():
+                    self._trigger_path.unlink(missing_ok=True)
                     logger.info("Dashboard force-scan trigger detected (poll). Waking main loop.")
                     self._force_scan_event.set()
                 if self._clear_cd_path.exists():
