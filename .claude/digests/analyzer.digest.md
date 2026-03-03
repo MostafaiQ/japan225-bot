@@ -1,6 +1,6 @@
 # ai/analyzer.py — DIGEST (updated 2026-03-03)
 # Single-subprocess pipeline: Sonnet 4.6 primary, Opus 4.6 sub-agent for borderline/oversold setups.
-# --fast flag on ALL CLI calls (Sonnet + Opus). Same model, faster output, $0 extra cost.
+# --fast + --max-tokens 1024 on ALL CLI calls. Same model, faster output, $0 extra cost.
 # Haiku pre-gate REMOVED. Separate Opus subprocess REMOVED. All in one `claude` invocation with --agents flag.
 # AUTH: Claude Code CLI subprocess (OAuth/subscription). No ANTHROPIC_API_KEY used.
 # JSON output via prompt schema + regex parser. No tool use schemas.
@@ -15,8 +15,9 @@ _cost always 0.0. _tokens always zeros. Kept for interface compat with save_scan
 __init__(): total_cost=0.0 (subscription, always zero)
 
 _run_claude(model, system_prompt, user_prompt, use_opus_agent=False, timeout=180) -> str
-  # subprocess.run([CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions", "--fast", ...agents_json...])
-  # --fast flag on ALL calls (Sonnet + Opus). Same model, faster output.
+  # subprocess.run([CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions",
+  #   "--no-session-persistence", "--fast", "--max-tokens", "1024", ...agents_json...])
+  # --fast + --max-tokens 1024 on ALL calls. Caps output at 1024 tokens (avg ~800).
   # If use_opus_agent=True: agents_json defines "opus_reviewer" sub-agent (model=OPUS_MODEL)
   # If use_opus_agent=False: no --agents flag, standard Sonnet run only
   # Strips ANTHROPIC_API_KEY from env to force OAuth.
@@ -58,7 +59,7 @@ Passed as <system> block in _run_claude.
 
 ## build_scan_prompt(..., failed_criteria=None) -> str
 Compact format. Appends JSON schema template at end.
-Includes path to storage/context/ files as a note.
+Dead context_note removed (was telling AI about files it can't access since --tools "" disables all tools).
 PRE-SCREEN line includes `Entry TF: {entry_tf}`.
 SECONDARY SETUP block: shown when bidirectional scan finds both directions. Includes direction, type, conf, reasoning.
 failed_criteria → FAILED LOCAL CRITERIA block.

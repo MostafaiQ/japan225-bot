@@ -198,8 +198,10 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 
 ## AI Pipeline (updated 2026-03-03) — Single subprocess: Sonnet 4.6 + Opus sub-agent
 - **Auth: Claude Code CLI (OAuth/subscription) — no ANTHROPIC_API_KEY used in analyzer.**
-  Single `claude --model sonnet-4-6 --print --fast --agents {...}` subprocess per scan.
-  `--fast` on ALL CLI calls (Sonnet + Opus). Same model, faster output, $0 extra cost.
+  Single `claude --model sonnet-4-6 --print --fast --max-tokens 1024 --agents {...}` subprocess per scan.
+  `--fast` + `--max-tokens 1024` on ALL CLI calls (Sonnet + Opus). Same model, faster output, $0 extra cost.
+  `--max-tokens 1024` caps output (avg ~800 tokens), prevents runaway responses.
+  Dead context_note removed from prompt — was telling AI about files it can't access (tools disabled).
   ANTHROPIC_API_KEY is stripped from env before each call to force OAuth.
 - Opus sub-agent: defined via `--agents` flag. Sonnet delegates to it for borderline 72-86% calls.
   Both models run within the same subprocess — no extra Node.js startup overhead.
