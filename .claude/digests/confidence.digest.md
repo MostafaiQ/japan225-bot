@@ -22,6 +22,8 @@ SHORT_RSI_LOW/HIGH=55/75
 # 12 criteria:
 # 1. daily_trend:        LONG=above EMA200 daily.  SHORT=below EMA200 daily.  (EMA50 fallback)
 #                        OVERSOLD EXEMPT: bb_lower_bounce/oversold_reversal pass C1 even when daily bearish.
+#                        BREAKDOWN EXEMPT: breakdown_continuation/bear_flag_breakdown/multi_tf_bearish pass C1
+#                        even when daily bullish. Daily EMA lags on big selloff days (transition phase).
 #                        Backtest: counter-trend LONG WR=48% vs trend-aligned 41%.
 # 2. entry_level:        LONG=near BB_mid (±150pts) OR EMA50 (±150pts) OR BB_lower (±150pts) OR VWAP below (±150pts).
 #                        SHORT=near BB_upper or BB_mid or EMA50_from_below (price<=ema50) OR VWAP above (±150pts).
@@ -50,6 +52,8 @@ SHORT_RSI_LOW/HIGH=55/75
 # MIN_CONFIDENCE_LONG=70 → requires 7/12 (7/12=70≥70).
 # MIN_CONFIDENCE_SHORT=75 → requires 8/12 (8/12=76≥75).
 # Oversold setups (bb_lower_bounce, oversold_reversal, extreme_oversold_reversal): C1/C5/C10/C11 have relaxed gates.
+# Breakdown setups (breakdown_continuation, bear_flag_breakdown, multi_tf_bearish): C1 exempt (daily lags in transition).
+# C4 (tp_viable) always passes for breakdown setups (price below BB mid is the trigger).
 
 ## format_confidence_breakdown(result: dict) -> str
 # Human-readable string for Telegram/logging. Shows ✓/✗ per criterion.

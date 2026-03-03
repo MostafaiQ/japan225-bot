@@ -99,6 +99,11 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 - monitor.py: naive vs UTC-aware datetime mismatch in duration calculation (MEDIUM)
 - dashboard chat: non-atomic _write_history() race condition on concurrent writes (MEDIUM)
 
+## Critical Fixes Applied (2026-03-03)
+- confidence.py: C1 (daily_trend) now exempts `_breakdown_setup` (breakdown_continuation, bear_flag_breakdown, multi_tf_bearish) for SHORT direction. Daily bullish during selloff transition = expected, not a penalty. Previously all breakdown shorts failed C1 when daily EMA200 was still above price.
+- analyzer.py: Expanded BREAKDOWN/MOMENTUM SHORT RULES in Sonnet system prompt. AI instructed that daily bullish + 4H/15M deeply bearish = transition phase with edge. Default = APPROVE if HA streak ≤-2 and below EMA50. Only reject on oversold bounce risk, major support, or LOW volume.
+- Root cause: On 2026-03-03, Nikkei dropped 4,004pts (57,688→53,684, -7%). Bot ran 67 scans but AI rejected all 54 setups. 43 missed moves of 150+pts. AI kept saying "daily trend not bearish" but daily EMA200 lags massively on crash days.
+
 ## Critical Fixes Applied (2026-03-02)
 - ig_client.py: CRITICAL — Pandas 2.3.3 conv_resol() breaks on "MINUTE_15"/"DAY" strings. Added _PANDAS_RESOLUTIONS map to convert to "15min"/"D" etc before calling fetch_historical_prices_by_epic(). All price fetches were silently returning [] before this fix.
 - monitor.py: _secs_to_next_session() helper. Off_hours sleep now exact-timed to session open (capped 30 min). Prevents missing session start when bot restarts near midnight UTC.

@@ -47,6 +47,10 @@ NEW: MEAN-REVERSION BOUNCE RULES section:
   - bb_lower_bounce: ±150pts from lower band, RSI 20-40, reversal confirms on wick/HA/candle/sweep.
   - oversold_reversal: RSI<30 + daily bullish + reversal confirm.
   Both: expect to fail C5/C10/C11 (EMA50 gates relaxed for oversold).
+NEW: BREAKDOWN/MOMENTUM SHORT RULES section (added 2026-03-03):
+  - breakdown_continuation, bear_flag_breakdown, multi_tf_bearish: daily bullish = EXPECTED during
+    transition. AI instructed to evaluate on 4H/15M structure, NOT daily trend. Default APPROVE
+    if HA streak ≤-2 and below EMA50. Reject only on oversold bounce risk, major support, LOW volume.
 Opus review instructions simplified for oversold setups (focus on reversal signals).
 Passed as <system> block in _run_claude.
 

@@ -137,6 +137,11 @@ def compute_confidence(
             if not c1 and _overbought_setup:
                 c1 = True
                 reasons["daily_trend"] = f"Daily EMA200: above (overbought exempt — counter-trend reversal)"
+            elif not c1 and _breakdown_setup:
+                # Breakdown/momentum shorts: daily bullish is EXPECTED during transition.
+                # 4H/15M already turned bearish but daily EMA lags on big selloff days.
+                c1 = True
+                reasons["daily_trend"] = f"Daily EMA200: above (breakdown exempt — daily lags in transition)"
             else:
                 reasons["daily_trend"] = f"Daily EMA200: {'below (bearish)' if c1 else 'above (not bearish)'}"
         elif above_ema50_daily is not None:
@@ -144,6 +149,9 @@ def compute_confidence(
             if not c1 and _overbought_setup:
                 c1 = True
                 reasons["daily_trend"] = f"Daily EMA50: above (overbought exempt — counter-trend reversal)"
+            elif not c1 and _breakdown_setup:
+                c1 = True
+                reasons["daily_trend"] = f"Daily EMA50: above (breakdown exempt — daily lags in transition)"
             else:
                 reasons["daily_trend"] = f"Daily EMA200 N/A, using EMA50: {'below' if c1 else 'above'}"
         else:

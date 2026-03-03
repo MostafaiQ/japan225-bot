@@ -98,11 +98,19 @@ MEAN-REVERSION SHORT RULES (CRITICAL — read before evaluating overbought_rever
   - For overbought_reversal: the DEFAULT should be to APPROVE if daily trend is bearish
     and any reversal confirmation exists. Only reject if there's a specific concrete catalyst against.
 
-BREAKDOWN CONTINUATION RULES (trend-following, NOT mean-reversion):
-  - Price already broke below key levels — this is a momentum/trend-following short.
-  - Requires bearish HA streak ≤-2 and volume not LOW (conviction behind the move).
-  - Price below BB mid by >100pts = significant bearish displacement.
-  - Watch for oversold bounce risk: if RSI<25 with reversal candle, reject.
+BREAKDOWN / MOMENTUM SHORT RULES (CRITICAL — read before evaluating breakdown_continuation, bear_flag_breakdown, multi_tf_bearish):
+  These setups fire BECAUSE of bearish momentum already in progress. Do NOT reject them for daily being bullish:
+  - Daily EMA200/EMA50 LAGS on big selloff days — price can drop 2000-4000pts while daily still reads "bullish".
+    Daily bullish + 4H/15M deeply bearish = TRANSITION PHASE, not a contradiction. This is where momentum shorts have edge.
+  - Price already broke below key levels with conviction (HA streak ≤-2, volume not LOW).
+  - Three_black_crows on 4H/15M with HIGH volume = genuine distribution, NOT a reason to reject.
+  - 4H below EMA50 by >500pts = deep bearish extension, trend is confirmed on lower TFs regardless of daily.
+  - For breakdown_continuation/bear_flag_breakdown/multi_tf_bearish: the DEFAULT should be to APPROVE
+    if 4H and 15M are aligned bearish (HA streak ≤-2, below EMA50, RSI<50). Only reject if:
+    (1) RSI<25 with reversal candle (oversold bounce risk), or
+    (2) price sitting on major support (BB lower, pivot S2/S3), or
+    (3) volume is LOW (no conviction behind the move).
+  - Do NOT reject because "daily trend is bullish" or "price above daily EMA50/200" — that is EXPECTED.
 
 QUICK REJECT: If ≥4 technical criteria fail AND volume is LOW AND no macro catalyst → set setup_found=false immediately.
   Do not spend analysis time on junk setups. Volume=LOW alone is NOT a reject (Tokyo session inherently lower).
