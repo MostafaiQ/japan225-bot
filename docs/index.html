@@ -794,7 +794,7 @@ async function req(method, path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d.detail || 'HTTP ' + r.status);
+  if (!r.ok) { const e = new Error(d.detail || 'HTTP ' + r.status); e.status = r.status; throw e; }
   return d;
 }
 
@@ -1357,6 +1357,7 @@ function _addThinkingBubble(startMs, tier) {
 function _startJobPolling(jobId, thinkEl, tier) {
   const statusEl = thinkEl ? thinkEl.querySelector('.think-status') : null;
   let attempt = 0;
+  let connFails = 0;  // consecutive connection failures
 
   const _cleanup = () => {
     const entry = S.pendingJobs[jobId];
@@ -1372,6 +1373,7 @@ function _startJobPolling(jobId, thinkEl, tier) {
     if (statusEl) { const tn = statusEl.firstChild; if (tn && tn.nodeType === 3) tn.textContent = phrase + ' '; }
     try {
       const d = await req('GET', '/api/chat/status/' + jobId);
+      connFails = 0;  // reset on success
       if (d.status === 'done' || d.status === 'error') {
         _cleanup();
         const reply = d.response || '';
@@ -1383,23 +1385,33 @@ function _startJobPolling(jobId, thinkEl, tier) {
         }
       }
     } catch(err) {
+      if (err.status === 404 || err.code === 'NOT_CONFIGURED') {
+        // Job lost (server restart) or not configured — try to recover from history
+        try {
+          const h = await req('GET', '/api/chat/history');
+          if (h.messages && h.messages.length > S.chat.length) {
+            _cleanup();
+            S.chat = h.messages;
+            S.historyUpdatedAt = h.updated_at;
+            localStorage.setItem('chatHistory', JSON.stringify(S.chat));
+            const box = document.getElementById('chatBox');
+            if (box) { box.innerHTML = ''; S.chat.forEach(m => addMsg(m.role, m.content, null, m.tier)); }
+            return;
+          }
+        } catch(_) {}
+        _cleanup();
+        addMsg('assistant', 'No response — task was interrupted (server restart). Please resend your message.', null, tier);
+        return;
+      }
+      // Network/connection error — give up after 20 consecutive failures (~80s)
+      connFails++;
+      if (connFails >= 20) {
+        _cleanup();
+        addMsg('assistant', 'Connection lost — could not reach server. Check your URL in Settings.', null, tier);
+        return;
+      }
       if (statusEl) {
-        const msg = (err.message && err.message.includes('404')) ? 'Job expired… ' : 'Reconnecting… ';
-        const tn = statusEl.firstChild; if (tn && tn.nodeType === 3) tn.textContent = msg;
-        if (err.message && err.message.includes('404')) {
-          try {
-            const h = await req('GET', '/api/chat/history');
-            if (h.messages && h.messages.length > S.chat.length) {
-              _cleanup();
-              S.chat = h.messages;
-              S.historyUpdatedAt = h.updated_at;
-              localStorage.setItem('chatHistory', JSON.stringify(S.chat));
-              const box = document.getElementById('chatBox');
-              if (box) { box.innerHTML = ''; S.chat.forEach(m => addMsg(m.role, m.content, null, m.tier)); }
-              return;
-            }
-          } catch(_) {}
-        }
+        const tn = statusEl.firstChild; if (tn && tn.nodeType === 3) tn.textContent = 'Reconnecting (' + connFails + ')… ';
       }
     }
   };
@@ -1506,13 +1518,19 @@ async function _initChat() {
     const newKey = localStorage.getItem('pendingJobs');
     if (newKey) { const arr = JSON.parse(newKey); if (Array.isArray(arr)) savedJobs = savedJobs.concat(arr); }
   } catch(_) { localStorage.removeItem('pendingJobs'); }
+  const now = Date.now();
+  const JOB_MAX_AGE_MS = 10 * 60 * 1000; // 10 min — matches server TTL
   for (const job of savedJobs) {
     try {
       const { job_id, startTime, tier } = job;
-      if (job_id) {
-        const thinkEl = _addThinkingBubble(startTime, tier);
-        _startJobPolling(job_id, thinkEl);
+      if (!job_id) continue;
+      // Discard stale jobs — server already expired them
+      if (startTime && (now - startTime) > JOB_MAX_AGE_MS) {
+        _removePendingJob(job_id);
+        continue;
       }
+      const thinkEl = _addThinkingBubble(startTime, tier);
+      _startJobPolling(job_id, thinkEl, tier);
     } catch(_) {}
   }
 }
