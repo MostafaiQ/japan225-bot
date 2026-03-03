@@ -10,6 +10,7 @@ Features:
   - Edge-case handling throughout (IG down, no position, double-tap, etc.)
 """
 import asyncio
+import html as _html
 import logging
 from datetime import datetime
 from typing import Optional, Callable
@@ -334,7 +335,7 @@ class TelegramBot:
             f"Setup:      {trade_data.get('setup_type', 'N/A')}",
             f"Margin:     ${trade_data.get('margin', 0):.2f}  (free: ${trade_data.get('free_margin', 0):.2f})",
             DIV,
-            trade_data.get("reasoning", ""),
+            _html.escape(trade_data.get("reasoning", "")),
             DIV,
             f"⏳ Expires in <b>{TRADE_EXPIRY_MINUTES} min</b>",
         ])
@@ -376,7 +377,7 @@ class TelegramBot:
             f"SL: <b>{sl_dist:.0f}pts</b>  |  TP: <b>{tp_dist:.0f}pts</b>  |  R:R: <b>1:{eff_rr:.1f}</b>",
             f"Lots: {alert_data.get('lots', '?')}  |  Local: {local_conf}%  |  Sonnet: {confidence}%",
             DIV,
-            f"<i>Opus:</i> {opus_reason}",
+            f"<i>Opus:</i> {_html.escape(opus_reason)}",
             DIV,
             "Sonnet rejected — Opus found scalp. Auto-executed.",
         ])
@@ -411,9 +412,9 @@ class TelegramBot:
             f"Local:      🟢 <b>100% (12/12)</b>",
             f"AI:         ❌ <b>REJECTED</b>",
             DIV,
-            f"<i>AI reason:</i> {ai_reasoning[:250]}" if ai_reasoning else "",
+            f"<i>AI reason:</i> {_html.escape(ai_reasoning[:250])}" if ai_reasoning else "",
             DIV,
-            alert_data.get("reasoning", ""),
+            _html.escape(alert_data.get("reasoning", "")),
             DIV,
             f"⏳ Expires in <b>{TRADE_EXPIRY_MINUTES} min</b>",
             "⚠️ <b>No auto-execute</b> — requires manual confirmation.",
