@@ -270,14 +270,29 @@ def _fmt_web_research(web: dict) -> str:
         return "Unavailable."
     vix  = web.get("vix") or "N/A"
     jpy  = web.get("usd_jpy") or "N/A"
+    fg   = web.get("fear_greed")
     news = web.get("nikkei_news") or []
     cal  = web.get("economic_calendar") or []
     high_cal = [e for e in cal if isinstance(e, dict) and e.get("impact") == "HIGH"][:3]
     news_str = " | ".join(str(n)[:70] for n in (news[:2] if news else []))
-    lines = [f"USD/JPY: {jpy} | VIX: {vix}"]
+    lines = [f"USD/JPY: {jpy} | VIX: {vix}" + (f" | Fear&Greed: {fg}" if fg else "")]
     if news_str:
         lines.append(f"News: {news_str}")
     lines.append(f"Calendar HIGH: {high_cal if high_cal else 'none next 8h'}")
+    return "\n".join(lines)
+
+
+def _fmt_recent_trades(trades: list) -> str:
+    if not trades:
+        return "No closed trades yet."
+    lines = []
+    for t in trades[-5:]:
+        pnl = t.get("pnl") or 0
+        outcome = "W" if pnl > 0 else "L"
+        lines.append(
+            f"[{str(t.get('opened_at', '?'))[:16]}] {t.get('direction','?')} "
+            f"{t.get('setup_type','?')} conf={t.get('confidence','?')}% → {outcome} ${pnl:+.2f}"
+        )
     return "\n".join(lines)
 
 
@@ -290,6 +305,7 @@ def build_scan_prompt(
     local_confidence: dict = None,
     live_edge_block: str = None,
     failed_criteria: list = None,
+    recent_trades: list = None,
 ) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
@@ -356,6 +372,7 @@ def build_scan_prompt(
         f"{prescreen_block}{secondary_block}{local_conf_block}"
         f"\nTIMEFRAME SNAPSHOT:\n{_fmt_indicators(indicators)}\n"
         f"\nRECENT SCANS (last 5):\n{_fmt_recent_scans(recent_scans)}\n"
+        f"\nRECENT TRADES (last 5):\n{_fmt_recent_trades(recent_trades or [])}\n"
         f"\nMARKET CONTEXT: session={market_context.get('session_name','?')} | "
         f"trading_mode={market_context.get('trading_mode','?')}\n"
         f"\nWEB RESEARCH:\n{_fmt_web_research(web_research)}\n"
@@ -477,6 +494,7 @@ class AIAnalyzer:
         local_confidence: dict = None,
         live_edge_block: str = None,
         failed_criteria: list = None,
+        recent_trades: list = None,
     ) -> dict:
         return self._analyze(
             model=SONNET_MODEL,
@@ -488,6 +506,7 @@ class AIAnalyzer:
             local_confidence=local_confidence,
             live_edge_block=live_edge_block,
             failed_criteria=failed_criteria,
+            recent_trades=recent_trades,
         )
 
     # ── Core analysis ──────────────────────────────────────────────────────────
@@ -503,6 +522,7 @@ class AIAnalyzer:
         local_confidence: dict = None,
         live_edge_block: str = None,
         failed_criteria: list = None,
+        recent_trades: list = None,
     ) -> dict:
         user_prompt = build_scan_prompt(
             indicators, recent_scans, market_context, web_research,
@@ -510,6 +530,7 @@ class AIAnalyzer:
             local_confidence=local_confidence,
             live_edge_block=live_edge_block,
             failed_criteria=failed_criteria,
+            recent_trades=recent_trades,
         )
 
         schema_comment = (

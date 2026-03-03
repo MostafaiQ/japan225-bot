@@ -49,7 +49,6 @@ from trading.risk_manager import RiskManager
 from storage.database import Storage
 from notifications.telegram_bot import TelegramBot
 from ai.analyzer import AIAnalyzer, WebResearcher
-from ai.context_writer import write_context
 
 logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
 logger = logging.getLogger("monitor")
@@ -767,26 +766,8 @@ class TradingMonitor:
         if tf_5m:
             indicators["m5"] = tf_5m
 
-        # Write context files before AI call — gives Claude richer, auditable context
         recent_scans_ctx = self.storage.get_recent_scans(15)
         recent_trades_ctx = self.storage.get_recent_trades(10)
-        write_context(
-            indicators=indicators,
-            market_context={
-                "session_name": session.get("name", ""),
-                "trading_mode": "live",
-                "prescreen_setup_type": setup.get("type", ""),
-                "prescreen_reasoning": setup.get("reason", ""),
-                "entry_timeframe": entry_timeframe,
-            },
-            tf_5m=tf_5m,
-            web_research=web_research,
-            recent_scans=recent_scans_ctx,
-            recent_trades=recent_trades_ctx,
-            live_edge_block=live_edge,
-            local_confidence=local_conf,
-            prescreen_direction=prescreen_direction,
-        )
 
         entry_tf = tf_5m if entry_timeframe == "5m" else tf_15m
         logger.info(
@@ -825,6 +806,7 @@ class TradingMonitor:
             local_confidence=local_conf,
             live_edge_block=live_edge,
             failed_criteria=failed_criteria,
+            recent_trades=recent_trades_ctx,
         )
 
         # Sonnet 4.6 handles everything in one subprocess:
