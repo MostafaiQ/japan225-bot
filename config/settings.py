@@ -50,7 +50,6 @@ MARGIN_FACTOR = 0.005  # 0.5% Tier 1 (0-95 contracts)
 # RISK MANAGEMENT - NON-NEGOTIABLE
 # ============================================
 MAX_MARGIN_PERCENT = 0.50  # Margin must NEVER exceed 50% of balance
-MAX_RISK_PER_TRADE = 0.10  # Max 10% of balance at risk per trade (SL-based)
 MAX_OPEN_POSITIONS = 1  # One trade at a time
 MAX_CONSECUTIVE_LOSSES = 2  # 2 losses = 4-hour cooldown
 COOLDOWN_HOURS = 4

@@ -73,7 +73,7 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 ## Key Constants (settings.py)
 ```
 EPIC = "IX.D.NIKKEI.IFM.IP"   CONTRACT_SIZE = 1 ($1/pt)   MARGIN_FACTOR = 0.005 (0.5%)
-Lot size = MIN(margin cap 50%, risk cap 10% of balance / SL distance). Risk cap is the binding constraint for small accounts.
+Lot size = margin cap only (50% of balance). AI finds the setup, you go in with conviction.
 MIN_CONFIDENCE = 70            MIN_CONFIDENCE_SHORT = 75 (BOJ risk)
 DEFAULT_SL_DISTANCE = 150      DEFAULT_TP_DISTANCE = 400      MIN_RR_RATIO = 1.5
 BREAKEVEN_TRIGGER = 150        BREAKEVEN_BUFFER = 10          TRAILING_STOP_DISTANCE = 150
@@ -107,8 +107,7 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 - monitor.py: `_on_trade_confirm_inner()` now validates: position-open check, consecutive loss cooldown, daily loss limit, system paused. All execution paths (normal, scalp, force-open) go through this.
 - monitor.py: Distance-based SL/TP (`stop_distance`/`limit_distance`) passed to `ig.open_position()` instead of absolute levels. SL/TP always relative to actual fill, no drift.
 - monitor.py: `_execute_scalp()` re-fetches live price before execution (was 30-120s stale). Uses live spread for R:R check.
-- risk_manager.py: `get_safe_lot_size()` now uses TIGHTER of margin cap and risk cap. `MAX_RISK_PER_TRADE=0.10` (10%). On $20/SL=150: 0.01 lots ($1.50 risk, 7.5%) vs old 0.05 lots ($7.50 risk, 37.5%).
-- settings.py: `MAX_RISK_PER_TRADE = 0.10` added. Risk-based lot sizing is now the binding constraint for small accounts.
+- risk_manager.py: `get_safe_lot_size()` margin-only (50% cap). MAX_RISK_PER_TRADE removed — user wants full conviction sizing when AI finds the perfect setup.
 
 ## Critical Fixes Applied (2026-03-03)
 - claude_client.py: Dashboard chat exit -15 fix. Root cause: chat subprocess would run `systemctl restart japan225-dashboard`, killing itself. Fix: (1) `start_new_session=True`, (2) safety prompt, (3) cleaned chat history.
