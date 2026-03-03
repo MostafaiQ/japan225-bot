@@ -63,7 +63,7 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 | `dashboard/routers/controls.py` | POST /api/controls/{force-scan,restart,stop}, POST /api/apply-fix |
 | `dashboard/services/db_reader.py` | Read-only SQLite (WAL mode, uri=file:...?mode=ro) |
 | `dashboard/services/config_manager.py` | dashboard_overrides.json — hot/restart key validation, atomic write |
-| `dashboard/services/claude_client.py` | Spawns `claude --print --dangerously-skip-permissions`. Full Claude Code toolset. History passed via stdin. Cost tracking removed. |
+| `dashboard/services/claude_client.py` | 3-tier chat: Haiku (status/fast) → Sonnet (analysis) → Opus (code fixes). Rich context injection (services, errors, logs, trades). |
 | `dashboard/services/git_ops.py` | apply_fix: patch --dry-run → stash → apply → git commit + push |
 | `docs/index.html` | Single-page frontend. Dark theme. 6 tabs. localStorage settings + chat history. |
 
@@ -90,7 +90,8 @@ RSI_ENTRY_HIGH_BOUNCE = 55 (backtest: RSI 55-65 LONG WR=38%, cut off dead zone)
 SONNET_MODEL = "claude-sonnet-4-6"   OPUS_MODEL = "claude-opus-4-6"   (HAIKU_MODEL removed — 2-tier pipeline)
 TRADING_MODE default = "live" (env var in .env also set to "live"). Paper mode code REMOVED.
 ```
-Dashboard chat: Claude Code CLI (claude --print). No model constant needed.
+Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, ≤180s) | Opus (code fixes, ≤600s).
+  Rich context injection: bot_state + services + recent errors + scan logs + recent trades.
 
 ---
 
@@ -194,7 +195,9 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 - prompt_learnings.json: auto-updated after each trade close, injected into future prompts
 - brier_scores.json: Brier score calibration tracking (updated by post_trade_analysis, read by /brier-check skill)
 - CLAUDE.md in project root: auto-loaded by all Claude Code sessions + dashboard subprocess
-- Dashboard chat: rolling history summary (capped ~650 tokens) + bot_state.json injection
+- Dashboard chat: 3-tier model (Haiku/Sonnet/Opus), rolling history summary (capped ~650 tokens),
+  rich context injection (bot_state + service status + recent errors + scan logs + recent trades).
+  Tier badge shown in thinking bubble. Draft text persists on refresh. Responses survive refresh.
 - Skills: ~/.claude/skills/ — 9 skills (session-brief, brier-check, cost-report, deploy-check, prompt-audit, strategy-health, trade-review, backtest-import, recall)
 - Agents: ~/.claude/agents/ — market-analyst.md (read-only market analysis), trade-debugger.md (trade postmortem)
 - Hooks: PostToolUse on Edit|Write of .py → auto-runs pytest (catches regressions during dev)
