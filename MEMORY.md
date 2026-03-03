@@ -204,8 +204,8 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
   ANTHROPIC_API_KEY is stripped from env before each call to force OAuth.
 - Opus sub-agent: defined via `--agents` flag. Sonnet delegates to it for borderline 72-86% calls.
   Both models run within the same subprocess — no extra Node.js startup overhead.
-- Context folder: storage/context/*.md written before every Sonnet call by context_writer.py.
-  Files: market_snapshot.md, recent_activity.md, macro.md, live_edge.md
+- Context data inlined directly into prompt (recent trades, Fear & Greed, scans).
+  context_writer.py no longer called — files can't be read with --tools "".
 - Haiku pre-gate: **REMOVED** (2026-03-02). Quick-reject logic in Sonnet prompt.
   C7/C8 (event/blackout) hard-blocked BEFORE Sonnet. No cooldown on AI reject.
   Proportional formula: score=30+int(passed*70/12). 12/12=100%, 7/12=70%, 8/12=76%.
