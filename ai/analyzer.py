@@ -439,6 +439,8 @@ class AIAnalyzer:
         # This cuts response time from 60-180s to 10-30s by eliminating CLAUDE.md loading + tool calls.
         cmd = [CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions",
                "--no-session-persistence", "--max-tokens", "1024", "--tools", ""]
+        if model == OPUS_MODEL:
+            cmd.append("--fast")
         if use_opus_agent:
             from config.settings import OPUS_MODEL
             agents_json = json.dumps({
