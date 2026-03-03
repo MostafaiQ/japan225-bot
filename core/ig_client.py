@@ -6,7 +6,7 @@ Uses the `trading-ig` library as base, with custom extensions for our bot.
 Key features:
 - Auto-reauthentication on token expiry
 - Rate limit awareness (100 trading / 30 non-trading per min)
-- Paper mode support (log trades without executing)
+- Candle caching with delta fetches (saves ~99% data allowance)
 - Full error handling with descriptive messages
 """
 import time
@@ -313,15 +313,6 @@ class IGClient:
                 return cached[-num_points:] if cached else []
         return []
     
-    def get_all_timeframes(self) -> dict:
-        """Fetch price data for all 4 analysis timeframes."""
-        return {
-            "daily": self.get_prices("DAY", 200),
-            "h4": self.get_prices("HOUR_4", 200),
-            "m15": self.get_prices("MINUTE_15", 200),
-            "m5": self.get_prices("MINUTE_5", 100),
-        }
-    
     # ==========================================
     # POSITION MANAGEMENT
     # ==========================================
@@ -577,9 +568,3 @@ class IGClient:
         )
         return None
     
-    def calculate_margin(self, size: float, price: Optional[float] = None) -> float:
-        """Calculate margin for a given position size."""
-        if price is None:
-            market = self.get_market_info()
-            price = market["offer"] if market else 59500
-        return size * CONTRACT_SIZE * price * MARGIN_FACTOR

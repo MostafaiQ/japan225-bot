@@ -18,10 +18,7 @@ from typing import Optional
 import httpx
 
 from config.settings import (
-    SONNET_MODEL, OPUS_MODEL,
-    AI_MAX_TOKENS, AI_TEMPERATURE,
-    CONFIDENCE_BASE, CONFIDENCE_CRITERIA, MIN_CONFIDENCE,
-    DEFAULT_SL_DISTANCE, DEFAULT_TP_DISTANCE, SPREAD_ESTIMATE,
+    SONNET_MODEL, OPUS_MODEL, SPREAD_ESTIMATE,
 )
 
 logger = logging.getLogger(__name__)
@@ -431,7 +428,8 @@ class AIAnalyzer:
         # Build CLI command — only include Opus sub-agent when borderline confidence
         # --tools "" disables all tools → Sonnet responds directly from prompt data (no file reads/commands)
         # This cuts response time from 60-180s to 10-30s by eliminating CLAUDE.md loading + tool calls.
-        cmd = [CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions", "--fast", "--tools", ""]
+        cmd = [CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions",
+               "--no-session-persistence", "--tools", ""]
         if use_opus_agent:
             from config.settings import OPUS_MODEL
             agents_json = json.dumps({

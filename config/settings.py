@@ -46,16 +46,11 @@ CONTRACT_SIZE = 1  # $1 per point
 EXPIRY = "-"  # Cash = no expiry
 MARGIN_FACTOR = 0.005  # 0.5% Tier 1 (0-95 contracts)
 
-# IG API URLs
-IG_API_URL = {
-    "demo": "https://demo-api.ig.com/gateway/deal",
-    "live": "https://api.ig.com/gateway/deal",
-}
-
 # ============================================
 # RISK MANAGEMENT - NON-NEGOTIABLE
 # ============================================
 MAX_MARGIN_PERCENT = 0.50  # Margin must NEVER exceed 50% of balance
+MAX_RISK_PER_TRADE = 0.10  # Max 10% of balance at risk per trade (SL-based)
 MAX_OPEN_POSITIONS = 1  # One trade at a time
 MAX_CONSECUTIVE_LOSSES = 2  # 2 losses = 4-hour cooldown
 COOLDOWN_HOURS = 4
@@ -69,9 +64,7 @@ TRADE_EXPIRY_MINUTES = 15  # Unconfirmed alerts expire after 15 min
 # TRADING PARAMETERS
 # ============================================
 MIN_LOT_SIZE = 0.01
-MIN_STOP_DISTANCE = 20  # IG minimum for Japan 225
-SPREAD_ESTIMATE = 7  # Points during main hours
-GUARANTEED_STOP_PREMIUM = 8  # Points if using guaranteed stop
+SPREAD_ESTIMATE = 7  # Points during main hours (live spread used at execution)
 
 # --- Exit Strategy (3-Phase) ---
 # Phase 1: Initial protection
@@ -88,68 +81,8 @@ RUNNER_VELOCITY_THRESHOLD = 0.75  # 75% of TP in first scan period = runner
 TRAILING_STOP_DISTANCE = 150  # Points behind price
 TRAILING_STOP_INCREMENT = 5  # Step size for trailing stop
 
-# Legacy scalp mode (100pt)
-SCALP_TP_DISTANCE = 100
-SCALP_SL_DISTANCE = 150  # 1:1.5 minimum even in scalp mode
-
-# ============================================
-# INDICATORS
-# ============================================
-BOLLINGER_PERIOD = 20
-BOLLINGER_STD = 2.0
-EMA_FAST = 50
-EMA_SLOW = 200
-RSI_PERIOD = 14
-VWAP_RESET = "daily"
-
-# RSI thresholds
-RSI_OVERSOLD = 30
-RSI_OVERBOUGHT = 70
-RSI_ENTRY_LOW = 35            # Ideal entry RSI range (15M)
-RSI_ENTRY_HIGH = 55
-RSI_ENTRY_HIGH_BOUNCE = 55    # RSI upper gate for BB mid bounce (backtest: RSI 55-65 LONG WR=38%, cut off)
-
-# ============================================
-# CONFIDENCE SCORING (8-point system)
-# ============================================
-CONFIDENCE_BASE = 30  # Starting confidence
-CONFIDENCE_CRITERIA = {
-    "daily_bullish": 10,       # Daily trend is bullish
-    "entry_at_tech_level": 10, # Entry at Bollinger mid / EMA50
-    "rsi_15m_in_range": 10,    # RSI 15M between 35-55
-    "tp_viable": 10,           # TP distance achievable
-    "higher_lows": 10,         # Price making higher lows
-    "macro_bullish": 10,       # News/sentiment bullish
-    "no_event_1hr": 10,        # No high-impact event within 1hr
-    "no_friday_monthend": 10,  # Not Friday w/ data or month-end
-}
-# Max possible = 30 + 8*10 = 110, but capped at 100
-
-# ============================================
-# SESSIONS (Kuwait Time, UTC+3)
-# ============================================
-SESSIONS = {
-    "tokyo_open":  {"start": "03:00", "end": "05:00", "priority": "HIGH"},
-    "mid_tokyo":   {"start": "05:00", "end": "07:00", "priority": "HIGH"},
-    "late_tokyo":  {"start": "07:00", "end": "09:00", "priority": "MEDIUM"},
-    "tokyo_close": {"start": "09:00", "end": "11:00", "priority": "MEDIUM"},
-    "london_open": {"start": "11:00", "end": "13:00", "priority": "HIGH"},
-    "mid_london":  {"start": "13:00", "end": "15:00", "priority": "MEDIUM"},
-    "late_london": {"start": "15:00", "end": "17:00", "priority": "MEDIUM"},
-    "ny_open":     {"start": "17:30", "end": "19:30", "priority": "HIGH"},
-    "mid_ny":      {"start": "19:30", "end": "21:30", "priority": "MEDIUM"},
-    "late_ny":     {"start": "21:30", "end": "23:30", "priority": "LOW"},
-    "off_hours":   {"start": "00:00", "end": "03:00", "priority": "SKIP"},
-}
-
-# ============================================
-# SCAN SCHEDULE (Kuwait Time)
-# ============================================
-SCAN_TIMES = [
-    "03:00", "05:00", "07:00", "09:00",
-    "11:00", "13:00", "15:00",
-    "17:30", "19:30", "21:30", "23:30",
-]
+# RSI gate for BB mid bounce entry
+RSI_ENTRY_HIGH_BOUNCE = 55    # Backtest: RSI 55-65 LONG WR=38%, cut off
 
 # ============================================
 # SESSION HOURS (UTC) — backtest + monitor
@@ -168,8 +101,6 @@ MINUTE_5_CANDLES = 100  # 5M lookback for fallback entry TF (~8h of 5M data, cov
 # ============================================
 SONNET_MODEL = "claude-sonnet-4-6"
 OPUS_MODEL   = "claude-opus-4-6"
-AI_MAX_TOKENS = 2000
-AI_TEMPERATURE = 0.1  # Low temp for consistent analysis
 
 # ============================================
 # POSITION MONITOR
@@ -178,7 +109,6 @@ MONITOR_INTERVAL_SECONDS = 2        # Price check interval (seconds) — get_mar
 POSITION_CHECK_EVERY_N_CYCLES = 15  # Check position existence every N cycles: 15 × 2s = 30s, 2 calls/min
 SCAN_INTERVAL_SECONDS = 300         # Entry scan interval when flat (5 min)
 OFFHOURS_INTERVAL_SECONDS = 1800    # Off-hours heartbeat (30 min)
-MONITOR_USE_STREAMING = False       # Start with REST polling, upgrade later
 
 # ============================================
 # ENTRY SCANNING
@@ -201,7 +131,6 @@ DAILY_EMA200_CANDLES = 250          # Candles for Daily — MUST be >200 to comp
 # ============================================
 MIN_CONFIDENCE_SHORT = 75           # Higher bar for shorts (BOJ intervention risk)
 SHORT_RSI_LOW = 55                  # RSI zone for short entries
-SHORT_RSI_HIGH = 75
 
 # ============================================
 # ADVERSE MOVE TIERS (position monitoring)

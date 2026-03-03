@@ -99,7 +99,9 @@ Force Open flow (in _scanning_cycle, after AI rejection):
   → 15min TTL, NO auto-execute. User must explicitly click Force Open.
   → on Force Open: same _on_trade_confirm() path as regular trades
 
-_on_trade_confirm(alert_data): re-fetches price, checks drift vs PRICE_DRIFT_ABORT_PTS,
+_on_trade_confirm(alert_data): protected by _trade_execution_lock (asyncio.Lock).
+  Re-checks position-open under lock. Validates: loss cooldown, daily loss limit, system paused.
+  Re-fetches live price, checks drift. Uses stop_distance/limit_distance (not absolute levels).
   calls ig.open_position(), open_trade_atomic(), inits MomentumTracker
 
 _on_force_scan(): sends alert + sets _force_scan_event (wakes scanning sleep immediately)

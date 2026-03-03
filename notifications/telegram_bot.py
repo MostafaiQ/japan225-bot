@@ -480,15 +480,6 @@ class TelegramBot:
                 logger.error(f"send_adverse_alert failed: {e}")
         await self.send_alert(text)
 
-    async def send_scan_summary(self, scan_data: dict):
-        scans_today = len(self.storage.get_scans_today())
-        badge = "🔍 <b>SETUP FOUND</b>" if scan_data.get("setup_found") else "—"
-        text = (
-            f"Scan {scans_today}  |  {scan_data.get('session', '?')}  |  "
-            f"{_price(scan_data.get('price', 0))}  |  {badge}"
-        )
-        await self.send_alert(text)
-
     # ── Reply-keyboard text handler ────────────────────────────────────────
 
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

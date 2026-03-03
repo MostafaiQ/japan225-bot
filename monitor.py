@@ -87,6 +87,7 @@ class TradingMonitor:
         self._position_empty_count = 0   # Consecutive empty responses from IG
         self._position_check_counter = 0  # Increments every 2s cycle; position existence checked every N cycles
         self._force_scan_event = asyncio.Event()
+        self._trade_execution_lock = asyncio.Lock()  # C1 fix: prevent double position opening
         self._started_at = datetime.now(timezone.utc)
         self._last_scan_time: datetime | None = None
         self._next_scan_at: datetime | None = None
@@ -1302,40 +1303,44 @@ class TradingMonitor:
         """Auto-execute a scalp trade approved by Opus. No user confirmation needed."""
         tp_distance = scalp_result.get("tp_distance", 200)
         sl_distance = scalp_result.get("sl_distance", 100)  # Opus picks structure-based SL (60-120)
-        entry = setup.get("entry", current_price)
-        tp_sign = 1 if direction == "LONG" else -1
-        sl = entry - tp_sign * sl_distance
-        tp = entry + tp_sign * tp_distance
 
-        # --- Balance & lot sizing ---
-        balance_info = self.ig.get_account_info()
+        # --- H1 fix: Re-fetch LIVE price (current_price is 30-120s stale from scan start) ---
+        market = await asyncio.get_event_loop().run_in_executor(None, self.ig.get_market_info)
+        if not market:
+            logger.error("Scalp aborted: could not fetch live price")
+            return
+        live_price = market.get("offer") if direction == "LONG" else market.get("bid")
+        live_spread = market.get("spread", SPREAD_ESTIMATE)
+
+        tp_sign = 1 if direction == "LONG" else -1
+        sl = live_price - tp_sign * sl_distance
+        tp = live_price + tp_sign * tp_distance
+
+        # --- Balance & lot sizing (now risk-based via M1+M2 fix) ---
+        balance_info = await asyncio.get_event_loop().run_in_executor(None, self.ig.get_account_info)
         balance = balance_info.get("balance", 0) if balance_info else 0
         if balance <= 0:
             logger.error("Scalp aborted: could not get account balance")
             return
-        lots = self.risk.get_safe_lot_size(balance, current_price, sl_distance=sl_distance)
+        lots = self.risk.get_safe_lot_size(balance, live_price, sl_distance=sl_distance)
 
-        # --- R:R validation (>= 1.5 after spread for scalps) ---
-        effective_rr = (tp_distance - SPREAD_ESTIMATE) / (sl_distance + SPREAD_ESTIMATE)
+        # --- R:R validation using live spread ---
+        effective_rr = (tp_distance - live_spread) / (sl_distance + live_spread)
         if effective_rr < 1.5:
-            logger.info(f"Scalp aborted: effective R:R {effective_rr:.2f} < 1.5")
+            logger.info(f"Scalp aborted: effective R:R {effective_rr:.2f} < 1.5 (spread={live_spread:.1f})")
             return
 
-        # Check position limit
-        pos = self.storage.get_position_state()
-        if pos.get("has_open"):
-            logger.info("Scalp aborted: position already open")
-            return
+        # Position check moved to _on_trade_confirm (under lock)
 
         logger.info(
-            f"Scalp auto-executing: {direction} @ {entry:.0f}, "
-            f"SL={sl:.0f} TP={tp:.0f} (TP dist={tp_distance}), lots={lots}"
+            f"Scalp auto-executing: {direction} @ {live_price:.0f} (was {current_price:.0f}), "
+            f"SL_dist={sl_distance} TP_dist={tp_distance}, lots={lots}, spread={live_spread:.1f}"
         )
 
         # Build alert data in the same format _on_trade_confirm expects
         scalp_alert = {
             "direction": direction,
-            "entry": entry,
+            "entry": live_price,
             "sl": sl,
             "tp": tp,
             "lots": lots,
@@ -1360,12 +1365,57 @@ class TradingMonitor:
     # ============================================================
 
     async def _on_trade_confirm(self, alert_data: dict):
-        """Execute trade after user confirms via Telegram."""
-        logger.info("Trade CONFIRMED by user. Executing...")
+        """Execute trade after user confirms via Telegram.
+
+        Protected by _trade_execution_lock to prevent race conditions between
+        auto-execute timer, user click, scalp auto-execute, and force-open.
+        """
+        async with self._trade_execution_lock:
+            await self._on_trade_confirm_inner(alert_data)
+
+    async def _on_trade_confirm_inner(self, alert_data: dict):
+        """Inner execution logic — always called under _trade_execution_lock."""
+        logger.info("Trade execution started...")
+
+        # --- C1 fix: Re-check position state under lock ---
+        pos = self.storage.get_position_state()
+        if pos.get("has_open"):
+            logger.warning("Trade aborted: position already open (race condition prevented)")
+            await self.telegram.send_alert("Trade skipped — position already open.")
+            return
 
         direction = alert_data.get("direction", "LONG")
         ig_direction = "BUY" if direction == "LONG" else "SELL"
         analyzed_entry = float(alert_data.get("entry", 0))
+
+        # --- C2/C3 fix: Lightweight risk re-validation ---
+        account = self.storage.get_account_state()
+        # Check loss limits (can't bypass these)
+        consec_losses = account.get("consecutive_losses", 0)
+        last_loss_time = account.get("last_loss_time")
+        from config.settings import MAX_CONSECUTIVE_LOSSES, COOLDOWN_HOURS
+        if consec_losses >= MAX_CONSECUTIVE_LOSSES and last_loss_time:
+            cooldown_end = datetime.fromisoformat(last_loss_time) + timedelta(hours=COOLDOWN_HOURS)
+            if datetime.now() < cooldown_end:
+                logger.warning(f"Trade aborted: in loss cooldown until {cooldown_end.strftime('%H:%M')}")
+                await self.telegram.send_alert(f"Trade blocked: loss cooldown until {cooldown_end.strftime('%H:%M')}.")
+                return
+
+        # Check daily loss limit
+        balance_info = await asyncio.get_event_loop().run_in_executor(None, self.ig.get_account_info)
+        balance = balance_info.get("balance", 0) if balance_info else 0
+        from config.settings import DAILY_LOSS_LIMIT_PERCENT
+        daily_loss = account.get("daily_loss_today", 0)
+        if balance > 0 and abs(daily_loss) >= balance * DAILY_LOSS_LIMIT_PERCENT:
+            logger.warning(f"Trade aborted: daily loss limit reached (${abs(daily_loss):.2f})")
+            await self.telegram.send_alert(f"Trade blocked: daily loss limit reached (${abs(daily_loss):.2f}).")
+            return
+
+        # Check system paused
+        if not account.get("system_active", True):
+            logger.warning("Trade aborted: system paused")
+            await self.telegram.send_alert("Trade blocked: system is paused. Use /resume.")
+            return
 
         # --- Re-fetch current price — check for drift ---
         market = await asyncio.get_event_loop().run_in_executor(
@@ -1376,6 +1426,7 @@ class TradingMonitor:
             return
 
         current_price = market.get("offer") if direction == "LONG" else market.get("bid")
+        live_spread = market.get("spread", SPREAD_ESTIMATE)
         price_drift = abs(current_price - analyzed_entry)
 
         if price_drift > PRICE_DRIFT_ABORT_PTS:
@@ -1388,15 +1439,25 @@ class TradingMonitor:
             self.storage.clear_pending_alert()
             return
 
-        # --- Place order ---
+        # --- C4+H2 fix: Use distance-based SL/TP relative to fill ---
+        sl_level = alert_data.get("sl")
+        tp_level = alert_data.get("tp")
+        if sl_level and tp_level:
+            sl_distance = int(abs(current_price - sl_level))
+            tp_distance = int(abs(tp_level - current_price))
+        else:
+            sl_distance = int(DEFAULT_SL_DISTANCE)
+            tp_distance = 400
+
+        # --- Place order with distance-based SL/TP ---
         try:
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.ig.open_position(
                     direction=ig_direction,
                     size=alert_data.get("lots", 0.01),
-                    stop_level=alert_data.get("sl"),
-                    limit_level=alert_data.get("tp"),
+                    stop_distance=sl_distance,
+                    limit_distance=tp_distance,
                 )
             )
         except Exception as e:
@@ -1428,10 +1489,11 @@ class TradingMonitor:
         actual_sl = result.get("stop_level") or alert_data.get("sl")
         actual_tp = result.get("limit_level") or alert_data.get("tp")
 
-        balance_info = await asyncio.get_event_loop().run_in_executor(
-            None, self.ig.get_account_info
-        )
-        balance = balance_info.get("balance", 0) if balance_info else 0
+        if not balance_info:
+            balance_info = await asyncio.get_event_loop().run_in_executor(
+                None, self.ig.get_account_info
+            )
+            balance = balance_info.get("balance", 0) if balance_info else 0
 
         trade_num = self.storage.open_trade_atomic(
             trade={
@@ -1466,14 +1528,16 @@ class TradingMonitor:
         # Clean up pending force-open file — trade is now open
         self._force_open_pending_path.unlink(missing_ok=True)
 
+        actual_sl_dist = abs(actual_entry - actual_sl) if actual_sl else sl_distance
+        actual_tp_dist = abs(actual_tp - actual_entry) if actual_tp else tp_distance
         await self.telegram.send_alert(
             f"Trade #{trade_num} OPENED\n"
             f"{direction} {alert_data.get('lots')} lots @ {actual_entry:.0f}\n"
-            f"SL: {actual_sl:.0f} | TP: {actual_tp:.0f}\n"
-            f"Drift from analysis: {price_drift:.0f} pts\n"
+            f"SL: {actual_sl:.0f} ({actual_sl_dist:.0f}pts) | TP: {actual_tp:.0f} ({actual_tp_dist:.0f}pts)\n"
+            f"Spread: {live_spread:.1f}pts | Drift: {price_drift:.0f}pts\n"
             f"Monitoring active."
         )
-        logger.info(f"Trade #{trade_num} opened: {direction} @ {actual_entry:.0f}")
+        logger.info(f"Trade #{trade_num} opened: {direction} @ {actual_entry:.0f} SL_dist={actual_sl_dist:.0f} TP_dist={actual_tp_dist:.0f}")
 
     async def _poll_trigger_file(self):
         """Background task: check for dashboard force_scan.trigger every 2s, wake main loop."""

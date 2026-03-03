@@ -8,7 +8,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from config.settings import (
-    MAX_MARGIN_PERCENT, MAX_OPEN_POSITIONS, MAX_CONSECUTIVE_LOSSES,
+    MAX_MARGIN_PERCENT, MAX_RISK_PER_TRADE, MAX_OPEN_POSITIONS,
+    MAX_CONSECUTIVE_LOSSES,
     COOLDOWN_HOURS, DAILY_LOSS_LIMIT_PERCENT, WEEKLY_LOSS_LIMIT_PERCENT,
     MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, EVENT_BLACKOUT_MINUTES, MIN_RR_RATIO,
     BLOCKED_DAYS, MONTHEND_BLACKOUT_DAYS, SPREAD_ESTIMATE,
@@ -39,10 +40,7 @@ class RiskManager:
         """
         Run ALL pre-trade checks. Returns pass/fail with reasons.
         Direction must be 'LONG' or 'SHORT' (or 'BUY'/'SELL').
-        """
-        """
-        Run ALL pre-trade checks. Returns pass/fail with reasons.
-        
+
         Returns:
             {
                 "approved": bool,
@@ -271,11 +269,25 @@ class RiskManager:
         }
     
     def get_safe_lot_size(self, balance: float, price: float, sl_distance: float = 150) -> float:
-        """Calculate the maximum safe lot size given current balance.
-        Margin constraint is the binding limit (MAX_MARGIN_PERCENT of balance).
-        Maximizes lot size up to the margin cap.
+        """Calculate the safe lot size given current balance and SL distance.
+
+        Uses the TIGHTER of two constraints:
+          1. Margin cap: lots * price * MARGIN_FACTOR <= balance * MAX_MARGIN_PERCENT
+          2. Risk cap: lots * sl_distance * CONTRACT_SIZE <= balance * MAX_RISK_PER_TRADE
+
+        On a $20 account with SL=150: risk cap = $20 * 0.10 / 150 = 0.013 -> 0.01
+        vs old margin-only: 0.05 lots risking $7.50 (37.5%). Now risks $1.50 (7.5%).
         """
+        # Constraint 1: Margin cap
         max_margin = balance * MAX_MARGIN_PERCENT
         margin_per_lot = CONTRACT_SIZE * price * MARGIN_FACTOR
-        max_lots = max_margin / margin_per_lot if margin_per_lot > 0 else 0
+        margin_lots = max_margin / margin_per_lot if margin_per_lot > 0 else 0
+
+        # Constraint 2: Risk cap (dollar risk from SL)
+        max_risk = balance * MAX_RISK_PER_TRADE
+        risk_per_lot = sl_distance * CONTRACT_SIZE
+        risk_lots = max_risk / risk_per_lot if risk_per_lot > 0 else 0
+
+        # Take the tighter constraint
+        max_lots = min(margin_lots, risk_lots)
         return max(MIN_LOT_SIZE, int(max_lots * 100) / 100)

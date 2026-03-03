@@ -73,7 +73,7 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 ## Key Constants (settings.py)
 ```
 EPIC = "IX.D.NIKKEI.IFM.IP"   CONTRACT_SIZE = 1 ($1/pt)   MARGIN_FACTOR = 0.005 (0.5%)
-Dollar risk check = informational only. Margin (50% cap) is the binding constraint. Lot size maximized to margin cap.
+Lot size = MIN(margin cap 50%, risk cap 10% of balance / SL distance). Risk cap is the binding constraint for small accounts.
 MIN_CONFIDENCE = 70            MIN_CONFIDENCE_SHORT = 75 (BOJ risk)
 DEFAULT_SL_DISTANCE = 150      DEFAULT_TP_DISTANCE = 400      MIN_RR_RATIO = 1.5
 BREAKEVEN_TRIGGER = 150        BREAKEVEN_BUFFER = 10          TRAILING_STOP_DISTANCE = 150
@@ -99,6 +99,16 @@ Dashboard chat: 3-tier auto-select. Haiku (status, â‰¤60s) | Sonnet (analysis, â
 ## Known Bug
 - monitor.py: naive vs UTC-aware datetime mismatch in duration calculation (MEDIUM)
 - dashboard chat: non-atomic _write_history() race condition on concurrent writes (MEDIUM)
+- monitor.py: _handle_position_closed uses last monitored price, not actual IG fill price (MEDIUM)
+- exit_manager.py: Runner phase trailing stop can exceed IG rate limit (30 non-trading/min) (MEDIUM)
+
+## Execution Safety Fixes Applied (2026-03-03)
+- monitor.py: `_trade_execution_lock` (asyncio.Lock) wraps `_on_trade_confirm()`. Prevents race between auto-execute timer, user click, scalp, and force-open. Position-open re-check under lock.
+- monitor.py: `_on_trade_confirm_inner()` now validates: position-open check, consecutive loss cooldown, daily loss limit, system paused. All execution paths (normal, scalp, force-open) go through this.
+- monitor.py: Distance-based SL/TP (`stop_distance`/`limit_distance`) passed to `ig.open_position()` instead of absolute levels. SL/TP always relative to actual fill, no drift.
+- monitor.py: `_execute_scalp()` re-fetches live price before execution (was 30-120s stale). Uses live spread for R:R check.
+- risk_manager.py: `get_safe_lot_size()` now uses TIGHTER of margin cap and risk cap. `MAX_RISK_PER_TRADE=0.10` (10%). On $20/SL=150: 0.01 lots ($1.50 risk, 7.5%) vs old 0.05 lots ($7.50 risk, 37.5%).
+- settings.py: `MAX_RISK_PER_TRADE = 0.10` added. Risk-based lot sizing is now the binding constraint for small accounts.
 
 ## Critical Fixes Applied (2026-03-03)
 - claude_client.py: Dashboard chat exit -15 fix. Root cause: chat subprocess would run `systemctl restart japan225-dashboard`, killing itself. Fix: (1) `start_new_session=True`, (2) safety prompt, (3) cleaned chat history.
