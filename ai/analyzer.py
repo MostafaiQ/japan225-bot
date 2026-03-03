@@ -438,7 +438,7 @@ class AIAnalyzer:
         # --tools "" disables all tools → Sonnet responds directly from prompt data (no file reads/commands)
         # This cuts response time from 60-180s to 10-30s by eliminating CLAUDE.md loading + tool calls.
         cmd = [CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions",
-               "--no-session-persistence", "--tools", ""]
+               "--no-session-persistence", "--effort", "low", "--tools", ""]
         if use_opus_agent:
             from config.settings import OPUS_MODEL
             agents_json = json.dumps({
