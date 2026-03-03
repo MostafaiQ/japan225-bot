@@ -65,8 +65,9 @@ _build_confluence(tf_15m: dict, direction: str) -> (list[str], list[str])
   # Checks: fib_near, swept_low/high, fvg_bullish/bearish, VWAP above/below, ha_streak.
   # Direction-aware: same signal can be confluence for LONG but counter for SHORT.
 
-detect_setup(tf_daily, tf_4h, tf_15m, tf_5m=None) -> dict
+detect_setup(tf_daily, tf_4h, tf_15m, tf_5m=None, exclude_direction=None) -> dict
   # Bidirectional — NO daily hard gate. C1 in confidence.py penalizes counter-trend.
+  # exclude_direction="LONG"|"SHORT": skip that direction's setups (used for bidirectional retry).
   # Returns: found, type, direction, entry, sl, tp, reasoning, indicators_snapshot
   # indicators_snapshot includes: price, rsi_15m, bb_mid/upper/lower, ema50_15m,
   #   daily_bullish, rsi_4h, volume_signal, volume_ratio, swing_high/low_20, dist_to_swing_*,
@@ -78,7 +79,7 @@ detect_setup(tf_daily, tf_4h, tf_15m, tf_5m=None) -> dict
   #   bollinger_mid_bounce:   near_mid ±150pts, RSI 30-65, bounce_starting (price>prev_close OR lower_wick>=20 OR HA bullish OR bullish candle pattern)
   #                           above_ema50 gate REMOVED. EMA50 status in reasoning string for AI.
   #   bollinger_lower_bounce: near_lower ±150pts, RSI 20-40, lower_wick >=15pts
-  #   extreme_oversold_reversal: RSI<22 + (4H near BB lower ±300pts OR 4H RSI<35) + reversal confirm (wick≥10 OR HA bullish OR candle pattern OR sweep). No daily req.
+  #   extreme_oversold_reversal: RSI<28 + (4H near BB lower ±300pts OR 4H RSI<35 OR 4H unavailable+RSI<25) + reversal confirm (wick≥10 OR HA bullish OR candle pattern OR sweep). No daily req.
   #   oversold_reversal:      RSI<30 + daily bullish + reversal confirm (wick≥10 OR HA bullish OR candle pattern OR liquidity sweep)
   #   ema50_bounce:           DISABLED (ENABLE_EMA50_BOUNCE_SETUP=False)
   #

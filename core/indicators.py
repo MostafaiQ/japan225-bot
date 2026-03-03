@@ -803,9 +803,14 @@ def detect_setup(
     tf_4h: dict,
     tf_15m: dict,
     tf_5m: Optional[dict] = None,
+    exclude_direction: Optional[str] = None,
 ) -> dict:
     """
     Detect trading setup across multiple timeframes. Bidirectional (LONG + SHORT).
+
+    Args:
+        exclude_direction: "LONG" or "SHORT" to skip that direction's setups.
+            Used for bidirectional retry after AI rejects the first direction.
 
     Returns dict with:
         'found': bool
@@ -911,17 +916,24 @@ def detect_setup(
     # ============================================================
     _ha_streak_filter = tf_15m.get("ha_streak")
     _prev_close_filter = tf_15m.get("prev_close")
+    # Bearish momentum filter: skip LONG bounce setups during freefall (HA streak ≤-2 + price falling).
+    # EXCEPTION: when RSI < 35 (deeply oversold), bounces are valid mean-reversion — let them through.
+    # AI still makes the final call on whether the bounce has enough confirmation.
     _strong_bearish_momentum = (
         _ha_streak_filter is not None and _ha_streak_filter <= -2
         and _prev_close_filter is not None and price < _prev_close_filter
+        and (rsi_15m is None or rsi_15m >= 35)  # bypass when deeply oversold
     )
 
     # ============================================================
     # LONG SETUPS (bidirectional — no daily gate, C1 in confidence penalizes counter-trend)
     # Skipped when strong bearish momentum is detected — defers to SHORT setups.
     # ============================================================
+    _skip_long = (exclude_direction == "LONG")
+    _skip_short = (exclude_direction == "SHORT")
+
     # --- LONG Setup 1: Bollinger Mid Bounce ---
-    if bb_mid and rsi_15m:
+    if not _skip_long and bb_mid and rsi_15m:
         near_mid_pts = abs(price - bb_mid) <= 150
         rsi_ok_long = 30 <= rsi_15m <= RSI_ENTRY_HIGH_BOUNCE  # widened from 35 to 30 (captures RSI 30-35 near BB mid)
         above_ema50 = tf_15m.get("above_ema50")
@@ -969,7 +981,7 @@ def detect_setup(
     # --- LONG Setup 2: Bollinger Lower Band Bounce ---
     # Deeply oversold — strongest mean-reversion signal.
     # No above_ema50 gate: price may be below EMA50 at the lower band (expected).
-    if bb_lower and rsi_15m:
+    if not _skip_long and bb_lower and rsi_15m:
         near_lower_pts = abs(price - bb_lower) <= 150  # widened from 80 to match BB mid threshold
         rsi_ok_lower = 20 <= rsi_15m <= 40
         candle_open_l = tf_15m.get("open")
@@ -1012,7 +1024,7 @@ def detect_setup(
             return result
 
     # --- LONG Setup 3: EMA50 Bounce (disabled until validated — see ENABLE_EMA50_BOUNCE_SETUP) ---
-    if ENABLE_EMA50_BOUNCE_SETUP and ema50_15m and rsi_15m:
+    if not _skip_long and ENABLE_EMA50_BOUNCE_SETUP and ema50_15m and rsi_15m:
         dist_ema50 = abs(price - ema50_15m)
         if dist_ema50 <= 150 and rsi_15m < 55 and price >= ema50_15m - 10:
             entry = price
@@ -1036,7 +1048,7 @@ def detect_setup(
     # --- LONG Setup 4: Oversold Reversal (extreme mean-reversion) ---
     # Fires when RSI < 30 and daily is bullish — textbook oversold reversal in uptrend.
     # Weaker reversal confirmation: any wick, HA turn, or candle pattern suffices.
-    if rsi_15m and rsi_15m < 30 and daily_bullish and not _strong_bearish_momentum:
+    if not _skip_long and rsi_15m and rsi_15m < 30 and daily_bullish and not _strong_bearish_momentum:
         candle_open_os = tf_15m.get("open")
         candle_low_os  = tf_15m.get("low")
         lower_wick_os = (min(candle_open_os, price) - candle_low_os) if (candle_open_os is not None and candle_low_os is not None) else 0
@@ -1083,11 +1095,11 @@ def detect_setup(
             return result
 
     # --- LONG Setup 5: Extreme Oversold Reversal (bear market snap-back) ---
-    # RSI < 22 — so extreme that even in a bear market a snap-back is likely.
+    # RSI < 28 — extreme oversold, even in a bear market a snap-back is likely.
     # No daily trend requirement. Bypasses _strong_bearish_momentum filter intentionally.
-    # 4H condition: price near BB lower (within 300pts) OR 4H RSI < 35.
+    # 4H condition: near BB lower (300pts) OR 4H RSI < 35 OR 4H unavailable (pre-screen, tighter RSI < 25).
     # Reversal confirmation: wick ≥10 OR HA bullish OR bullish candle pattern OR liquidity sweep.
-    if rsi_15m and rsi_15m < 22:
+    if not _skip_long and rsi_15m and rsi_15m < 28:
         # 4H oversold confirmation: near 4H BB lower OR 4H RSI < 35
         bb_lower_4h = tf_4h.get("bollinger_lower")
         price_4h = tf_4h.get("price")
@@ -1096,7 +1108,9 @@ def detect_setup(
             and abs(price_4h - bb_lower_4h) <= 300
         )
         rsi_4h_extreme = rsi_4h is not None and rsi_4h < 35
-        _4h_oversold_ok = near_4h_bb_lower or rsi_4h_extreme
+        # When 4H unavailable (pre-screen), allow with tighter RSI < 25 — AI will have 4H later
+        _4h_not_available = not tf_4h or rsi_4h is None
+        _4h_oversold_ok = near_4h_bb_lower or rsi_4h_extreme or (_4h_not_available and rsi_15m < 25)
 
         if _4h_oversold_ok:
             candle_open_ext = tf_15m.get("open")
@@ -1156,7 +1170,7 @@ def detect_setup(
     short_daily_str = "Daily bearish" if daily_bullish is False else ("Daily bullish (counter-trend SHORT)" if daily_bullish else "Daily N/A")
 
     # --- SHORT Setup 1: Bollinger Upper Rejection ---
-    if bb_upper and bb_mid and rsi_15m:
+    if not _skip_short and bb_upper and bb_mid and rsi_15m:
         near_upper_pts = abs(price - bb_upper) <= 150
         rsi_ok_short = 55 <= rsi_15m <= 75
         below_ema50 = not tf_15m.get("above_ema50")
@@ -1188,7 +1202,7 @@ def detect_setup(
             return result
 
     # --- SHORT Setup 2: EMA50 Rejection (rallied up to EMA50, getting turned away) ---
-    if ema50_15m and rsi_15m:
+    if not _skip_short and ema50_15m and rsi_15m:
         dist_ema50 = abs(price - ema50_15m)
         at_ema50_from_below = price <= ema50_15m + 2 and dist_ema50 <= 150
         if at_ema50_from_below and 50 <= rsi_15m <= 70:
@@ -1218,7 +1232,7 @@ def detect_setup(
 
     # --- SHORT Setup 3: BB Mid Rejection (mirror of bb_mid_bounce LONG) ---
     # Price rallied up to BB mid as resistance and got rejected — heading back down.
-    if bb_mid and rsi_15m:
+    if not _skip_short and bb_mid and rsi_15m:
         near_mid_pts = abs(price - bb_mid) <= 150
         rsi_ok_short_mid = 40 <= rsi_15m <= 65
         prev_close_s = tf_15m.get("prev_close")
@@ -1263,7 +1277,7 @@ def detect_setup(
 
     # --- SHORT Setup 4: Overbought Reversal (mirror of oversold_reversal LONG) ---
     # RSI > 70 = extremely overbought. If daily bearish → textbook mean-reversion short.
-    if rsi_15m and rsi_15m > 70 and daily_bullish is False:
+    if not _skip_short and rsi_15m and rsi_15m > 70 and daily_bullish is False:
         candle_open_ob = tf_15m.get("open")
         candle_high_ob = tf_15m.get("high")
         upper_wick_ob = (candle_high_ob - max(candle_open_ob, price)) if (candle_open_ob is not None and candle_high_ob is not None) else 0
@@ -1312,7 +1326,7 @@ def detect_setup(
     # --- SHORT Setup 5: Breakdown Continuation (trend-following short) ---
     # Price already broke below key levels and keeps falling with momentum.
     # Not mean-reversion — this is a trend continuation play.
-    if bb_mid and rsi_15m and ema50_15m:
+    if not _skip_short and bb_mid and rsi_15m and ema50_15m:
         dist_below_mid = price - bb_mid  # negative when below mid
         below_mid_significant = dist_below_mid < -100
         rsi_ok_breakdown = 25 <= rsi_15m <= 45
@@ -1355,7 +1369,7 @@ def detect_setup(
     # Fires when daily is bearish OR when locally bearish structure is clear
     # (below EMA50 + HA streak <= -2) — catches medium-term bears while daily EMA200 still bullish.
     ema9_15m = tf_15m.get("ema9")
-    if bb_mid and rsi_15m:
+    if not _skip_short and bb_mid and rsi_15m:
         rsi_ok_dcb = 43 <= rsi_15m <= 62
         ha_bearish_dcb = tf_15m.get("ha_bullish") is False
         ha_streak_dcb = tf_15m.get("ha_streak")
@@ -1407,7 +1421,7 @@ def detect_setup(
     # --- SHORT Setup 7: Bear Flag Breakdown ---
     # Low-volume consolidation after a sharp drop, then momentum resumes down.
     # Price coiling between BB lower and BB mid — the "flag". HA turning negative.
-    if bb_mid and bb_lower and rsi_15m:
+    if not _skip_short and bb_mid and bb_lower and rsi_15m:
         rsi_ok_flag = 28 <= rsi_15m <= 52
         ha_streak_flag = tf_15m.get("ha_streak")
         ha_neg_flag = ha_streak_flag is not None and ha_streak_flag <= -1
@@ -1456,7 +1470,7 @@ def detect_setup(
     # In a downtrend, price rallies back to VWAP (intraday fair value) and fails.
     # No daily requirement — VWAP is intraday, useful in any bear session.
     vwap_15m = tf_15m.get("vwap")
-    if vwap_15m and rsi_15m and ema50_15m:
+    if not _skip_short and vwap_15m and rsi_15m and ema50_15m:
         near_vwap_short = abs(price - vwap_15m) <= 120
         rsi_ok_vwap = 43 <= rsi_15m <= 60
         below_ema50_vwap = not tf_15m.get("above_ema50")
@@ -1508,7 +1522,7 @@ def detect_setup(
     # --- SHORT Setup 9: High-Volume Distribution Short ---
     # Institutional selling at resistance: heavy volume + upper band rejection.
     # Price near BB upper OR swept a high, RSI 55-75, bearish candle/large wick.
-    if bb_upper and rsi_15m:
+    if not _skip_short and bb_upper and rsi_15m:
         near_upper_hv = abs(price - bb_upper) <= 200
         rsi_ok_hv = 55 <= rsi_15m <= 75
         vol_ratio_hv = tf_15m.get("volume_ratio", 1.0) or 1.0
@@ -1562,7 +1576,7 @@ def detect_setup(
     # All timeframes pointing down simultaneously — bear market momentum confirmation.
     # No specific level required: it's about full-stack alignment.
     # Works in pre-screen (rsi_4h=None): uses 4 local factors; rsi_4h is bonus when available.
-    if rsi_15m:
+    if not _skip_short and rsi_15m:
         rsi_15m_bear = rsi_15m < 48
         rsi_4h_bear = rsi_4h is not None and rsi_4h < 48
         daily_bear_mta = daily_bullish is False
@@ -1618,7 +1632,7 @@ def detect_setup(
     # Price rallies up to EMA200 from below and gets rejected — turn of tide signal.
     # Bear market intensity: price was able to touch EMA200 but couldn't break above.
     ema200_15m = tf_15m.get("ema200")
-    if ema200_15m and rsi_15m:
+    if not _skip_short and ema200_15m and rsi_15m:
         near_ema200 = abs(price - ema200_15m) <= 200
         rsi_ok_e200 = 50 <= rsi_15m <= 70
         approaching_from_below = price < ema200_15m and tf_15m.get("prev_close", price) <= ema200_15m
@@ -1666,7 +1680,7 @@ def detect_setup(
     # Combined with bearish momentum (HA streak, RSI) → trend confirmation.
     swing_low_20_curr = tf_15m.get("swing_low_20")
     swing_low_20_prev = tf_15m.get("swing_low_20_prev")  # will check if available
-    if swing_low_20_curr and rsi_15m:
+    if not _skip_short and swing_low_20_curr and rsi_15m:
         # If no prev available, compare to current low vs 20-bar low trend
         prev_swing_low = tf_15m.get("swing_low_20_prev")
         is_lower_low = prev_swing_low is not None and swing_low_20_curr < prev_swing_low
@@ -1712,7 +1726,7 @@ def detect_setup(
     # --- SHORT Setup 13: Pivot Point Resistance Rejection ---
     # Price tests Pivot Resistance (R1) and gets rejected with bearish confirmation.
     # Daily pivots provide institutional support/resistance levels.
-    if pivots and rsi_15m:
+    if not _skip_short and pivots and rsi_15m:
         pivot_r1 = pivots.get("r1")
         if pivot_r1:
             near_r1 = abs(price - pivot_r1) <= 150

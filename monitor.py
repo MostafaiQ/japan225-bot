@@ -524,24 +524,30 @@ class TradingMonitor:
         cold_start = not self.ig._cache_full_fetch_done.get("MINUTE_15", False)
         loop = asyncio.get_event_loop()
         if cold_start:
-            # Sequential: 5M (~5s) → 15M (~11s) → Daily (~13s). Token bucket handles pacing.
+            # Sequential: 5M (~5s) → 15M (~11s) → 4H → Daily (~13s). Token bucket handles pacing.
             candles_5m = await loop.run_in_executor(
                 None, lambda: self.ig.get_prices("MINUTE_5", MINUTE_5_CANDLES)
             )
             candles_15m = await loop.run_in_executor(
                 None, lambda: self.ig.get_prices("MINUTE_15", PRE_SCREEN_CANDLES)
             )
+            candles_4h = await loop.run_in_executor(
+                None, lambda: self.ig.get_prices("HOUR_4", AI_ESCALATION_CANDLES)
+            )
             candles_daily = await loop.run_in_executor(
                 None, lambda: self.ig.get_prices("DAY", DAILY_EMA200_CANDLES)
             )
         else:
             # Delta fetches: 1 page each, safe to parallel. Daily usually time-gated.
-            candles_15m, candles_5m = await asyncio.gather(
+            candles_15m, candles_5m, candles_4h = await asyncio.gather(
                 loop.run_in_executor(
                     None, lambda: self.ig.get_prices("MINUTE_15", PRE_SCREEN_CANDLES)
                 ),
                 loop.run_in_executor(
                     None, lambda: self.ig.get_prices("MINUTE_5", MINUTE_5_CANDLES)
+                ),
+                loop.run_in_executor(
+                    None, lambda: self.ig.get_prices("HOUR_4", AI_ESCALATION_CANDLES)
                 ),
             )
             candles_daily = await loop.run_in_executor(
@@ -554,20 +560,23 @@ class TradingMonitor:
         tf_15m = analyze_timeframe(candles_15m)
         tf_daily = analyze_timeframe(candles_daily) if candles_daily else {}
         tf_5m = analyze_timeframe(candles_5m) if candles_5m else {}
+        tf_4h = analyze_timeframe(candles_4h) if candles_4h else {}
+        if not candles_4h:
+            logger.warning("Failed to fetch 4H candles — pre-screen will degrade gracefully.")
 
         # --- Local pre-screen (zero AI cost) ---
         # detect_setup() requires above_ema200_fallback to be bool (True=bullish, False=bearish).
-        # Passing None causes both LONG and SHORT branches to skip → found=False always.
+        # 4H data now available at pre-screen for extreme_oversold_reversal and other setups.
         setup = detect_setup(
             tf_daily=tf_daily,
-            tf_4h={},
+            tf_4h=tf_4h,
             tf_15m=tf_15m,
         )
         entry_timeframe = "15m"
 
         # --- 5M fallback: if 15M finds nothing, try 5M with 15M structure alignment ---
         if not setup["found"] and tf_5m:
-            setup_5m = detect_setup(tf_daily=tf_daily, tf_4h={}, tf_15m=tf_5m)
+            setup_5m = detect_setup(tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_5m)
             if setup_5m["found"] and self._5m_aligns_with_15m(setup_5m, tf_15m):
                 setup = setup_5m
                 setup["type"] += "_5m"
@@ -593,19 +602,7 @@ class TradingMonitor:
             self._write_force_open_pending(setup, session, current_price)
 
         # No AI cooldown — subscription is $0/call, always escalate if setup found
-
-        # --- Fetch 4H for full analysis (1 API call; daily already fetched above) ---
-        candles_4h = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: self.ig.get_prices("HOUR_4", AI_ESCALATION_CANDLES)
-        )
-
-        tf_4h = analyze_timeframe(candles_4h) if candles_4h else {}
-        if not candles_4h:  # U5: warn when 4H unavailable — AI context incomplete
-            logger.warning(
-                "Failed to fetch 4H candles — C6/C10 will default gracefully. "
-                "AI context incomplete: HTF trend/RSI unavailable."
-            )
-        # tf_daily already set from pre-screen fetch above
+        # tf_4h and tf_daily already set from pre-screen fetch above
 
         # --- Local confidence score ---
         web_research = {"timestamp": datetime.now().isoformat()}
@@ -838,6 +835,60 @@ class TradingMonitor:
                     "local_confidence": local_score,
                 }
                 await self.telegram.send_force_open_alert(force_alert)
+
+            # --- Bidirectional retry: if AI rejected direction X, check opposite direction ---
+            opposite_dir = "LONG" if direction == "SHORT" else "SHORT"
+            alt_setup = detect_setup(
+                tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_15m,
+                exclude_direction=direction,
+            )
+            if not alt_setup["found"] and tf_5m:
+                alt_5m = detect_setup(
+                    tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_5m,
+                    exclude_direction=direction,
+                )
+                if alt_5m["found"] and self._5m_aligns_with_15m(alt_5m, tf_15m):
+                    alt_setup = alt_5m
+                    alt_setup["type"] += "_5m"
+
+            if alt_setup["found"]:
+                logger.info(f"Bidirectional retry: {opposite_dir} {alt_setup['type']} found after {direction} rejected")
+                # Quick local confidence check for the alternate setup
+                alt_conf = compute_confidence(
+                    direction=opposite_dir, tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_15m,
+                    upcoming_events=web_research.get("economic_calendar", []),
+                    web_research=web_research, setup_type=alt_setup.get("type"),
+                )
+                if alt_conf["score"] >= HAIKU_MIN_SCORE:
+                    logger.info(f"Alt {opposite_dir} local conf: {alt_conf['score']}%. Sending to Opus for scalp eval.")
+                    try:
+                        alt_scalp = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: self.analyzer.evaluate_scalp(
+                                indicators=indicators,
+                                direction=opposite_dir,
+                                setup_type=alt_setup.get("type", "unknown"),
+                                local_confidence=alt_conf["score"],
+                                ai_confidence=0,
+                                ai_reasoning=f"Bidirectional retry after {direction} rejection",
+                            ),
+                        )
+                        if alt_scalp.get("scalp_viable"):
+                            await self._execute_scalp(
+                                scalp_result=alt_scalp,
+                                direction=opposite_dir,
+                                setup=alt_setup,
+                                session=session,
+                                current_price=current_price,
+                                local_conf=alt_conf,
+                                final_confidence=alt_conf["score"],
+                            )
+                        else:
+                            logger.info(f"Opus rejected alt {opposite_dir} scalp: {alt_scalp.get('reasoning', '')[:150]}")
+                    except Exception as e:
+                        logger.warning(f"Alt direction scalp eval failed: {e}")
+                else:
+                    logger.info(f"Alt {opposite_dir} local conf too low: {alt_conf['score']}%")
 
             # No cooldown — subscription is $0/call, scan again in 5 min
             return SCAN_INTERVAL_SECONDS

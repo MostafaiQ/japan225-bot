@@ -41,11 +41,11 @@ _scanning_cycle() -> int (sleep seconds):
   2. is_no_trade_day() → skip
   3. check scanning_paused
   4. ig.get_market_info() → 1 API call
-  5. asyncio.gather(15M, 5M) parallel → then await Daily sequential with 5s delay (avoids 28 req/min burst)
-     Cold start: all 3 sequential (rate limit). Warm: 5M+15M parallel, Daily time-gated.
-     All 3 use candle caching: full fetch on first call, delta on subsequent (see ig_client.digest.md)
-  6. detect_setup(tf_daily, {}, tf_15m) — 15M tried first
-  6b. 5M FALLBACK: if 15M no setup + tf_5m available → detect_setup(tf_daily, {}, tf_5m)
+  5. asyncio.gather(15M, 5M, 4H) parallel → then await Daily sequential (avoids 28 req/min burst)
+     Cold start: all 4 sequential (rate limit). Warm: 5M+15M+4H parallel, Daily time-gated.
+     All use candle caching: full fetch on first call, delta on subsequent (see ig_client.digest.md)
+  6. detect_setup(tf_daily, tf_4h, tf_15m) — 15M tried first. 4H available at pre-screen.
+  6b. 5M FALLBACK: if 15M no setup + tf_5m available → detect_setup(tf_daily, tf_4h, tf_5m)
       → _5m_aligns_with_15m() guard: LONG needs 15M RSI<65 + price within 300pts of 15M BB mid/lower
         SHORT needs 15M RSI>35 + price within 300pts of 15M BB upper. Missing data → pass through.
       → setup["type"] += "_5m", entry_timeframe="5m". Logged: "5M fallback: LONG bollinger_mid_bounce_5m"
@@ -85,6 +85,11 @@ _execute_scalp(scalp_result, direction, setup, session, current_price, local_con
 Near-miss flow (in _scanning_cycle, after AI rejection):
   Triggers when: local_score >= min_conf AND not QUICK REJECT AND final_confidence >= 40
   → evaluate_scalp() via Opus → if scalp_viable → _execute_scalp() (no user confirmation)
+
+Bidirectional retry (in _scanning_cycle, after AI rejection + near-miss):
+  → detect_setup(exclude_direction=rejected_dir) → opposite direction setup
+  → compute_confidence() for alt direction → if >= HAIKU_MIN_SCORE → Opus scalp eval
+  → if scalp_viable → _execute_scalp() (auto-execute, no user confirmation)
 
 Force Open flow (in _scanning_cycle, after AI rejection):
   Triggers when: local_score >= 100 (12/12 criteria pass)

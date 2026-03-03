@@ -32,8 +32,9 @@ SKILLS_DIR = ~/.claude/skills/
 ## chat(message, history) -> str
 1. _track_usage(message) — classify + log intent
 2. _pick_tier(message) → (model, effort, timeout)
-3. _build_prompt() — state snapshot + ops context + compressed history + message
+3. _build_prompt() — state snapshot + ops context + safety rule + compressed history + message
 4. subprocess.run claude --print --model <tier> --effort <level>. timeout per tier.
+   start_new_session=True — own process group, dashboard restart won't SIGTERM the subprocess.
 5. _log_chat_cost(prompt, response) — estimate cost from char count
 
 ## _build_prompt(message, history) -> str
@@ -44,7 +45,8 @@ SKILLS_DIR = ~/.claude/skills/
    - Recent scan activity: last 8 meaningful log lines (1 hour window)
    - Recent trades: last 3 from SQLite DB
 3. Compressed history (~350 tokens max)
-4. New message
+4. Safety rule: "NEVER restart japan225-dashboard — you are running inside it"
+5. New message
 
 ## _load_ops_context() -> str
 Runs 4 subprocess calls with 3s timeout each (~100ms total typical):

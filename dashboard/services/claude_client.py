@@ -132,11 +132,13 @@ def chat(message: str, history: list[dict]) -> str:
             cwd=str(PROJECT_ROOT),
             env=env,
             timeout=timeout,
+            start_new_session=True,  # own process group — dashboard restart won't SIGTERM this
         )
         response = result.stdout.strip()
         if not response:
             stderr = result.stderr.strip()
             if result.returncode != 0:
+                logger.warning(f"Chat subprocess exit {result.returncode}: {stderr[:300]}")
                 response = f"Claude Code failed (exit {result.returncode}). {stderr[:300] if stderr else 'No output.'}"
             else:
                 response = stderr if stderr else "(no response — Claude Code returned empty output)"
@@ -149,6 +151,7 @@ def chat(message: str, history: list[dict]) -> str:
     except FileNotFoundError:
         return f"Claude Code binary not found at {CLAUDE_BIN}. Check installation."
     except Exception as e:
+        logger.error(f"Chat subprocess error: {e}")
         return f"Error spawning Claude Code: {e}"
 
 
@@ -206,7 +209,16 @@ def _build_prompt(message: str, history: list[dict]) -> str:
         if history_block:
             parts.append(history_block)
 
-    # 4. New message
+    # 4. Safety constraint — prevent subprocess from killing its own parent
+    parts.append(
+        "--- CRITICAL RULE ---\n"
+        "You are running INSIDE the japan225-dashboard uvicorn process as a subprocess.\n"
+        "NEVER run `systemctl restart japan225-dashboard` — it will kill you mid-response.\n"
+        "If code changes require a dashboard restart, say so in your response and the user will restart it.\n"
+        "You MAY restart japan225-bot (the monitor) if needed — that is a separate process."
+    )
+
+    # 5. New message
     parts.append(f"Human: {message}")
     return "\n\n".join(parts)
 

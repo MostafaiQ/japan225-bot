@@ -414,7 +414,9 @@ class AIAnalyzer:
         est_input_tokens = len(full_prompt) // 4
 
         # Build CLI command — only include Opus sub-agent when borderline confidence
-        cmd = [CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions"]
+        # --tools "" disables all tools → Sonnet responds directly from prompt data (no file reads/commands)
+        # This cuts response time from 60-180s to 10-30s by eliminating CLAUDE.md loading + tool calls.
+        cmd = [CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions", "--tools", ""]
         if use_opus_agent:
             from config.settings import OPUS_MODEL
             agents_json = json.dumps({
@@ -435,6 +437,7 @@ class AIAnalyzer:
                 timeout=timeout,
                 env=env,
                 cwd=str(PROJECT_ROOT),
+                start_new_session=True,
             )
             elapsed = time.time() - start
             output = (result.stdout or "").strip()
