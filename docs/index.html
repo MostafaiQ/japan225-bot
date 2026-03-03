@@ -308,17 +308,24 @@
       border:1px solid var(--border); color:var(--text); border-radius:4px 18px 18px 18px;
     }
     .chat-time { font-size:10px; color:var(--text-muted); padding:0 6px; opacity:.6; font-weight:500; }
+    .chat-actions { display:none; gap:4px; align-items:center; }
+    .chat-row:hover .chat-actions { display:flex; }
+    .reply-btn { background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:11px; padding:2px 6px; border-radius:4px; transition:all var(--transition); display:flex; align-items:center; gap:3px; }
+    .reply-btn:hover { background:var(--surface-hover); color:var(--text-dim); }
     .think-dots { display:flex; align-items:center; gap:6px; padding:14px 16px; }
     .think-dots span { width:8px; height:8px; border-radius:50%; background:var(--text-muted); animation:dotPulse 1.4s infinite ease-in-out; }
     .think-dots span:nth-child(2) { animation-delay:.2s; }
     .think-dots span:nth-child(3) { animation-delay:.4s; }
     @keyframes dotPulse { 0%,80%,100% { transform:scale(.6); opacity:.3; } 40% { transform:scale(1); opacity:1; } }
     .think-status { font-size:10.5px; color:var(--text-muted); font-style:italic; padding:0 6px; }
+    .reply-btn { background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:12px; padding:0 4px; opacity:0; transition:opacity .15s; }
+    .chat-row:hover .reply-btn { opacity:1; }
+    @media (max-width:640px) { .reply-btn { opacity:.5; } }
     .chat-input-wrap {
-      border-top:1px solid var(--border); padding:12px 0 0; display:flex; align-items:flex-end; position:relative;
+      border-top:1px solid var(--border); padding:12px 8px 12px 0; display:flex; align-items:flex-end; gap:8px;
     }
     .chat-input {
-      flex:1; padding:12px 48px 12px 18px;
+      flex:1; padding:12px 18px;
       background: linear-gradient(180deg, rgba(255,255,255,.04) 0%, rgba(255,255,255,.02) 100%);
       border:1px solid var(--border); border-radius:24px; color:var(--text); font-size:13px;
       outline:none; resize:none; min-height:46px; max-height:140px; font-family:var(--font);
@@ -326,9 +333,9 @@
     }
     .chat-input:focus { border-color:var(--primary); box-shadow: 0 0 0 3px rgba(79,143,247,.08); }
     .chat-send-btn {
-      position:absolute; right:7px; bottom:7px; width:34px; height:34px; border-radius:50%;
+      width:38px; height:38px; border-radius:6px; flex-shrink:0;
       padding:0 !important; display:flex; align-items:center; justify-content:center; font-size:18px; line-height:1;
-      box-shadow: 0 2px 6px rgba(79,143,247,.3);
+      box-shadow: 0 2px 6px rgba(79,143,247,.3); align-self:flex-end;
     }
 
     /* ── Alerts ── */
@@ -390,6 +397,10 @@
       .btn { min-height: 44px; padding: 10px 16px; }
       .btn-sm { min-height: 36px; padding: 7px 11px; }
       .icon-btn { width: 38px; height: 38px; }
+      /* Send button — fixed square, overrides .btn defaults on mobile */
+      .chat-send-btn { width: 44px !important; height: 44px !important; min-width: 44px !important; min-height: 44px !important; max-width: 44px !important; max-height: 44px !important; border-radius: var(--radius-sm) !important; padding: 0 !important; flex-shrink: 0; align-self: flex-end; display: flex !important; align-items: center; justify-content: center; }
+      .chat-input-wrap { gap: 6px; padding-left: 6px; }
+      .chat-input { min-height: 44px; }
       .modal { padding: 20px 16px; }
       .grid-2, .grid-3 { gap: 12px; }
       .pnl-big { font-size: 28px; }
@@ -647,7 +658,23 @@
           </div>
         </div>
         <div id="chatBox" class="chat-box"></div>
+        <!-- Reply preview bar (hidden until user clicks Reply) -->
+        <div id="replyBar" style="display:none;align-items:center;gap:8px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:6px;font-size:12px;color:var(--text-dim);">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:.6;"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 00-4-4H4"/></svg>
+          <span id="replyPreview" style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;"></span>
+          <button onclick="cancelReply()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;padding:0 2px;">✕</button>
+        </div>
+        <!-- Attachment preview bar (hidden until file selected) -->
+        <div id="attachBar" style="display:none;align-items:center;gap:8px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:6px;font-size:12px;color:var(--text-dim);">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:.6;"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+          <span id="attachName" style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;"></span>
+          <button onclick="cancelAttach()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;padding:0 2px;">✕</button>
+        </div>
         <div class="chat-input-wrap">
+          <input type="file" id="fileInput" style="display:none;" accept="image/*,.txt,.log,.json,.py,.csv,.md" onchange="onFileSelect(event)">
+          <button class="icon-btn" onclick="document.getElementById('fileInput').click()" title="Attach file or screenshot" style="flex-shrink:0;align-self:flex-end;width:38px;height:38px;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+          </button>
           <textarea id="chatInput" class="chat-input" rows="1" placeholder="Message Claude…" onkeydown="chatKey(event)" oninput="localStorage.setItem('chatDraft',this.value)"></textarea>
           <button class="btn btn-primary chat-send-btn" id="chatBtn" onclick="sendChat()">↑</button>
         </div>
@@ -1163,28 +1190,92 @@ async function loadLogs() {
 // ══════════════════════════════════════════════
 function chatKey(e) { if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }
 
+// ── Reply-to ────────────────────────────────────────────────────────────
+let _replyCtx = null; // {role, snippet}
+
+function replyTo(role, text) {
+  const snippet = text.length > 120 ? text.slice(0, 120) + '...' : text;
+  _replyCtx = { role, snippet };
+  const bar = document.getElementById('replyBar');
+  const label = bar.querySelector('span');
+  if (label) label.textContent = (role === 'user' ? 'You' : 'Claude') + ': ' + snippet;
+  bar.style.display = 'flex';
+  document.getElementById('chatInput').focus();
+}
+
+function cancelReply() {
+  _replyCtx = null;
+  document.getElementById('replyBar').style.display = 'none';
+}
+
+// ── File attachment ─────────────────────────────────────────────────────
+let _attachData = null; // {name, b64, size}
+
+function onFileSelect(ev) {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  if (file.size > 10 * 1024 * 1024) { alert('Max file size: 10 MB'); ev.target.value = ''; return; }
+  const reader = new FileReader();
+  reader.onload = () => {
+    // result is "data:<mime>;base64,<data>" — strip prefix
+    const b64 = reader.result.split(',')[1] || '';
+    _attachData = { name: file.name, b64, size: file.size };
+    const bar = document.getElementById('attachBar');
+    const nameEl = document.getElementById('attachName');
+    const sizeKB = (file.size / 1024).toFixed(1);
+    if (nameEl) nameEl.textContent = `${file.name} (${sizeKB} KB)`;
+    bar.style.display = 'flex';
+  };
+  reader.readAsDataURL(file);
+}
+
+function cancelAttach() {
+  _attachData = null;
+  document.getElementById('attachBar').style.display = 'none';
+  document.getElementById('fileInput').value = '';
+}
+
 async function sendChat() {
   const inp = document.getElementById('chatInput');
-  const msg = inp.value.trim();
-  if (!msg || !S.url) { if (!S.url) openSettings(); return; }
+  let msg = inp.value.trim();
+  if (!msg && !_attachData) return; // need text or file
+  if (!S.url) { openSettings(); return; }
+
+  // Prepend reply context if active
+  if (_replyCtx) {
+    msg = `> ${_replyCtx.role === 'user' ? 'Me' : 'Claude'}: ${_replyCtx.snippet}\n\n${msg}`;
+    cancelReply();
+  }
+
   inp.value = '';
   localStorage.removeItem('chatDraft');
-  addMsg('user', msg);
+
+  // Build display message (with attachment indicator)
+  let displayMsg = msg;
+  if (_attachData) displayMsg += (msg ? '\n' : '') + `[Attached: ${_attachData.name}]`;
+  addMsg('user', displayMsg || '[file attached]');
   if (S.chat.length >= 40) S.chat.splice(0, 2);
-  S.chat.push({ role:'user', content: msg });
+  S.chat.push({ role:'user', content: displayMsg || '[file attached]' });
   _saveHistory();
+
+  // Capture attachment before clearing
+  const attach = _attachData;
+  if (_attachData) cancelAttach();
+
   // Show thinking bubble — button stays enabled for more messages
   const thinkEl = _addThinkingBubble();
   // Fire POST in background — does NOT block further sends
-  _postAndPoll(msg, thinkEl);
+  _postAndPoll(msg || '[file attached]', thinkEl, attach);
 }
 
-async function _postAndPoll(msg, thinkEl) {
+async function _postAndPoll(msg, thinkEl, attach) {
   const statusEl = thinkEl ? thinkEl.querySelector('.think-status') : null;
   let posted = false;
   while (!posted) {
     try {
-      const d = await req('POST', '/api/chat', { message: msg, history: S.chat });
+      const payload = { message: msg, history: S.chat };
+      if (attach) { payload.attachment_b64 = attach.b64; payload.attachment_name = attach.name; }
+      const d = await req('POST', '/api/chat', payload);
       posted = true;
       if (d.job_id) {
         const tier = d.tier || 'sonnet';
@@ -1282,11 +1373,13 @@ function _startJobPolling(jobId, thinkEl) {
       const d = await req('GET', '/api/chat/status/' + jobId);
       if (d.status === 'done' || d.status === 'error') {
         _cleanup();
-        const reply = d.response || '(no response)';
-        S.chat.push({ role:'assistant', content: reply });
-        _saveHistory();
-        addMsg('assistant', reply);
-        _refreshChatCost();
+        const reply = d.response || '';
+        if (reply) {
+          S.chat.push({ role:'assistant', content: reply });
+          _saveHistory();
+          addMsg('assistant', reply);
+          _refreshChatCost();
+        }
       }
     } catch(err) {
       if (statusEl) {
@@ -1323,12 +1416,17 @@ function addMsg(role, text, time) {
   const content = role === 'assistant'
     ? marked.parse(text)
     : esc(text).replace(/\n/g,'<br>');
+  // Store raw text for reply-to (use data-attr + event handler for XSS safety)
+  const replyBtn = `<button class="reply-btn" title="Reply">↩</button>`;
   d.innerHTML = `<div class="chat-avatar ${avatarClass}">${avatarLabel}</div>
     <div class="chat-body">
       <div class="bubble${role === 'assistant' ? ' md' : ''}">${content}</div>
-      <div class="chat-time">${t}</div>
+      <div class="chat-time">${t} ${replyBtn}</div>
     </div>`;
   box.appendChild(d);
+  // Wire reply button safely (no inline onclick with user content)
+  const rb = d.querySelector('.reply-btn');
+  if (rb) rb.addEventListener('click', () => replyTo(role, text));
   box.scrollTop = box.scrollHeight;
 }
 
