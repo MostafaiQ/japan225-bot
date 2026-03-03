@@ -363,7 +363,6 @@ class IGClient:
                 limit_level=limit_level,
                 limit_distance=limit_distance,
                 trailing_stop=trailing_stop,
-                trailing_stop_distance=trailing_stop_distance,
                 trailing_stop_increment=trailing_stop_increment,
             )
             

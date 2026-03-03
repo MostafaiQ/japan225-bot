@@ -343,8 +343,8 @@ class TelegramBot:
             InlineKeyboardButton("✅ CONFIRM", callback_data="confirm_trade"),
             InlineKeyboardButton("❌ REJECT",  callback_data="reject_trade"),
         ]])
+        self.storage.set_pending_alert(trade_data)
         try:
-            self.storage.set_pending_alert(trade_data)
             await self.app.bot.send_message(
                 chat_id=TELEGRAM_CHAT_ID,
                 text=text,
@@ -353,7 +353,19 @@ class TelegramBot:
             )
             logger.info("Trade alert sent")
         except Exception as e:
-            logger.error(f"send_trade_alert failed: {e}")
+            logger.warning(f"HTML trade alert failed ({e}), retrying as plain text")
+            # Strip HTML tags and retry without parse_mode
+            import re
+            plain = re.sub(r"<[^>]+>", "", text)
+            try:
+                await self.app.bot.send_message(
+                    chat_id=TELEGRAM_CHAT_ID,
+                    text=plain,
+                    reply_markup=keyboard,
+                )
+                logger.info("Trade alert sent (plain text fallback)")
+            except Exception as e2:
+                logger.error(f"send_trade_alert failed completely: {e2}")
 
     async def send_scalp_executed(self, alert_data: dict, scalp_result: dict):
         """Notify user that an Opus-approved scalp trade was auto-executed."""

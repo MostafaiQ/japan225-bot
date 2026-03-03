@@ -770,10 +770,10 @@ class TradingMonitor:
             ai_reasoning = final_result.get("reasoning", "")
             is_quick_reject = "QUICK REJECT" in ai_reasoning.upper()
 
-            if local_score >= min_conf and not is_quick_reject and final_confidence >= 40:
+            if local_score >= min_conf and not is_quick_reject:
                 logger.info(
                     f"Near-miss: local {local_score}% >= {min_conf}%, "
-                    f"AI {final_confidence}% >= 40%. Sending to Opus for bidirectional scalp eval."
+                    f"AI {final_confidence}%. Sending to Opus for bidirectional scalp eval."
                 )
                 try:
                     scalp_result = await asyncio.get_event_loop().run_in_executor(
