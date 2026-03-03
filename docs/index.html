@@ -733,7 +733,7 @@ const S = {
   chat:   [],          // history [{role,content}]
   historyUpdatedAt: '', // last known server timestamp for cross-device sync
   timer:  null,
-  pendingJob: null,    // {job_id, timer, thinkEl} — survives ngrok reconnect via localStorage
+  pendingJobs: {},     // job_id → {timer, thinkEl} — multiple concurrent jobs, survives refresh
 };
 
 // ══════════════════════════════════════════════
@@ -1170,15 +1170,17 @@ async function sendChat() {
   inp.value = '';
   localStorage.removeItem('chatDraft');
   addMsg('user', msg);
-  if (S.chat.length >= 20) S.chat.splice(0, 2);
+  if (S.chat.length >= 40) S.chat.splice(0, 2);
   S.chat.push({ role:'user', content: msg });
   _saveHistory();
-  const btn = document.getElementById('chatBtn');
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
-  // Show thinking bubble immediately — survives ngrok drops
+  // Show thinking bubble — button stays enabled for more messages
   const thinkEl = _addThinkingBubble();
-  const statusEl = thinkEl.querySelector('.think-status');
-  // Retry POST until ngrok reconnects — never give up
+  // Fire POST in background — does NOT block further sends
+  _postAndPoll(msg, thinkEl);
+}
+
+async function _postAndPoll(msg, thinkEl) {
+  const statusEl = thinkEl ? thinkEl.querySelector('.think-status') : null;
   let posted = false;
   while (!posted) {
     try {
@@ -1186,26 +1188,38 @@ async function sendChat() {
       posted = true;
       if (d.job_id) {
         const tier = d.tier || 'sonnet';
-        localStorage.setItem('pendingJob', JSON.stringify({ job_id: d.job_id, startTime: Date.now(), tier }));
         _updateTierBadge(thinkEl, tier);
+        _savePendingJobs(d.job_id, Date.now(), tier);
         _startJobPolling(d.job_id, thinkEl);
-        // button stays disabled until job finishes (managed inside _startJobPolling)
       } else if (d.response) {
-        // Legacy sync fallback
         if (thinkEl) { if (thinkEl._elapsedTimer) clearInterval(thinkEl._elapsedTimer); thinkEl.remove(); }
         S.chat.push({ role:'assistant', content: d.response });
         _saveHistory();
         addMsg('assistant', d.response);
         _refreshChatCost();
-        btn.disabled = false; btn.innerHTML = '↑';
       }
     } catch(_) {
-      // ngrok dropped — keep thinking bubble, retry in 5s (preserve elapsed span)
       if (statusEl) { const tn = statusEl.firstChild; if (tn && tn.nodeType === 3) tn.textContent = 'Reconnecting… '; }
       await new Promise(r => setTimeout(r, 5000));
       if (statusEl) { const tn = statusEl.firstChild; if (tn && tn.nodeType === 3) tn.textContent = 'Retrying… '; }
     }
   }
+}
+
+function _savePendingJobs(addId, startTime, tier) {
+  // Persist all pending job IDs to localStorage for refresh recovery
+  let jobs = [];
+  try { jobs = JSON.parse(localStorage.getItem('pendingJobs') || '[]'); } catch(_) {}
+  if (addId) jobs.push({ job_id: addId, startTime, tier });
+  localStorage.setItem('pendingJobs', JSON.stringify(jobs));
+}
+
+function _removePendingJob(jobId) {
+  let jobs = [];
+  try { jobs = JSON.parse(localStorage.getItem('pendingJobs') || '[]'); } catch(_) {}
+  jobs = jobs.filter(j => j.job_id !== jobId);
+  if (jobs.length) localStorage.setItem('pendingJobs', JSON.stringify(jobs));
+  else localStorage.removeItem('pendingJobs');
 }
 
 const _thinkPhrases = ['Thinking…', 'Reading files…', 'Checking logs…', 'Still working…', 'Almost done…', 'Finalising…'];
@@ -1249,9 +1263,16 @@ function _addThinkingBubble(startMs, tier) {
 }
 
 function _startJobPolling(jobId, thinkEl) {
-  if (S.pendingJob && S.pendingJob.timer) clearInterval(S.pendingJob.timer);
   const statusEl = thinkEl ? thinkEl.querySelector('.think-status') : null;
   let attempt = 0;
+
+  const _cleanup = () => {
+    const entry = S.pendingJobs[jobId];
+    if (entry && entry.timer) clearInterval(entry.timer);
+    delete S.pendingJobs[jobId];
+    _removePendingJob(jobId);
+    if (thinkEl) { if (thinkEl._elapsedTimer) clearInterval(thinkEl._elapsedTimer); thinkEl.remove(); }
+  };
 
   const poll = async () => {
     attempt++;
@@ -1260,12 +1281,7 @@ function _startJobPolling(jobId, thinkEl) {
     try {
       const d = await req('GET', '/api/chat/status/' + jobId);
       if (d.status === 'done' || d.status === 'error') {
-        clearInterval(S.pendingJob && S.pendingJob.timer);
-        localStorage.removeItem('pendingJob');
-        S.pendingJob = null;
-        if (thinkEl) { if (thinkEl._elapsedTimer) clearInterval(thinkEl._elapsedTimer); thinkEl.remove(); }
-        const btn = document.getElementById('chatBtn');
-        if (btn) { btn.disabled = false; btn.innerHTML = '↑'; }
+        _cleanup();
         const reply = d.response || '(no response)';
         S.chat.push({ role:'assistant', content: reply });
         _saveHistory();
@@ -1273,28 +1289,20 @@ function _startJobPolling(jobId, thinkEl) {
         _refreshChatCost();
       }
     } catch(err) {
-      // ngrok down — show reconnecting status, keep polling (preserve elapsed span)
       if (statusEl) {
         const msg = (err.message && err.message.includes('404')) ? 'Job expired… ' : 'Reconnecting… ';
         const tn = statusEl.firstChild; if (tn && tn.nodeType === 3) tn.textContent = msg;
-        // If job expired (server restarted), check if response landed in history
         if (err.message && err.message.includes('404')) {
           try {
             const h = await req('GET', '/api/chat/history');
             if (h.messages && h.messages.length > S.chat.length) {
-              // Server has the response — recover it
-              clearInterval(S.pendingJob && S.pendingJob.timer);
-              localStorage.removeItem('pendingJob');
-              S.pendingJob = null;
-              if (thinkEl) { if (thinkEl._elapsedTimer) clearInterval(thinkEl._elapsedTimer); thinkEl.remove(); }
-              const btn = document.getElementById('chatBtn');
-              if (btn) { btn.disabled = false; btn.innerHTML = '↑'; }
+              _cleanup();
               S.chat = h.messages;
               S.historyUpdatedAt = h.updated_at;
               localStorage.setItem('chatHistory', JSON.stringify(S.chat));
               const box = document.getElementById('chatBox');
               if (box) { box.innerHTML = ''; S.chat.forEach(m => addMsg(m.role, m.content)); }
-              return; // stop polling
+              return;
             }
           } catch(_) {}
         }
@@ -1303,7 +1311,7 @@ function _startJobPolling(jobId, thinkEl) {
   };
 
   const timer = setInterval(poll, 4000);
-  S.pendingJob = { job_id: jobId, timer, thinkEl };
+  S.pendingJobs[jobId] = { timer, thinkEl };
 }
 function addMsg(role, text, time) {
   const box = document.getElementById('chatBox');
@@ -1336,8 +1344,8 @@ function _saveHistory() {
 // ── Cross-device chat sync: poll server every 5s ──────────────────────────
 async function _pollHistory() {
   if (!S.url) return;
-  // Never re-render while a job is in-flight — it destroys the thinking bubble
-  if (S.pendingJob) return;
+  // Never re-render while any job is in-flight — it destroys thinking bubbles
+  if (Object.keys(S.pendingJobs).length > 0) return;
   try {
     const d = await req('GET', '/api/chat/history');
     if (d.updated_at && d.updated_at !== S.historyUpdatedAt &&
@@ -1385,23 +1393,25 @@ async function _initChat() {
   }
   if (!historyLoaded) _addWelcomeMsg();
 
-  // Recover pending job AFTER history is rendered (prevents race condition
-  // where _initChat wipes the thinking bubble added by concurrent recovery)
-  const savedJob = localStorage.getItem('pendingJob');
-  if (savedJob) {
+  // Recover pending jobs AFTER history is rendered
+  // Support both old 'pendingJob' (single) and new 'pendingJobs' (array)
+  let savedJobs = [];
+  try {
+    const oldKey = localStorage.getItem('pendingJob');
+    if (oldKey) { savedJobs.push(JSON.parse(oldKey)); localStorage.removeItem('pendingJob'); }
+  } catch(_) { localStorage.removeItem('pendingJob'); }
+  try {
+    const newKey = localStorage.getItem('pendingJobs');
+    if (newKey) { const arr = JSON.parse(newKey); if (Array.isArray(arr)) savedJobs = savedJobs.concat(arr); }
+  } catch(_) { localStorage.removeItem('pendingJobs'); }
+  for (const job of savedJobs) {
     try {
-      const { job_id, startTime, tier } = JSON.parse(savedJob);
+      const { job_id, startTime, tier } = job;
       if (job_id) {
-        // If response already landed in server history, no need to poll
-        const lastMsg = S.chat.length > 0 ? S.chat[S.chat.length - 1] : null;
-        if (lastMsg && lastMsg.role === 'assistant') {
-          localStorage.removeItem('pendingJob');
-        } else {
-          const thinkEl = _addThinkingBubble(startTime, tier);
-          _startJobPolling(job_id, thinkEl);
-        }
+        const thinkEl = _addThinkingBubble(startTime, tier);
+        _startJobPolling(job_id, thinkEl);
       }
-    } catch(_) { localStorage.removeItem('pendingJob'); }
+    } catch(_) {}
   }
 }
 
