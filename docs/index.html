@@ -774,7 +774,7 @@ if (bc) {
       // Another tab updated chat — re-render our chat box
       S.chat = data;
       const box = document.getElementById('chatBox');
-      if (box) { box.innerHTML = ''; data.forEach(m => addMsg(m.role, m.content)); }
+      if (box) { box.innerHTML = ''; data.forEach(m => addMsg(m.role, m.content, null, m.tier)); }
     } else if (type === 'config-changed') {
       // Another tab saved config — reload ours from server
       if (S.url && S.tab === 'config') loadConfig();
@@ -1278,8 +1278,8 @@ async function _postAndPoll(msg, thinkEl, attach) {
       if (attach) { payload.attachment_b64 = attach.b64; payload.attachment_name = attach.name; }
       const d = await req('POST', '/api/chat', payload);
       posted = true;
+      const tier = d.tier || 'sonnet';
       if (d.job_id) {
-        const tier = d.tier || 'sonnet';
         _updateTierBadge(thinkEl, tier);
         _savePendingJobs(d.job_id, Date.now(), tier);
         _startJobPolling(d.job_id, thinkEl, tier);
@@ -1485,7 +1485,7 @@ async function _initChat() {
         localStorage.setItem('chatHistory', JSON.stringify(S.chat));
         const box = document.getElementById('chatBox');
         box.innerHTML = '';
-        S.chat.forEach(m => addMsg(m.role, m.content));
+        S.chat.forEach(m => addMsg(m.role, m.content, null, m.tier));
         historyLoaded = true;
       }
     } catch(_) {}
@@ -1499,7 +1499,7 @@ async function _initChat() {
           S.chat = hist;
           const box = document.getElementById('chatBox');
           box.innerHTML = '';
-          hist.forEach(m => addMsg(m.role, m.content));
+          hist.forEach(m => addMsg(m.role, m.content, null, m.tier));
           historyLoaded = true;
         }
       } catch(_) {}
@@ -1691,8 +1691,8 @@ function fmtDt(iso) {
   if (!S.url) {
     showNotConfigured();   // shows "Click ⚙ to configure" — no modal, no blocking overlay
   } else {
-    // Always check connection on init
-    req('GET', '/api/status').then(() => setConn('ok', 'Connected')).catch(() => setConn('err', 'Error'));
+    // Check connection on init (awaited to prevent race with loadOverview)
+    try { await req('GET', '/api/status'); setConn('ok', 'Connected'); } catch { setConn('err', 'Error'); }
     // Restore saved tab (default: overview)
     const savedTab = S.tab;
     const tabBtn = document.querySelector(`.tab[data-tab="${savedTab}"]`);
@@ -1709,6 +1709,7 @@ function fmtDt(iso) {
   await _initChat();
   _refreshChatCost();                                                  // show cost badge immediately
   setInterval(() => { if (S.tab === 'overview' && S.url) loadOverview(); }, 15000);  // overview auto-refresh
+  setInterval(() => { if (S.url) req('GET', '/api/status').then(() => setConn('ok', 'Connected')).catch(() => setConn('err', 'Error')); }, 15000);  // connection check on all tabs
   setInterval(_tickCountdown, 1000);                                   // live countdown ticker
   setInterval(_pollHistory, 5000);                                     // cross-device chat sync
   setInterval(_refreshChatCost, 30000);                               // chat cost badge refresh

@@ -535,7 +535,7 @@ class AIAnalyzer:
         if not raw.strip() or (result.get("reasoning", "").startswith("Parse error") and not result.get("setup_found")):
             logger.warning("AI returned empty/unparseable output — retrying once")
             raw2, tokens2 = self._run_claude(model, system_prompt, user_prompt,
-                                             timeout=120, use_opus_agent=False)
+                                             timeout=180, use_opus_agent=False)
             if raw2.strip():
                 result = _parse_json(raw2, default)
                 tokens = tokens2
@@ -880,19 +880,19 @@ class WebResearcher:
         return None
 
     def _get_fear_greed(self) -> Optional[int]:
-        """Fetch CNN Fear & Greed index (or alternative)."""
+        """Fetch market Fear & Greed index (alternative.me — crypto-based sentiment proxy)."""
         try:
             resp = self.client.get(
-                "https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
+                "https://api.alternative.me/fng/?limit=1",
                 timeout=5,
-                headers={"User-Agent": "Mozilla/5.0"},
             )
             if resp.status_code == 200:
                 data = resp.json()
-                score = data.get("fear_and_greed", {}).get("score")
-                if score is not None:
-                    logger.debug(f"Fear & Greed: {score:.0f}")
-                    return int(score)
+                items = data.get("data", [])
+                if items:
+                    score = int(items[0].get("value", 0))
+                    logger.debug(f"Fear & Greed: {score}")
+                    return score
         except Exception as e:
             logger.warning(f"Fear & Greed fetch failed: {e}")
         return None

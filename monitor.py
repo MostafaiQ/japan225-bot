@@ -516,6 +516,7 @@ class TradingMonitor:
             return SCAN_INTERVAL_SECONDS
 
         current_price = market.get("bid", 0)
+        self._current_price = current_price
 
         # --- Fetch candles ---
         # Cold start (full fetch, many pages): ALL sequential to stay within 28 req/min
@@ -984,6 +985,7 @@ class TradingMonitor:
             return
 
         current_price = market.get("bid", 0) if logical_direction == "LONG" else market.get("offer", 0)
+        self._current_price = current_price
 
         # --- Update momentum tracker ---
         if self.momentum_tracker is None:
