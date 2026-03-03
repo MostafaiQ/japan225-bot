@@ -1691,6 +1691,8 @@ function fmtDt(iso) {
   if (!S.url) {
     showNotConfigured();   // shows "Click ⚙ to configure" — no modal, no blocking overlay
   } else {
+    // Always check connection on init
+    req('GET', '/api/status').then(() => setConn('ok', 'Connected')).catch(() => setConn('err', 'Error'));
     // Restore saved tab (default: overview)
     const savedTab = S.tab;
     const tabBtn = document.querySelector(`.tab[data-tab="${savedTab}"]`);
