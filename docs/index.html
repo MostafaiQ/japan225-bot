@@ -1168,8 +1168,8 @@ async function saveRestart() {
 // ── History state ──
 let _histTrades = [];      // raw from API
 let _histFiltered = [];    // after filters
-let _histSortCol = 'date';
-let _histSortAsc = true;
+let _histSortCol = localStorage.getItem('histSortCol') || 'date';
+let _histSortAsc = (localStorage.getItem('histSortAsc') ?? 'true') === 'true';
 
 async function refreshHistory() {
   if (!S.url) return;
@@ -1246,7 +1246,16 @@ function clearHistFilters() {
 function sortHist(col) {
   if (_histSortCol === col) { _histSortAsc = !_histSortAsc; }
   else { _histSortCol = col; _histSortAsc = true; }
-  // Update header indicators
+  localStorage.setItem('histSortCol', _histSortCol);
+  localStorage.setItem('histSortAsc', _histSortAsc);
+  sortAndRenderHist();
+}
+
+function sortAndRenderHist() {
+  const arr = [..._histFiltered];
+  const asc = _histSortAsc ? 1 : -1;
+  const col = _histSortCol;
+  // Keep header icons in sync whenever render happens
   document.querySelectorAll('#histTable th.sortable').forEach(th => {
     const icon = th.querySelector('.sort-icon');
     if (th.dataset.col === col) {
@@ -1257,13 +1266,6 @@ function sortHist(col) {
       icon.textContent = '';
     }
   });
-  sortAndRenderHist();
-}
-
-function sortAndRenderHist() {
-  const arr = [..._histFiltered];
-  const asc = _histSortAsc ? 1 : -1;
-  const col = _histSortCol;
   arr.sort((a, b) => {
     let va, vb;
     if (col === 'idx')  { va = 0; vb = 0; } // natural order
