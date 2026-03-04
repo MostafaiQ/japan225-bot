@@ -48,7 +48,7 @@ from trading.exit_manager import ExitManager, ExitPhase
 from trading.risk_manager import RiskManager
 from storage.database import Storage
 from notifications.telegram_bot import TelegramBot
-from ai.analyzer import AIAnalyzer, WebResearcher
+from ai.analyzer import AIAnalyzer, WebResearcher, post_trade_analysis
 
 logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
 logger = logging.getLogger("monitor")
@@ -93,7 +93,6 @@ class TradingMonitor:
         self._current_session: str | None = None   # persists across write_state calls
         self._current_price: float | None = None
         self._last_scan_detail: dict = {}  # dashboard: shows last scan outcome
-        self._ai_reject_until: datetime | None = None  # U4: short cooldown after Sonnet/Opus rejection
         self._dashboard_force_scan: bool = False  # Set by poll task, consumed by _scanning_cycle
         self._last_opus_decision: dict | None = None  # Track Opus direction consistency
         # Paths for dashboard integration
@@ -1384,6 +1383,20 @@ class TradingMonitor:
         )
         logger.info(f"Position closed: {result} | P&L: {pnl_points:+.0f}pts (${pnl_dollars:+.2f})")
 
+        # Post-trade learning: update prompt_learnings.json + brier_scores.json
+        try:
+            trade_data = {
+                "pnl": pnl_dollars, "setup_type": pos_state.get("setup_type", "unknown"),
+                "session": pos_state.get("session", "unknown"),
+                "confidence": pos_state.get("confidence", 0),
+                "direction": logical_direction, "duration_minutes": duration,
+                "phase_at_close": phase, "result": result,
+            }
+            ai_analysis = pos_state.get("ai_analysis", "")
+            post_trade_analysis(trade_data, ai_analysis)
+        except Exception as e:
+            logger.warning(f"Post-trade analysis failed (non-fatal): {e}")
+
 
     # ============================================================
     # SCALP AUTO-EXECUTION (Opus-gated near-miss trades)
@@ -1753,15 +1766,17 @@ class TradingMonitor:
     async def _shutdown(self):
         logger.info("Shutting down...")
         try:
-            # Fire-and-forget with 2s timeout — don't block shutdown
-            await asyncio.wait_for(
-                self.telegram.send_alert("Monitor shutting down. Positions remain protected by broker stops."),
-                timeout=2.0,
-            )
+            # Only attempt Telegram alert if the app was fully initialized
+            if self.telegram and getattr(self.telegram, 'app', None) and self.telegram.app.running:
+                await asyncio.wait_for(
+                    self.telegram.send_alert("Monitor shutting down. Positions remain protected by broker stops."),
+                    timeout=2.0,
+                )
         except Exception:
             pass
         try:
-            await asyncio.wait_for(self.telegram.stop(), timeout=2.0)
+            if self.telegram and getattr(self.telegram, 'app', None):
+                await asyncio.wait_for(self.telegram.stop(), timeout=2.0)
         except Exception:
             pass
         try:
