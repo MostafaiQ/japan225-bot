@@ -106,10 +106,12 @@ class IGClient:
         mark the session as expired so the next ensure_connected() reconnects.
         Returns True if this was an auth error (caller should retry after reconnect).
         Happens when IG expires the token after 12h inactivity (e.g. over weekend).
+        Also catches empty error messages — trading_ig swallows the 401 details
+        during its internal token refresh, leaving an empty exception.
         """
-        err = str(e)
-        if any(code in err for code in ("401", "403", "invalid session", "Invalid session")):
-            logger.warning(f"Auth error detected (stale token) — forcing re-auth: {e}")
+        err = str(e).strip()
+        if not err or any(code in err for code in ("401", "403", "invalid session", "Invalid session", "security-token")):
+            logger.warning(f"Auth error detected (stale token) — forcing re-auth: {e!r}")
             self.authenticated = False
             return True
         return False
@@ -159,7 +161,31 @@ class IGClient:
                         continue
                     all_503 = True
                     break
-                self._check_auth_error(e)
+                if self._check_auth_error(e):
+                    logger.info("Reconnecting after auth error on get_market_info...")
+                    if self.connect():
+                        try:
+                            info = self.ig.fetch_market_by_epic(EPIC)
+                            if info is None:
+                                return None
+                            snapshot = info.get("snapshot", {})
+                            dealing = info.get("dealingRules", {})
+                            instrument = info.get("instrument", {})
+                            logger.info("Market info recovered after re-auth")
+                            return {
+                                "bid": snapshot.get("bid"),
+                                "offer": snapshot.get("offer"),
+                                "high": snapshot.get("high"),
+                                "low": snapshot.get("low"),
+                                "spread": (snapshot.get("offer") or 0) - (snapshot.get("bid") or 0),
+                                "market_status": snapshot.get("marketStatus"),
+                                "update_time": snapshot.get("updateTime"),
+                                "min_stop_distance": (dealing.get("minNormalStopOrLimitDistance") or {}).get("value"),
+                                "trailing_stops_available": dealing.get("trailingStopsPreference") != "NOT_AVAILABLE",
+                                "currency": instrument.get("currencies", [{}])[0].get("code", CURRENCY),
+                            }
+                        except Exception as e2:
+                            logger.error(f"Market info still failed after re-auth: {e2}")
                 logger.error(f"Failed to get market info: {e}")
                 return None
 

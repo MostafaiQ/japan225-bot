@@ -97,10 +97,10 @@ def _pick_tier(message: str) -> tuple[str, str, int]:
         "what has been", "which session", "is ig", "is market",
     ]
     if any(kw in msg_lower for kw in haiku_patterns) and len(message) < 200:
-        return "haiku", "low", 60
+        return "haiku", "low", 120
 
     # Tier 2: Sonnet — everything else (analysis, trade review, questions)
-    return "sonnet", "high", 180
+    return "sonnet", "high", 600
 
 
 def chat(message: str, history: list[dict]) -> str:
@@ -147,7 +147,7 @@ def chat(message: str, history: list[dict]) -> str:
 
     except subprocess.TimeoutExpired:
         logger.warning(f"Chat subprocess timed out after {timeout}s for model={model}")
-        return "(still working — response will arrive via Telegram if it finishes)"
+        return f"Response took too long (>{timeout}s). Try rephrasing with a simpler question, or ask Claude Code (CLI) directly for complex tasks."
     except FileNotFoundError:
         return f"Claude Code binary not found at {CLAUDE_BIN}. Check installation."
     except Exception as e:
