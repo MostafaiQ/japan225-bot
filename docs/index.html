@@ -296,7 +296,7 @@
     .chat-avatar.user-av { background: linear-gradient(135deg, var(--primary) 0%, #3a7be8 100%); color:#fff; font-size:11px; }
     .chat-body { display:flex; flex-direction:column; max-width:80%; gap:3px; }
     .chat-row.user .chat-body { align-items:flex-end; }
-    .bubble { padding:12px 16px; border-radius:18px; font-size:13px; line-height:1.7; animation:msgIn .2s ease; }
+    .bubble { padding:12px 16px; border-radius:18px; font-size:13px; line-height:1.7; animation:msgIn .2s ease; overflow:hidden; word-break:break-word; }
     @keyframes msgIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
     .chat-row.user .bubble {
       background: linear-gradient(135deg, var(--primary) 0%, #3a7be8 100%);
@@ -307,7 +307,7 @@
       background: linear-gradient(180deg, rgba(255,255,255,.04) 0%, rgba(255,255,255,.02) 100%);
       border:1px solid var(--border); color:var(--text); border-radius:4px 18px 18px 18px;
     }
-    .chat-time { font-size:10px; color:var(--text-muted); padding:0 6px; opacity:.6; font-weight:500; }
+    .chat-time { font-size:10px; color:var(--text-muted); padding:0 6px; font-weight:500; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
     .chat-actions { display:none; gap:4px; align-items:center; }
     .chat-row:hover .chat-actions { display:flex; }
     .think-dots { display:flex; align-items:center; gap:6px; padding:14px 16px; }
@@ -1588,13 +1588,12 @@ function _addThinkingBubble(startMs, tier) {
   const tierLabel = _tierLabels[tier] || '';
   const tierColor = _tierColors[tier] || '#6366f1';
   const tierBadgeHtml = tier
-    ? `<div style="padding:0 6px;margin-top:2px;"><span class="tier-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;color:#fff;background:${tierColor};font-weight:600;letter-spacing:0.3px;">${tierLabel}</span></div>`
-    : `<div style="padding:0 6px;margin-top:2px;"><span class="tier-badge" style="display:none;"></span></div>`;
+    ? `<span class="tier-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;color:#fff;background:${tierColor};font-weight:600;letter-spacing:0.3px;display:inline-block;">${tierLabel}</span>`
+    : `<span class="tier-badge" style="display:none;"></span>`;
   d.innerHTML = `<div class="chat-avatar claude">✦</div>
     <div class="chat-body">
       <div class="bubble"><div class="think-dots"><span></span><span></span><span></span></div></div>
-      <div class="think-status">Thinking… <span class="think-elapsed" style="color:var(--text-muted);font-size:11px;">0s</span></div>
-      ${tierBadgeHtml}
+      <div class="think-status">Thinking… <span class="think-elapsed" style="color:var(--text-muted);font-size:11px;">0s</span> ${tierBadgeHtml}</div>
     </div>`;
   box.appendChild(d);
   box.scrollTop = box.scrollHeight;
@@ -1689,13 +1688,12 @@ function addMsg(role, text, time, tier) {
   // Store raw text for reply-to (use data-attr + event handler for XSS safety)
   const replyBtn = `<button class="reply-btn" title="Reply">↩</button>`;
   const tierBadge = (role === 'assistant' && tier)
-    ? `<span style="font-size:10px;padding:2px 8px;border-radius:10px;color:#fff;background:${_tierColors[tier]||'#6366f1'};font-weight:600;letter-spacing:0.3px;">${_tierLabels[tier]||tier}</span>`
+    ? `<span class="tier-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;color:#fff;background:${_tierColors[tier]||'#6366f1'};font-weight:600;letter-spacing:0.3px;">${_tierLabels[tier]||tier}</span>`
     : '';
   d.innerHTML = `<div class="chat-avatar ${avatarClass}">${avatarLabel}</div>
     <div class="chat-body">
       <div class="bubble${role === 'assistant' ? ' md' : ''}">${content}</div>
-      <div class="chat-time">${t} ${replyBtn}</div>
-      ${tierBadge ? `<div style="padding:0 6px;margin-top:2px;">${tierBadge}</div>` : ''}
+      <div class="chat-time">${t} ${tierBadge} ${replyBtn}</div>
     </div>`;
   box.appendChild(d);
   // Wire reply button safely (no inline onclick with user content)
