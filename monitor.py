@@ -1276,24 +1276,23 @@ class TradingMonitor:
         )
         new_balance = account.get("balance", 0) if account else 0
 
-        # Get last known price — try multiple sources
+        # PnL from IG balance change — exact, includes spread and all charges
+        old_balance = self.storage.get_account_state().get("balance", 0) or 0
+        pnl_dollars = round(new_balance - old_balance, 2) if new_balance else 0
+
+        # Exit price for display: use momentum tracker if available, else estimate from PnL
         last_price = 0
         if self.momentum_tracker and self.momentum_tracker._prices:
             last_price = self.momentum_tracker._prices[-1]["price"]
-        if not last_price:
-            # Fallback: compute from balance change
-            old_balance = self.storage.get_account_state().get("balance", 0) or 0
-            if new_balance and old_balance:
-                pnl_from_balance = new_balance - old_balance
-                lots = float(pos_state.get("lots") or 1)
-                if lots and CONTRACT_SIZE:
-                    pnl_points_est = pnl_from_balance / (lots * CONTRACT_SIZE)
-                    last_price = entry + pnl_points_est if logical_direction == "LONG" else entry - pnl_points_est
+        if not last_price and pnl_dollars:
+            lots = float(pos_state.get("lots") or 1)
+            if lots and CONTRACT_SIZE:
+                pnl_points_est = pnl_dollars / (lots * CONTRACT_SIZE)
+                last_price = entry + pnl_points_est if logical_direction == "LONG" else entry - pnl_points_est
 
         pnl_points = (
             last_price - entry if logical_direction == "LONG" else entry - last_price
         ) if last_price else 0
-        pnl_dollars = pnl_points * float(pos_state.get("lots") or 0) * CONTRACT_SIZE
 
         # Determine result (TP/SL best guess)
         tp = pos_state.get("limit_level")

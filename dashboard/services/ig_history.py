@@ -38,6 +38,55 @@ def _get_base():
     return _DEMO_BASE if env == "DEMO" else _BASE
 
 
+def _fetch_ig_balance(cst, token):
+    """Fetch current account balance directly from IG /accounts — never stale."""
+    _load_env()
+    api_key = os.getenv("IG_API_KEY", "")
+    acc_id = os.getenv("IG_ACC_NUMBER", "")
+    base = _get_base()
+    headers = {
+        "Content-Type": "application/json; charset=UTF-8",
+        "Accept": "application/json; charset=UTF-8",
+        "X-IG-API-KEY": api_key,
+        "CST": cst,
+        "X-SECURITY-TOKEN": token,
+        "Version": "1",
+    }
+    try:
+        resp = requests.get(f"{base}/accounts", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            for acc in resp.json().get("accounts", []):
+                if not acc_id or str(acc.get("accountId")) == str(acc_id):
+                    return float(acc.get("balance", {}).get("balance", 0))
+    except Exception as e:
+        logger.warning(f"IG balance fetch error: {e}")
+    return None
+
+
+def _sync_trades_to_db(trades):
+    """Write IG-sourced pnl, exit_price, balance_before, balance_after back to DB."""
+    import sqlite3
+    db_path = Path(__file__).parent.parent.parent / "storage" / "data" / "trading.db"
+    try:
+        conn = sqlite3.connect(str(db_path))
+        updated = 0
+        for t in trades:
+            db_deal_id = t.get("_db_deal_id")
+            if not db_deal_id:
+                continue
+            conn.execute(
+                "UPDATE trades SET pnl=?, exit_price=?, balance_before=?, balance_after=? WHERE deal_id=?",
+                (t["pnl"], t["exit_price"], t.get("balance_before"), t.get("balance_after"), db_deal_id),
+            )
+            updated += conn.total_changes
+        conn.commit()
+        conn.close()
+        if updated:
+            logger.info(f"Synced {updated} trades from IG to DB")
+    except Exception as e:
+        logger.error(f"DB sync error: {e}")
+
+
 def _load_env():
     """Load .env with override to ensure correct credentials."""
     from dotenv import load_dotenv
@@ -368,6 +417,7 @@ def _fetch_journal_locked(days):
     # Build trade list from IG transactions
     trades = []
     acc = get_account_state()
+    ig_live_balance = _fetch_ig_balance(cst, token)
 
     # Transactions come newest-first from IG, reverse for chronological
     for txn in reversed(transactions):
@@ -441,6 +491,7 @@ def _fetch_journal_locked(days):
             "result": db_match.get("result") if db_match else ("WIN" if pnl > 0 else "LOSS" if pnl < 0 else "BE"),
             "duration": dur_str,
             "rr": rr,
+            "_db_deal_id": db_match.get("deal_id") if db_match else None,
         }
 
         trades.append(trade)
@@ -449,10 +500,10 @@ def _fetch_journal_locked(days):
     cutoff = JOURNAL_CUTOFF
     trades = [t for t in trades if (t.get("opened_at") or "") >= cutoff]
 
-    # Compute running balance (forward from earliest balance)
-    # Start with current balance and subtract all PnL to get starting balance
+    # Compute running balance anchored to live IG balance (not stale DB)
+    current_balance = ig_live_balance if ig_live_balance is not None else acc.get("balance", 0)
     total_pnl_filtered = sum(t["pnl"] for t in trades)
-    starting_bal = acc.get("balance", 0) - total_pnl_filtered
+    starting_bal = current_balance - total_pnl_filtered
 
     current_bal = starting_bal
     for t in trades:  # chronological order (oldest first)
@@ -460,19 +511,25 @@ def _fetch_journal_locked(days):
         current_bal += t["pnl"]
         t["balance_after"] = round(current_bal, 2)
 
+    # Sync IG values (pnl, exit_price, balance_before, balance_after) back to DB
+    _sync_trades_to_db(trades)
+
     # Compute total PnL for this period
     total_pnl = sum(t["pnl"] for t in trades)
-    # Starting balance is the balance_before of the first trade
     starting_balance = trades[0]["balance_before"] if trades else acc.get("starting_balance", 0)
 
     # Filter: only Japan 225 trades for win rate
     j225 = [t for t in trades if "Japan 225" in t.get("instrument", "")]
     j225_wins = len([t for t in j225 if t["pnl"] > 0])
 
+    # Strip internal field before returning
+    for t in trades:
+        t.pop("_db_deal_id", None)
+
     result = {
         "trades": trades,
         "account": {
-            "balance": acc.get("balance", 0),
+            "balance": round(current_balance, 2),
             "starting_balance": round(starting_balance, 2),
             "total_pnl": round(total_pnl, 2),
             "j225_wins": j225_wins,
