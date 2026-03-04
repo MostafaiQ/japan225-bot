@@ -107,6 +107,7 @@ class TradingMonitor:
         self._clear_cd_path  = Path(__file__).parent / "storage" / "data" / "clear_cooldown.trigger"
         self._force_open_pending_path = Path(__file__).parent / "storage" / "data" / "force_open_pending.json"
         self._force_open_trigger_path = Path(__file__).parent / "storage" / "data" / "force_open.trigger"
+        self._pos_check_trigger_path  = Path(__file__).parent / "storage" / "data" / "pos_check.trigger"
 
     # ============================================================
     # STARTUP
@@ -1358,14 +1359,22 @@ class TradingMonitor:
                     self.storage.update_position_phase(deal_id, ExitPhase.BREAKEVEN)
                     logger.info(f"Auto-protected: SL moved to {be_stop:.0f}")
 
-        # --- Opus position evaluator (every 2 minutes) ---
+        # --- Opus position evaluator (every 2 minutes, or on-demand via dashboard/telegram) ---
         self._position_price_buffer.append(current_price)
         if len(self._position_price_buffer) > 30:  # keep last 30 readings = 60s
             self._position_price_buffer.pop(0)
 
+        if self._pos_check_trigger_path.exists():
+            try:
+                self._pos_check_trigger_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            self._opus_pos_eval_counter = OPUS_POSITION_EVAL_EVERY_N  # force eval this cycle
+
         self._opus_pos_eval_counter += 1
         if self._opus_pos_eval_counter >= OPUS_POSITION_EVAL_EVERY_N:
             self._opus_pos_eval_counter = 0
+            logger.info("Opus position eval triggered (periodic 2-min)")
             sl_level = pos_state.get("stop_level") or 0
             tp_level = pos_state.get("limit_level") or 0
             setup_type = pos_state.get("setup_type", "unknown")
@@ -1917,11 +1926,13 @@ class TradingMonitor:
         self._force_scan_event.set()
 
     async def _on_pos_check(self):
-        """Triggered by /poscheck command. Runs Opus position eval immediately."""
+        """Triggered by /poscheck command or dashboard button. Runs Opus position eval immediately."""
         pos_state = self.storage.get_position_state()
         if not pos_state.get("has_open"):
+            logger.info("Opus position eval triggered (on-demand) — no open position")
             await self.telegram.send_alert("ℹ️ No open position to evaluate.")
             return
+        logger.info("Opus position eval triggered (on-demand)")
         await self.telegram.send_alert("🔍 Running Opus position check…")
         direction = pos_state.get("direction", "LONG")
         logical_direction = "LONG" if direction == "BUY" else ("SHORT" if direction == "SELL" else direction)
@@ -1936,12 +1947,15 @@ class TradingMonitor:
         except Exception:
             time_open_min = 0
         try:
-            current_price_data = self.ig.get_market_info(EPIC)
-            current_price = current_price_data.get("bid", entry) if isinstance(current_price_data, dict) else entry
+            current_price_data = await asyncio.get_event_loop().run_in_executor(None, self.ig.get_market_info)
+            current_price = (
+                current_price_data.get("bid", entry) if logical_direction == "LONG"
+                else current_price_data.get("offer", entry)
+            ) if isinstance(current_price_data, dict) else entry
         except Exception:
-            current_price = entry
+            current_price = self._current_price or entry
         pnl_pts = (current_price - entry) if logical_direction == "LONG" else (entry - current_price)
-        phase = self.storage.get_position_phase(pos_state.get("deal_id", "")) or "initial"
+        phase = pos_state.get("phase", "initial") or "initial"
 
         eval_result = await asyncio.get_event_loop().run_in_executor(
             None,

@@ -21,6 +21,7 @@ TRIGGER_PATH         = Path(__file__).parent.parent.parent / "storage" / "data" 
 CLEAR_CD_PATH        = Path(__file__).parent.parent.parent / "storage" / "data" / "clear_cooldown.trigger"
 FORCE_OPEN_PENDING   = Path(__file__).parent.parent.parent / "storage" / "data" / "force_open_pending.json"
 FORCE_OPEN_TRIGGER   = Path(__file__).parent.parent.parent / "storage" / "data" / "force_open.trigger"
+POS_CHECK_TRIGGER    = Path(__file__).parent.parent.parent / "storage" / "data" / "pos_check.trigger"
 
 
 def _signal_monitor():
@@ -54,6 +55,17 @@ async def force_scan():
     TRIGGER_PATH.touch()
     _signal_monitor()
     return {"ok": True, "message": "Force scan triggered."}
+
+
+@router.post("/api/controls/pos-check")
+async def pos_check():
+    pos = db_reader.get_position()
+    if not pos:
+        return {"ok": False, "warning": "No open position."}
+    POS_CHECK_TRIGGER.parent.mkdir(parents=True, exist_ok=True)
+    POS_CHECK_TRIGGER.touch()
+    _signal_monitor()
+    return {"ok": True, "message": "Position check running — result sent to Telegram."}
 
 
 @router.post("/api/controls/clear-cooldown")

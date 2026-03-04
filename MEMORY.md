@@ -19,9 +19,13 @@ Oracle VM: monitor.py (24/7, systemd: japan225-bot)
     → Sequential: Sonnet runs first → if rejected, Opus scalp eval with Sonnet's full analysis
     → Single subprocess: Sonnet analyzes, delegates to Opus sub-agent internally when needed
     → if AI confirms & risk passes: auto-execute immediately + Telegram notification
-  MONITORING (position open): every 60s
-    → check IG position exists (2 consecutive empty = closed, SAFETY_CONSECUTIVE_EMPTY)
-    → MomentumTracker.add_price() → adverse tier check → exit_manager.evaluate_position()
+  MONITORING (position open): every 2s
+    → check IG position exists every 15 cycles (SAFETY_CONSECUTIVE_EMPTY=2)
+    → MomentumTracker.add_price() → SEVERE adverse tier → auto-breakeven safety net
+    → MILD/MODERATE adverse alerts REMOVED — replaced by Opus position evaluator
+    → Opus position eval every 60 cycles (120s): evaluate_open_position() → send_position_eval()
+       CLOSE_NOW + conf >= 70% → auto-close. TIGHTEN_SL → Telegram alert only.
+    → exit_manager.evaluate_position() → execute_action()
     → ExitPhase: INITIAL → BREAKEVEN (at +150pts) → RUNNER (75% TP in <2hrs)
   TELEGRAM: always-on polling, callbacks: on_trade_confirm, on_force_scan
 
@@ -50,7 +54,8 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 | `trading/exit_manager.py` | ExitManager. evaluate_position(), execute_action(), manual_trail_update() |
 | `notifications/telegram_bot.py` | TelegramBot. send_trade_alert(), /menu inline buttons, /close /kill /pause /resume |
 | `storage/database.py` | Storage class. SQLite WAL mode. open_trade_atomic(), get/set position state, AI cooldown, get_ai_context_block() |
-| `storage/scan_analyzer.py` | Cron-based scan analyzer. Tracks missed moves (rejections where price moved 150+pts). Writes `storage/data/scan_analysis.md` every 2hrs. |
+| `storage/scan_analyzer.py` | Cron-based scan analyzer. SL/TP-aware classification (SL=150, TP=400, first-hit-wins). Outcomes: true_missed/thank_god/near_miss. Session/regime/RSI breakdown. Binomial significance + Bonferroni. Runs hourly. Writes `storage/data/scan_analysis.md`. |
+| `storage/probability_tracker.py` | Conditional probability tracker. Reads closed trades. Computes P(win|session,direction,confidence_tier). Wilson 95% CI, Kelly quarter-fraction. Runs hourly alongside scan_analyzer. Writes `storage/data/probability_tracker.md` + `probability_tracker.json`. |
 
 ### Dashboard
 | File | Purpose |
@@ -76,6 +81,7 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 EPIC = "IX.D.NIKKEI.IFM.IP"   CONTRACT_SIZE = 1 ($1/pt)   MARGIN_FACTOR = 0.005 (0.5%)
 Lot size = margin cap only (50% of balance). AI finds the setup, you go in with conviction.
 MIN_CONFIDENCE = 70            MIN_CONFIDENCE_SHORT = 75 (BOJ risk)
+MIN_SCALP_CONFIDENCE = 60      MIN_SCALP_CONFIDENCE_SHORT = 65 (Opus scalp floor — lower because SL=85 not 150)
 EXTREME_DAY_RANGE_PTS = 1000   EXTREME_DAY_MIN_CONFIDENCE = 85
 OVERSOLD_SHORT_BLOCK_RSI_4H = 32  OVERBOUGHT_LONG_BLOCK_RSI_4H = 68
 DEFAULT_SL_DISTANCE = 150      DEFAULT_TP_DISTANCE = 400      MIN_RR_RATIO = 1.5
@@ -360,8 +366,10 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 | `storage/data/prompt_learnings.json` | post_trade_analysis() in analyzer.py | injected into AI prompts |
 | `storage/data/chat_usage.json` | claude_client._track_usage() | auto-skill drafting trigger |
 | `storage/data/brier_scores.json` | post_trade_analysis() in analyzer.py | /brier-check skill |
-| `storage/data/scan_analysis.md` | scan_analyzer.py (cron, every 2hr) | user inspection, future AI context |
+| `storage/data/scan_analysis.md` | scan_analyzer.py (cron, hourly) | user inspection, future AI context |
 | `storage/data/scan_analysis.log` | scan_analyzer.py (append per run) | historical tracking |
+| `storage/data/probability_tracker.md` | probability_tracker.py (cron, hourly) | user inspection |
+| `storage/data/probability_tracker.json` | probability_tracker.py (cron, hourly) | dashboard (future) |
 
 ---
 

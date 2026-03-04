@@ -134,6 +134,7 @@ class TelegramBot:
         self.app = None
         self.on_trade_confirm: Optional[Callable] = None
         self.on_force_scan: Optional[Callable] = None
+        self.on_pos_check: Optional[Callable] = None
 
     async def initialize(self):
         self.app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -149,6 +150,7 @@ class TelegramBot:
             ("stats",   self._cmd_stats),
             ("cost",    self._cmd_cost),
             ("force",   self._cmd_force),
+            ("poscheck", self._cmd_poscheck),
             ("stop",    self._cmd_stop),
             ("pause",   self._cmd_stop),
             ("resume",  self._cmd_resume),
@@ -550,6 +552,46 @@ class TelegramBot:
                 logger.error(f"send_adverse_alert failed: {e}")
         await self.send_alert(text)
 
+    async def send_position_eval(self, eval_result: dict, direction: str, entry: float,
+                                 current_price: float, pnl_pts: float, phase: str,
+                                 deal_id: str):
+        """Send Opus 2-min position evaluation to Telegram."""
+        rec = eval_result.get("recommendation", "HOLD")
+        conf = eval_result.get("confidence", 0)
+        adverse = eval_result.get("adverse_risk", "LOW")
+        tp_prob = eval_result.get("tp_probability", 0.5)
+        reasoning = eval_result.get("reasoning", "")[:200]
+
+        adverse_emoji = {"NONE": "✅", "LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}.get(adverse, "⚠️")
+        rec_emoji = {"HOLD": "⏳", "CLOSE_NOW": "🔴", "TIGHTEN_SL": "🔒"}.get(rec, "🔍")
+
+        text = "\n".join([
+            f"🔍 <b>Position Check — Opus</b>",
+            DIV,
+            f"{_dir(direction)} @ {_price(entry)} → {_price(current_price)}  {_pnl(pnl_pts)}",
+            f"Phase: <b>{phase}</b>",
+            f"{rec_emoji} <b>{rec}</b> ({conf}%)  |  {adverse_emoji} Adverse: <b>{adverse}</b>  |  TP prob: {tp_prob:.0%}",
+            DIV,
+            f"{reasoning}",
+        ])
+
+        if rec == "CLOSE_NOW" and conf >= 60:
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔴 Close now", callback_data=f"close_position:{deal_id}"),
+                InlineKeyboardButton("⏳ Hold", callback_data="hold_position"),
+            ]])
+            try:
+                await self.app.bot.send_message(
+                    chat_id=TELEGRAM_CHAT_ID,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard,
+                )
+                return
+            except Exception as e:
+                logger.error(f"send_position_eval failed: {e}")
+        await self.send_alert(text)
+
     # ── Reply-keyboard text handler ────────────────────────────────────────
 
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -656,10 +698,11 @@ class TelegramBot:
              InlineKeyboardButton("💸 API Cost",callback_data="menu_cost")],
             [InlineKeyboardButton("── Controls ─────────────────", callback_data="noop")],
             [InlineKeyboardButton("⚡ Force Scan", callback_data="menu_force"),
-             InlineKeyboardButton("⏸ Pause",       callback_data="menu_pause")],
-            [InlineKeyboardButton("▶️ Resume",      callback_data="menu_resume"),
-             InlineKeyboardButton("❌ Close Pos",   callback_data="menu_close")],
-            [InlineKeyboardButton("🚨 KILL (emergency close)", callback_data="menu_kill")],
+             InlineKeyboardButton("🔍 Pos Check",  callback_data="menu_poscheck")],
+            [InlineKeyboardButton("⏸ Pause",       callback_data="menu_pause"),
+             InlineKeyboardButton("▶️ Resume",      callback_data="menu_resume")],
+            [InlineKeyboardButton("❌ Close Pos",   callback_data="menu_close"),
+             InlineKeyboardButton("🚨 KILL",        callback_data="menu_kill")],
         ])
         await update.message.reply_text(
             "🤖 <b>Japan 225 — Control Panel</b>",
@@ -789,6 +832,12 @@ class TelegramBot:
         if self.on_force_scan:
             asyncio.create_task(self.on_force_scan())
 
+    async def _cmd_poscheck(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if self.on_pos_check:
+            asyncio.create_task(self.on_pos_check())
+        else:
+            await update.message.reply_text("⚠️ Position check not connected.", parse_mode=ParseMode.HTML)
+
     # ── Menu dispatch (shared by inline callbacks + reply-keyboard handler) ─
 
     async def _dispatch_menu(self, cb: str, msg):
@@ -835,6 +884,11 @@ class TelegramBot:
             )
             if self.on_force_scan:
                 asyncio.create_task(self.on_force_scan())
+        elif cb == "menu_poscheck":
+            if self.on_pos_check:
+                asyncio.create_task(self.on_pos_check())
+            else:
+                await msg.reply_text("⚠️ Position check not connected.", parse_mode=ParseMode.HTML)
         elif cb == "menu_pause":
             self.storage.set_system_active(False)
             await msg.reply_text(

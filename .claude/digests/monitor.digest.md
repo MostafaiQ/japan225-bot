@@ -1,10 +1,11 @@
-# monitor.py — DIGEST (updated 2026-03-03)
+# monitor.py — DIGEST (updated 2026-03-04)
 # Purpose: Main VM process. Entry point. async event loop. Handles scan + monitor + Telegram.
 
 ## class TradingMonitor
 __init__(): creates Storage, IGClient, RiskManager, TelegramBot, ExitManager, AIAnalyzer,
             WebResearcher. Sets scanning_paused=False, momentum_tracker=None,
-            _position_empty_count=0, _force_scan_event=asyncio.Event()
+            _position_empty_count=0, _force_scan_event=asyncio.Event(),
+            _opus_pos_eval_counter=0, _position_price_buffer=[]
             NOTE: telegram.on_trade_confirm and on_force_scan callbacks set AFTER initialize()
 
 start(): initializes Telegram FIRST (always available), then writes bot_state.json(phase=STARTING),
@@ -76,9 +77,15 @@ _monitoring_cycle(pos_state):  # every 2s price check; position existence check 
   2. consecutive empty check (SAFETY_CONSECUTIVE_EMPTY=2)
   3. ig.get_market_info() → current price
   4. momentum_tracker.add_price(), should_alert()
-  5. SEVERE tier + Phase.INITIAL → auto-move SL to entry+BREAKEVEN_BUFFER
+  5. SEVERE adverse tier + Phase.INITIAL → auto-move SL to entry+BREAKEVEN_BUFFER (safety net, kept)
+     MILD/MODERATE alerts REMOVED — replaced by Opus 2-minute position evaluator (see below)
   6. exit_manager.evaluate_position() → execute_action()
   7. Phase.RUNNER → manual_trail_update()
+  8. _position_price_buffer: rolling 30-price deque (last 60s of prices)
+     _opus_pos_eval_counter: increments each cycle; resets at OPUS_POSITION_EVAL_EVERY_N=60
+     Every 60 cycles (120s): run_in_executor(ai.evaluate_open_position(...))
+       → telegram.send_position_eval(eval_result)
+       → if CLOSE_NOW and conf >= 70: auto-close position
 
 _handle_position_closed(pos_state): logs trade, sends Telegram, resets momentum_tracker=None
 

@@ -10,7 +10,9 @@ from config.settings import (
     MAX_MARGIN_PERCENT, MAX_OPEN_POSITIONS,
     MAX_CONSECUTIVE_LOSSES,
     COOLDOWN_HOURS, DAILY_LOSS_LIMIT_PERCENT, WEEKLY_LOSS_LIMIT_PERCENT,
-    MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, EVENT_BLACKOUT_MINUTES, MIN_RR_RATIO,
+    MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT,
+    MIN_SCALP_CONFIDENCE, MIN_SCALP_CONFIDENCE_SHORT,
+    EVENT_BLACKOUT_MINUTES, MIN_RR_RATIO,
     BLOCKED_DAYS, MONTHEND_BLACKOUT_DAYS, SPREAD_ESTIMATE,
     CONTRACT_SIZE, MARGIN_FACTOR, MIN_LOT_SIZE,
     FRIDAY_BLACKOUT_START_UTC, FRIDAY_BLACKOUT_END_UTC,
@@ -37,6 +39,7 @@ class RiskManager:
         balance: float,
         upcoming_events: list[dict] = None,
         indicators_snapshot: dict = None,
+        is_scalp: bool = False,
     ) -> dict:
         """
         Run ALL pre-trade checks. Returns pass/fail with reasons.
@@ -85,7 +88,10 @@ class RiskManager:
         }
 
         # --- CHECK 1: Confidence Floor (direction-specific) ---
-        min_conf = MIN_CONFIDENCE_SHORT if direction == "SHORT" else MIN_CONFIDENCE
+        if is_scalp:
+            min_conf = MIN_SCALP_CONFIDENCE_SHORT if direction == "SHORT" else MIN_SCALP_CONFIDENCE
+        else:
+            min_conf = MIN_CONFIDENCE_SHORT if direction == "SHORT" else MIN_CONFIDENCE
         checks["confidence"] = {
             "pass": confidence >= min_conf,
             "detail": f"Confidence {confidence}% vs minimum {min_conf}% ({direction})",

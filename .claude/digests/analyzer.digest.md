@@ -70,6 +70,8 @@ Compact format. Appends JSON schema template at end.
 Dead context_note removed (was telling AI about files it can't access since --tools "" disables all tools).
 PRE-SCREEN line includes `Entry TF: {entry_tf}`.
 SECONDARY SETUP block: shown when bidirectional scan finds both directions. Includes direction, type, conf, reasoning.
+  Threshold-aware framing: if secondary meets its threshold (≥70% LONG / ≥75% SHORT) → "INDEPENDENT CANDIDATE: evaluate as primary trade."
+  If below threshold → "context only, do not execute independently."
 failed_criteria → FAILED LOCAL CRITERIA block.
 MARKET REGIME block: intraday range + crash day flag injected into user prompt.
 Role block: 5-step analysis (structure → quality → risk → edge → opus review if borderline).
@@ -80,6 +82,11 @@ Key formatters:
                                   BB width: volatility proxy per TF.
   _fmt_recent_scans(scans)      → 1-line per scan summary
   _fmt_web_research(web)        → 3 lines, HIGH-impact calendar only
+
+## evaluate_scalp — confidence floor fix (2026-03-04)
+Opus scalp confidence floor: 60% LONG / 65% SHORT (was incorrectly using 70%/75% swing floor).
+validate_trade() now accepts is_scalp=True → uses MIN_SCALP_CONFIDENCE / MIN_SCALP_CONFIDENCE_SHORT.
+_execute_scalp in monitor.py passes is_scalp=True. Settings: MIN_SCALP_CONFIDENCE=60, MIN_SCALP_CONFIDENCE_SHORT=65.
 
 ## evaluate_scalp(indicators, primary_direction, setup_type, local_confidence, ai_confidence, ai_reasoning, parallel_mode=False) -> dict
   # BIDIRECTIONAL Opus scalp evaluation. Evaluates BOTH directions in single call.

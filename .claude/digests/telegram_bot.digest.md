@@ -72,7 +72,10 @@ send_trade_alert(trade_data: dict)          → CONFIRM / REJECT inline buttons,
 send_force_open_alert(alert_data: dict)     → Force Open / Skip inline buttons. 100% local confidence, AI rejected. 15min TTL. No auto-execute — requires explicit user click. Uses same pending_alert slot.
 send_scalp_executed(alert_data, scalp_result) → notification-only (no buttons). Opus-approved scalp auto-executed.
 send_position_update(pnl_pts, phase, price) → milestone or phase change, colored P&L
-send_adverse_alert(message, tier, deal_id)  → tier-colored alert with Close now / Hold inline buttons
+send_adverse_alert(message, tier, deal_id)  → tier-colored alert with Close now / Hold inline buttons (SEVERE only — MILD/MODERATE removed)
+send_position_eval(eval_result, direction, entry, current_price, pnl_pts, phase, deal_id)
+  → Opus 2-min position evaluation result. Shows recommendation, confidence, adverse_risk, tp_probability, reasoning.
+  → If CLOSE_NOW and conf >= 60: shows Close now / Hold inline buttons.
 
 ## Inline button callbacks (CallbackQueryHandler)
 confirm_trade     → checks expiry → on_trade_confirm(alert_data) → clears pending_alert

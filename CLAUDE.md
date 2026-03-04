@@ -35,45 +35,21 @@
 - No markdown headers in chat responses — renders as raw # symbols in dashboard.
 - Never reproduce large file contents unless explicitly asked.
 
-## Available Skills (invoke for common tasks)
-When user asks to review recent trades → use `/trade-review` workflow:
-  1. `sqlite3 storage/data/trading.db "SELECT trade_number,direction,setup_type,session,confidence,pnl,result FROM trades ORDER BY id DESC LIMIT 10"`
-  2. Format as compact table. Identify worst trade. Read its ai_analysis field. Explain what AI missed.
+## Available Skills
+Invoke with `/skill-name`. Full workflows live in `~/.claude/skills/`.
 
-When user asks about strategy performance → use `/strategy-health` workflow:
-  1. Query trades grouped by setup_type and session (last 20 closed trades).
-  2. Compare WR to backtest baseline: bb_mid_bounce=47%, bb_lower_bounce=45%, Tokyo=49%, London=44%, NY=48%.
-  3. Flag anything >10% below baseline. Suggest if confidence threshold needs adjustment.
-
-When user asks about API costs → use `/cost-report` workflow:
-  1. `sqlite3 storage/data/trading.db "SELECT SUM(api_cost) FROM scans"` and same for trades.
-  2. Compute cost-per-evaluation and Sonnet vs Opus split from scan records.
-  3. Report: total spent, per-trade cost, whether Opus is adding value (WR on Opus-confirmed vs Sonnet-only trades).
-
-When user asks to check deployment health → use `/deploy-check` workflow:
-  1. `systemctl is-active japan225-bot japan225-dashboard japan225-ngrok`
-  2. `tail -20 logs/monitor.log` for recent errors.
-  3. Check git status for uncommitted changes. Check if MEMORY.md was updated after last code change.
-
-When user asks about prompt performance → use `/prompt-audit` workflow:
-  1. Read `storage/data/prompt_learnings.json` if it exists.
-  2. Query last 5 losing trades and their ai_analysis field.
-  3. Find patterns: what did Sonnet/Opus say that was wrong? What context was missing?
-
-When user asks for a market briefing → use `/session-brief` workflow:
-  1. Read `storage/context/market_snapshot.md` and `storage/context/macro.md`.
-  2. Query recent scans: `sqlite3 storage/data/trading.db "SELECT action_taken, confidence, direction FROM scans WHERE timestamp > datetime('now', '-8 hours') ORDER BY id DESC LIMIT 10"`
-  3. Summarize: active session, key indicators, recent scan outcomes, macro events.
-
-When user asks about AI calibration → use `/brier-check` workflow:
-  1. Read `storage/data/brier_scores.json`.
-  2. Report: mean Brier score, breakdown by setup type and session.
-  3. Interpret: <0.15 = well calibrated, 0.15-0.25 = moderate, >0.25 = overconfident/underconfident.
-
-When user asks to import backtest data → use `/backtest-import` workflow:
-  1. Read the CSV file provided by the user.
-  2. Parse columns: timestamp, direction, setup_type, entry, exit, pnl.
-  3. Update MEMORY.md Backtest Status section with new results.
+| Skill | Trigger |
+|-------|---------|
+| `/trade-review` | review recent trades, worst trade AI analysis |
+| `/strategy-health` | WR vs backtest baseline, confidence threshold check |
+| `/cost-report` | API spend, per-trade cost, Sonnet vs Opus split |
+| `/deploy-check` | service health, log errors, git status |
+| `/prompt-audit` | prompt_learnings.json, losing trade AI analysis |
+| `/session-brief` | market briefing, recent scans, macro events |
+| `/brier-check` | AI calibration, Brier score breakdown |
+| `/backtest-import` | import CSV backtest results to MEMORY.md |
+| `/gha` | analyze failing GitHub Actions runs |
+| `/recall` | search conversation history |
 
 ## Handling Operational Questions (dashboard chat)
 User is a trader, not a developer. When they ask operational questions:
@@ -85,6 +61,14 @@ User is a trader, not a developer. When they ask operational questions:
 - "What do the logs mean?" → read `/api/logs?type=scan` result from recent journalctl or explain the outcome codes in recent_scans
 - Always give a DIRECT answer. Never say "probably" or "might". Check the actual data first.
 - If you need to run a command and it might affect the bot, warn the user first.
+
+## Development Discipline (hard gates — never skip)
+1. **Plan before code** — Before writing any code, describe the approach and wait for user approval.
+2. **Clarify ambiguity** — If requirements are ambiguous, ask clarifying questions before writing any code.
+3. **Edge cases after code** — After finishing any code, list the edge cases and suggest test cases to cover them.
+4. **Small changesets** — If a task requires changes to more than 3 files, stop and break it into smaller tasks first.
+5. **Bug = test first** — When there's a bug, start by writing a test that reproduces it, then fix it until the test passes.
+6. **Learn from corrections** — Every time the user corrects me, reflect on what went wrong and write a plan (in MEMORY.md session notes) to never repeat that mistake.
 
 ## Standing Rules
 - Minimal diffs. Never delete+rewrite unchanged lines.

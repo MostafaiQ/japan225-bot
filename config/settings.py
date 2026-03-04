@@ -60,7 +60,9 @@ EXTREME_DAY_RANGE_PTS = 1000     # Intraday range > this = extreme day (crash or
 EXTREME_DAY_MIN_CONFIDENCE = 85  # Minimum confidence on extreme days (both directions)
 OVERSOLD_SHORT_BLOCK_RSI_4H = 32 # Don't SHORT below this 4H RSI unless breaking support with volume
 OVERBOUGHT_LONG_BLOCK_RSI_4H = 68 # Don't LONG above this 4H RSI unless breaking resistance with volume
-MIN_CONFIDENCE = 70  # Hard floor - no trades below this
+MIN_CONFIDENCE = 70        # Hard floor for Sonnet swing trades
+MIN_SCALP_CONFIDENCE = 60  # Lower floor for Opus scalp trades (SL=85, smaller risk)
+MIN_SCALP_CONFIDENCE_SHORT = 65  # Scalp SHORT floor (maintains conservative SHORT bias)
 EVENT_BLACKOUT_MINUTES = 60  # No trades within 60 min of high-impact events
 TRADE_EXPIRY_MINUTES = 15  # Unconfirmed alerts expire after 15 min
 
@@ -128,6 +130,7 @@ OPUS_MODEL   = "claude-opus-4-6"
 # ============================================
 MONITOR_INTERVAL_SECONDS = 2        # Price check interval (seconds) — get_market_info only, 30 calls/min
 POSITION_CHECK_EVERY_N_CYCLES = 15  # Check position existence every N cycles: 15 × 2s = 30s, 2 calls/min
+OPUS_POSITION_EVAL_EVERY_N = 60     # Run Opus position evaluator every N monitor cycles (60 × 2s = 120s = 2min)
 SCAN_INTERVAL_SECONDS = 300         # Entry scan interval when flat (5 min)
 OFFHOURS_INTERVAL_SECONDS = 1800    # Off-hours heartbeat (30 min)
 
