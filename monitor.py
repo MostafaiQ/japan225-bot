@@ -913,7 +913,7 @@ class TradingMonitor:
                     f"Sonnet quick-reject (conf {final_confidence}% < 35%). "
                     f"Skipping Opus — setup too weak."
                 )
-                return
+                return SCAN_INTERVAL_SECONDS
             logger.info(
                 f"Sonnet rejected (conf {final_confidence}%). "
                 f"Launching Opus scalp eval with Sonnet's full analysis..."
