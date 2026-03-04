@@ -36,14 +36,14 @@ from config.settings import (
     AI_COOLDOWN_MINUTES, HAIKU_MIN_SCORE, PRICE_DRIFT_ABORT_PTS, SAFETY_CONSECUTIVE_EMPTY,
     calculate_margin, calculate_profit, SPREAD_ESTIMATE, DEFAULT_SL_DISTANCE,
     MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, BREAKEVEN_BUFFER,
-    ADVERSE_SEVERE_PTS, DAILY_EMA200_CANDLES, PRE_SCREEN_CANDLES, AI_ESCALATION_CANDLES,
+    DAILY_EMA200_CANDLES, PRE_SCREEN_CANDLES, AI_ESCALATION_CANDLES,
     MINUTE_5_CANDLES,
 )
 from core.ig_client import IGClient, POSITIONS_API_ERROR
 from core.indicators import analyze_timeframe, detect_setup
-from core.session import get_current_session, is_no_trade_day, get_scan_interval
-from core.momentum import MomentumTracker, TIER_SEVERE, TIER_NONE
-from core.confidence import compute_confidence, format_confidence_breakdown
+from core.session import get_current_session, is_no_trade_day
+from core.momentum import MomentumTracker, TIER_SEVERE
+from core.confidence import compute_confidence
 from trading.exit_manager import ExitManager, ExitPhase
 from trading.risk_manager import RiskManager
 from storage.database import Storage
@@ -631,7 +631,6 @@ class TradingMonitor:
             tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_15m,
             exclude_direction="LONG",
         )
-        entry_timeframe = "15m"
 
         # --- 5M fallback: for each direction that didn't find on 15M, try 5M ---
         if not setup_long["found"] and tf_5m:
@@ -822,10 +821,8 @@ class TradingMonitor:
         if tf_5m:
             indicators["m5"] = tf_5m
 
-        recent_scans_ctx = self.storage.get_recent_scans(15)
         recent_trades_ctx = self.storage.get_recent_trades(10)
 
-        entry_tf = tf_5m if entry_timeframe == "5m" else tf_15m
         logger.info(
             f"Volume signals → 5M: {tf_5m.get('volume_signal')}({tf_5m.get('volume_ratio')}) "
             f"| 15M: {tf_15m.get('volume_signal')}({tf_15m.get('volume_ratio')}) "

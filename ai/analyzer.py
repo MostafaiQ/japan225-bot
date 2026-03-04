@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -26,11 +27,6 @@ logger = logging.getLogger(__name__)
 CLAUDE_BIN    = "/home/ubuntu/.local/bin/claude"
 PROJECT_ROOT  = Path(__file__).parent.parent
 CONTEXT_DIR   = PROJECT_ROOT / "storage" / "context"
-
-# Cost is $0 for subscription; keep structure for compat with save_scan()
-PRICING = {
-    SONNET_MODEL: {"input": 0.0, "output": 0.0},
-}
 
 
 # ─── Prompt helpers (unchanged from original) ─────────────────────────────────
@@ -71,10 +67,11 @@ PIVOT: PP/R1-R3/S1-S3 from daily. Near S1/S2=support (LONG). Near R1/R2=resistan
 CANDLE: hammer/engulfing/morning_star etc. Direction + strength. Strong pattern at key level = high conviction.
 BODY: expanding=momentum, contracting=exhaustion. |consec|>=4=overextended. wick_ratio>2=indecision.
 
-CONFIDENCE (11 criteria, proportional scoring, base 30, cap 100):
+CONFIDENCE (12 criteria, proportional scoring, base 30, cap 100):
   daily_trend | entry_at_tech_level | rsi_15m_in_range | tp_viable
   price_structure | macro_aligned | no_event_1hr | no_friday_monthend
   volume (prefer NORMAL+) | trend_4h (EMA50 aligned) | ha_aligned (HA candle direction)
+  entry_quality (pullback depth + volatility regime)
 
 MEAN-REVERSION BOUNCE RULES (CRITICAL — read before evaluating bb_lower_bounce or oversold_reversal):
   These setups fire BECAUSE of bearish conditions. Do NOT reject them for being bearish:
@@ -369,6 +366,10 @@ def build_scan_prompt(
         "     Incorporate its feedback before outputting final JSON.\n"
     )
 
+    # Inject prompt learnings from closed trades (auto-updated feedback loop)
+    learnings_block = load_prompt_learnings()
+    learnings_str = f"\n{learnings_block}\n" if learnings_block else ""
+
     return (
         f"Japan 225 CFD analysis — {now}\n"
         f"{prescreen_block}{secondary_block}{local_conf_block}"
@@ -379,6 +380,7 @@ def build_scan_prompt(
         f"trading_mode={market_context.get('trading_mode','?')}\n"
         f"\nWEB RESEARCH:\n{_fmt_web_research(web_research)}\n"
         + (("\n" + live_edge_block) if live_edge_block else "")
+        + learnings_str
         + "\n"
         + role_block
     )
@@ -455,7 +457,6 @@ class AIAnalyzer:
         # Write stdout to a unique temp file so the result survives bot restart.
         # With KillMode=process + start_new_session, the Claude subprocess
         # continues after bot is killed and finishes writing to this file.
-        import uuid
         pending_file = PROJECT_ROOT / "storage" / "data" / f"ai_pending_{uuid.uuid4().hex[:8]}.txt"
         start = time.time()
         try:
@@ -603,7 +604,6 @@ class AIAnalyzer:
         local_confidence: int,
         ai_confidence: int,
         ai_reasoning: str,
-        parallel_mode: bool = False,
         recent_opus_decision: dict = None,
     ) -> dict:
         """
@@ -618,20 +618,10 @@ class AIAnalyzer:
         indicator_block = _fmt_indicators(indicators)
         opposite_direction = "LONG" if primary_direction == "SHORT" else "SHORT"
 
-        if parallel_mode:
-            sonnet_context = (
-                "A setup was detected and passed local confidence scoring. You are running\n"
-                "in parallel with Sonnet — evaluate independently from raw indicators.\n"
-            )
-        else:
-            sonnet_context = (
-                "A setup was detected and passed local confidence scoring, but the primary AI\n"
-                "(Sonnet) rejected it.\n"
-            )
-
         system_prompt = (
             "You are a scalp-trade evaluator for Japan 225 Cash CFD ($1/pt, spread ~7pts).\n"
-            f"{sonnet_context}"
+            "A setup was detected and passed local confidence scoring, but the primary AI\n"
+            "(Sonnet) rejected it.\n"
             "Your job: evaluate BOTH directions for a quick scalp.\n\n"
             "CRITICAL INSIGHT: Sonnet's rejection reasoning often contains the opposite thesis.\n"
             "If Sonnet rejected SHORT because 'too oversold, bounce likely' — that IS the LONG case.\n"
@@ -755,7 +745,6 @@ class AIAnalyzer:
 # ─── Prompt learnings (unchanged) ─────────────────────────────────────────────
 
 def load_prompt_learnings(data_dir: str = None) -> str:
-    from pathlib import Path
     path = Path(data_dir or "storage/data") / "prompt_learnings.json"
     try:
         if not path.exists():
@@ -775,7 +764,6 @@ def load_prompt_learnings(data_dir: str = None) -> str:
 
 def post_trade_analysis(trade: dict, ai_analysis: dict, data_dir: str = None) -> None:
     """Post-trade learning — pure rule-based, no LLM call. Also records Brier score."""
-    from pathlib import Path
     data_path = Path(data_dir or "storage/data")
     path = data_path / "prompt_learnings.json"
 

@@ -5,7 +5,6 @@ Non-negotiable rules enforced in code, not by willpower.
 """
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
 
 from config.settings import (
     MAX_MARGIN_PERCENT, MAX_OPEN_POSITIONS,

@@ -26,13 +26,10 @@ Criteria (12 total):
 """
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 from config.settings import RSI_ENTRY_HIGH_BOUNCE
 
 logger = logging.getLogger(__name__)
 
-# Weights — each 10 points
-CRITERIA_WEIGHT = 10
 BASE_SCORE = 30
 MAX_SCORE = 100
 
@@ -105,10 +102,6 @@ def compute_confidence(
     _breakdown_setup = setup_type in (
         "breakdown_continuation", "bear_flag_breakdown", "multi_tf_bearish"
     )
-    # Dead cat and distribution shorts: always daily-bearish by definition (no C1 issue).
-    # multi_tf_bearish: C4 (price can be anywhere when all TFs align).
-    _multi_tf_short = setup_type == "multi_tf_bearish"
-
     # ---- Criterion 1: Daily Trend Aligned (oversold-exempt) ----
     # Oversold bounces (bb_lower_bounce, oversold_reversal) pass C1 even when daily is bearish.
     # Backtest data: counter-trend LONG trades win 48% vs trend-aligned at 41%.
