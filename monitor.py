@@ -987,14 +987,22 @@ class TradingMonitor:
             self._last_scan_detail = {"outcome": "ai_rejected", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
 
             # --- Sequential Opus scalp eval (Sonnet rejected → Opus gets full context) ---
-            # Gate: skip Opus for quick-rejects (Sonnet conf < 50%). Saves API cost
-            # and prevents Opus from trading on clearly bad setups (Trade #3: 65%, #4: 38%).
-            if final_confidence < 50:
+            # Gate: skip Opus for quick-rejects (Sonnet conf < 50%). Saves API cost.
+            # EXCEPTION: momentum setups always go to Opus — Sonnet may undervalue them
+            # and Opus can find a scalp even when the full TP target is unrealistic.
+            _momentum_types = {"momentum_continuation_long", "breakout_long", "vwap_bounce_long",
+                               "ema9_pullback_long", "momentum_continuation_short", "vwap_rejection_short_momentum"}
+            _is_momentum = setup.get("type") in _momentum_types
+            if final_confidence < 50 and not _is_momentum:
                 logger.info(
                     f"Sonnet quick-reject (conf {final_confidence}% < 50%). "
                     f"Skipping Opus — setup too weak."
                 )
                 return SCAN_INTERVAL_SECONDS
+            if _is_momentum and final_confidence < 50:
+                logger.info(
+                    f"Sonnet low-conf ({final_confidence}%) but momentum setup — sending to Opus scalper."
+                )
             logger.info(
                 f"Sonnet rejected (conf {final_confidence}%). "
                 f"Launching Opus scalp eval with Sonnet's full analysis..."
