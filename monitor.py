@@ -1127,14 +1127,17 @@ class TradingMonitor:
         }
 
         self._last_scan_detail = {"outcome": "trade_alert", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
-        self.storage.set_pending_alert(trade_alert)
+
+        # Auto-execute immediately — Sonnet passed confidence thresholds (70 LONG / 75 SHORT)
+        # + risk validation. Notify user then execute (same flow as Opus scalp).
+        logger.info(
+            f"Sonnet auto-executing: {direction} @ {entry:.0f}, "
+            f"confidence={final_confidence}%, SL={sl:.0f}, TP={tp:.0f}"
+        )
         await self.telegram.send_trade_alert(trade_alert)
-        logger.info(f"Trade alert sent: {direction} @ {entry:.0f}, confidence={final_confidence}%")
+        await self._on_trade_confirm(trade_alert)
 
-        # Auto-execute after 2 min if user doesn't respond
-        asyncio.ensure_future(self._auto_execute_after_timeout(trade_alert, timeout_secs=120))
-
-        return SCAN_INTERVAL_SECONDS
+        return 0  # Enter monitoring immediately
 
     # ============================================================
     # MONITORING MODE
