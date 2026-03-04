@@ -172,24 +172,23 @@ class TradingMonitor:
     # ============================================================
 
     async def _recover_pending_ai(self):
-        """Check if an AI analysis survived the previous bot restart."""
-        pending = Path(__file__).parent / "storage" / "data" / "ai_pending_result.txt"
+        """Check if any AI analyses survived the previous bot restart."""
+        data_dir = Path(__file__).parent / "storage" / "data"
         try:
-            if not pending.exists():
-                return
-            age = time.time() - pending.stat().st_mtime
-            if age > 300:  # older than 5 minutes — stale
+            for pending in sorted(data_dir.glob("ai_pending_*.txt")):
+                age = time.time() - pending.stat().st_mtime
+                if age > 300:  # older than 5 minutes — stale
+                    pending.unlink(missing_ok=True)
+                    continue
+                content = pending.read_text().strip()
                 pending.unlink(missing_ok=True)
-                return
-            content = pending.read_text().strip()
-            pending.unlink(missing_ok=True)
-            if not content:
-                return
-            logger.info(f"Recovered pending AI result ({age:.0f}s old, {len(content)} chars)")
-            preview = content[:600] + ("..." if len(content) > 600 else "")
-            await self.telegram.send_alert(
-                f"📋 Recovered AI analysis from before restart:\n\n{preview}"
-            )
+                if not content:
+                    continue
+                logger.info(f"Recovered pending AI result ({age:.0f}s old, {len(content)} chars)")
+                preview = content[:600] + ("..." if len(content) > 600 else "")
+                await self.telegram.send_alert(
+                    f"Recovered AI analysis from before restart:\n\n{preview}"
+                )
         except Exception as e:
             logger.warning(f"Failed to recover pending AI result: {e}")
 

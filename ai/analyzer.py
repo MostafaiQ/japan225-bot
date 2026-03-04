@@ -450,10 +450,11 @@ class AIAnalyzer:
             })
             cmd.extend(["--agents", agents_json])
 
-        # Write stdout to a temp file so the result survives bot restart.
+        # Write stdout to a unique temp file so the result survives bot restart.
         # With KillMode=process + start_new_session, the Claude subprocess
         # continues after bot is killed and finishes writing to this file.
-        pending_file = PROJECT_ROOT / "storage" / "data" / "ai_pending_result.txt"
+        import uuid
+        pending_file = PROJECT_ROOT / "storage" / "data" / f"ai_pending_{uuid.uuid4().hex[:8]}.txt"
         start = time.time()
         try:
             with open(pending_file, "w") as stdout_f:
@@ -581,7 +582,7 @@ class AIAnalyzer:
             logger.warning("AI returned empty/unparseable output — retrying with normal effort")
             raw2, tokens2 = self._run_claude(model, system_prompt, user_prompt,
                                              timeout=180, use_opus_agent=False,
-                                             effort="normal")
+                                             effort="medium")
             if raw2.strip():
                 result = _parse_json(raw2, default)
                 tokens = tokens2
