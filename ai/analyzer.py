@@ -601,6 +601,7 @@ class AIAnalyzer:
         ai_confidence: int,
         ai_reasoning: str,
         parallel_mode: bool = False,
+        recent_opus_decision: dict = None,
     ) -> dict:
         """
         Opus evaluates BOTH directions for a quick scalp opportunity.
@@ -662,10 +663,39 @@ class AIAnalyzer:
                 f"SONNET REASONING: {ai_reasoning}\n\n"
             )
 
+        # Directional consistency: show recent Opus decision to prevent flip-flopping
+        consistency_block = ""
+        if recent_opus_decision:
+            prev_dir = recent_opus_decision.get("direction", "?")
+            prev_viable = recent_opus_decision.get("viable", False)
+            prev_reason = recent_opus_decision.get("reasoning", "")[:200]
+            prev_conf = recent_opus_decision.get("confidence", 0)
+            # Compute actual elapsed time
+            try:
+                prev_ts = datetime.fromisoformat(recent_opus_decision["timestamp"])
+                elapsed_min = int((datetime.now() - prev_ts).total_seconds() / 60)
+            except Exception:
+                elapsed_min = 0
+            if prev_viable:
+                consistency_block = (
+                    f"\nYOUR PREVIOUS CALL ({elapsed_min} min ago): {prev_dir} scalp, {prev_conf}% confidence.\n"
+                    f"Reasoning: {prev_reason}\n"
+                    f"CONSISTENCY RULE: Only flip direction if there is a CLEAR structural shift "
+                    f"(broken support/resistance, new candle pattern, RSI divergence crossing threshold). "
+                    f"Do NOT flip just because indicators moved a few points. Conviction matters.\n\n"
+                )
+            else:
+                consistency_block = (
+                    f"\nYOUR PREVIOUS CALL ({elapsed_min} min ago): Rejected both directions.\n"
+                    f"Reasoning: {prev_reason}\n"
+                    f"Only approve now if conditions MATERIALLY changed.\n\n"
+                )
+
         user_prompt = (
             f"PRIMARY SETUP: {primary_direction} {setup_type}\n"
             f"LOCAL CONFIDENCE: {local_confidence}% (passed threshold)\n"
             f"{context_block}"
+            f"{consistency_block}"
             f"INDICATORS:\n{indicator_block}\n\n"
             f"Evaluate BOTH {primary_direction} and {opposite_direction}. Pick the best scalp.\n"
             f"Output ONLY valid JSON:\n"

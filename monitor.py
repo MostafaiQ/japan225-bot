@@ -95,6 +95,7 @@ class TradingMonitor:
         self._last_scan_detail: dict = {}  # dashboard: shows last scan outcome
         self._ai_reject_until: datetime | None = None  # U4: short cooldown after Sonnet/Opus rejection
         self._dashboard_force_scan: bool = False  # Set by poll task, consumed by _scanning_cycle
+        self._last_opus_decision: dict | None = None  # Track Opus direction consistency
         # Paths for dashboard integration
         self._state_path   = Path(__file__).parent / "storage" / "data" / "bot_state.json"
         self._overrides_path = Path(__file__).parent / "storage" / "data" / "dashboard_overrides.json"
@@ -828,17 +829,10 @@ class TradingMonitor:
             f"| Daily: {tf_daily.get('volume_signal')}({tf_daily.get('volume_ratio')})"
         )
 
-        # --- Always run Opus scalp eval in parallel with Sonnet ---
         local_score = local_conf.get("score", 0)
-        # $0/call subscription — no reason to gate. Opus evaluates both directions
-        # independently and may find scalps Sonnet misses.
-        should_run_opus_parallel = True
 
-        # --- Direct to Sonnet (+ optional Opus in parallel) ---
-        logger.info(
-            f"Local score {local_score}%. Escalating to Sonnet"
-            + (" + Opus (parallel)" if should_run_opus_parallel else "") + "..."
-        )
+        # --- Sonnet first, then Opus sequential with full context ---
+        logger.info(f"Local score {local_score}%. Escalating to Sonnet...")
 
         recent_scans = self.storage.get_recent_scans(5)
         market_context = self.storage.get_market_context()
@@ -873,33 +867,6 @@ class TradingMonitor:
                 recent_trades=recent_trades_ctx,
             ),
         )
-
-        # Speculatively launch Opus scalp eval in parallel ($0/call — no waste)
-        opus_future = None
-        if should_run_opus_parallel:
-            opus_pre_reasoning = (
-                f"LOCAL PRE-SCREEN: {prescreen_direction} {setup.get('type', 'unknown')} "
-                f"| local conf {local_score}% (passed threshold)"
-            )
-            if secondary_setup:
-                sec = secondary_setup
-                opus_pre_reasoning += (
-                    f"\nSECONDARY: {sec['direction']} {sec.get('type', '?')} "
-                    f"local conf {sec.get('confidence', '?')}%: "
-                    f"{sec.get('reasoning', '')[:200]}"
-                )
-            opus_future = loop.run_in_executor(
-                None,
-                lambda: self.analyzer.evaluate_scalp(
-                    indicators=indicators,
-                    primary_direction=prescreen_direction,
-                    setup_type=setup.get("type", "unknown"),
-                    local_confidence=local_score,
-                    ai_confidence=0,
-                    ai_reasoning=opus_pre_reasoning[:700],
-                    parallel_mode=True,
-                ),
-            )
 
         # Await Sonnet result
         sonnet_result = await sonnet_future
@@ -938,36 +905,77 @@ class TradingMonitor:
             )
             self._last_scan_detail = {"outcome": "ai_rejected", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
 
-            # --- Check parallel Opus scalp result (always running) ---
-            # Opus evaluates both directions independently. Even if Sonnet quick-rejected,
-            # Opus may find a scalp in the opposite direction.
-            if opus_future:
-                logger.info(
-                    f"Sonnet rejected (conf {final_confidence}%). "
-                    f"Checking parallel Opus scalp result..."
+            # --- Sequential Opus scalp eval (Sonnet rejected → Opus gets full context) ---
+            # Opus ALWAYS runs after Sonnet rejection. Sonnet's confidence is directional —
+            # e.g., 0% for LONG says nothing about SHORT. Opus evaluates both directions
+            # with Sonnet's full reasoning as context.
+            logger.info(
+                f"Sonnet rejected (conf {final_confidence}%). "
+                f"Launching Opus scalp eval with Sonnet's full analysis..."
+            )
+            try:
+                sonnet_reasoning = final_result.get("reasoning", "")
+                opus_context = (
+                    f"SONNET ANALYSIS: {sonnet_reasoning[:500]}\n"
+                    f"SONNET CONFIDENCE: {final_confidence}%\n"
+                    f"SONNET DECISION: {'APPROVED' if final_result.get('setup_found') else 'REJECTED'}\n"
+                    f"LOCAL PRE-SCREEN: {prescreen_direction} {setup.get('type', 'unknown')} "
+                    f"| local conf {local_score}%"
                 )
-                try:
-                    scalp_result = await opus_future
-                    opus_future = None  # Mark as consumed
-                    if scalp_result.get("scalp_viable"):
-                        # Opus picks the direction — may differ from pre-screen
-                        opus_direction = scalp_result.get("direction", direction)
-                        logger.info(f"Opus scalp: {opus_direction} (pre-screen was {direction})")
-                        await self._execute_scalp(
-                            scalp_result=scalp_result,
-                            direction=opus_direction,
-                            setup=setup,
-                            session=session,
-                            current_price=current_price,
-                            local_conf=local_conf,
-                            final_confidence=final_confidence,
-                        )
-                        return 0  # Enter monitoring immediately
-                    else:
-                        logger.info(f"Opus rejected both directions: {scalp_result.get('reasoning', '')[:150]}")
-                except Exception as e:
-                    logger.warning(f"Opus scalp evaluation failed: {e}")
-                    opus_future = None
+                if secondary_setup:
+                    sec = secondary_setup
+                    opus_context += (
+                        f"\nSECONDARY: {sec['direction']} {sec.get('type', '?')} "
+                        f"local conf {sec.get('confidence', '?')}%: "
+                        f"{sec.get('reasoning', '')[:200]}"
+                    )
+
+                # Recent Opus decision for consistency
+                recent_opus = None
+                if self._last_opus_decision:
+                    age_sec = (datetime.now() - datetime.fromisoformat(self._last_opus_decision["timestamp"])).total_seconds()
+                    if age_sec < 900:  # 15 min
+                        recent_opus = self._last_opus_decision
+
+                scalp_result = await loop.run_in_executor(
+                    None,
+                    lambda: self.analyzer.evaluate_scalp(
+                        indicators=indicators,
+                        primary_direction=prescreen_direction,
+                        setup_type=setup.get("type", "unknown"),
+                        local_confidence=local_score,
+                        ai_confidence=final_confidence,
+                        ai_reasoning=opus_context[:700],
+                        parallel_mode=False,
+                        recent_opus_decision=recent_opus,
+                    ),
+                )
+
+                # Track Opus decision for directional consistency
+                self._last_opus_decision = {
+                    "direction": scalp_result.get("direction", direction),
+                    "reasoning": scalp_result.get("reasoning", "")[:300],
+                    "viable": scalp_result.get("scalp_viable", False),
+                    "confidence": scalp_result.get("confidence", 0),
+                    "timestamp": datetime.now().isoformat(),
+                }
+                if scalp_result.get("scalp_viable"):
+                    opus_direction = scalp_result.get("direction", direction)
+                    logger.info(f"Opus scalp: {opus_direction} (pre-screen was {direction})")
+                    await self._execute_scalp(
+                        scalp_result=scalp_result,
+                        direction=opus_direction,
+                        setup=setup,
+                        session=session,
+                        current_price=current_price,
+                        local_conf=local_conf,
+                        final_confidence=final_confidence,
+                    )
+                    return 0  # Enter monitoring immediately
+                else:
+                    logger.info(f"Opus rejected both directions: {scalp_result.get('reasoning', '')[:150]}")
+            except Exception as e:
+                logger.warning(f"Opus scalp evaluation failed: {e}")
 
             # --- Force Open: 100% local confidence, AI rejected → user decides ---
             if local_score >= 100:
@@ -1007,11 +1015,6 @@ class TradingMonitor:
 
             # No cooldown — subscription is $0/call, scan again in 5 min
             return SCAN_INTERVAL_SECONDS
-
-        # Sonnet approved — discard speculative Opus result (fire-and-forget, $0 cost)
-        if opus_future:
-            logger.debug("Opus parallel result discarded (Sonnet approved)")
-            opus_future = None
 
         # --- Risk validation ---
         balance_info = self.ig.get_account_info()
@@ -1559,6 +1562,57 @@ class TradingMonitor:
         actual_entry = float(result.get("level") or current_price)
         actual_sl = result.get("stop_level") or alert_data.get("sl")
         actual_tp = result.get("limit_level") or alert_data.get("tp")
+        deal_id = result.get("deal_id")
+
+        # --- CRITICAL: Verify SL/TP were actually set by IG ---
+        ig_sl_set = result.get("stop_level") is not None
+        ig_tp_set = result.get("limit_level") is not None
+        if not ig_sl_set or not ig_tp_set:
+            logger.critical(
+                f"SL/TP NOT SET by IG! stop_level={result.get('stop_level')}, "
+                f"limit_level={result.get('limit_level')}. Attempting modify_position repair..."
+            )
+            # Compute intended levels from distances
+            tp_sign = 1 if direction == "LONG" else -1
+            repair_sl = actual_entry - tp_sign * sl_distance if not ig_sl_set else None
+            repair_tp = actual_entry + tp_sign * tp_distance if not ig_tp_set else None
+            # Use actual levels if we have them
+            if not ig_sl_set and actual_sl:
+                repair_sl = actual_sl
+            if not ig_tp_set and actual_tp:
+                repair_tp = actual_tp
+
+            try:
+                repaired = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self.ig.modify_position(
+                        deal_id=deal_id,
+                        stop_level=repair_sl if not ig_sl_set else result.get("stop_level"),
+                        limit_level=repair_tp if not ig_tp_set else result.get("limit_level"),
+                    )
+                )
+                if repaired:
+                    actual_sl = repair_sl if not ig_sl_set else actual_sl
+                    actual_tp = repair_tp if not ig_tp_set else actual_tp
+                    logger.info(f"SL/TP REPAIRED: SL={actual_sl} TP={actual_tp}")
+                    await self.telegram.send_alert(
+                        f"⚠ SL/TP was NOT set by IG on order placement.\n"
+                        f"Auto-repaired: SL={actual_sl:.0f} TP={actual_tp:.0f}"
+                    )
+                else:
+                    logger.critical("SL/TP repair FAILED — modify_position returned False")
+                    await self.telegram.send_alert(
+                        f"CRITICAL: SL/TP NOT SET and repair FAILED!\n"
+                        f"Deal: {deal_id}\n"
+                        f"Set SL={actual_sl:.0f} TP={actual_tp:.0f} MANUALLY on IG NOW!"
+                    )
+            except Exception as e:
+                logger.critical(f"SL/TP repair exception: {e}")
+                await self.telegram.send_alert(
+                    f"CRITICAL: SL/TP NOT SET and repair FAILED!\n"
+                    f"Deal: {deal_id}\n"
+                    f"Set SL={actual_sl:.0f} TP={actual_tp:.0f} MANUALLY on IG NOW!"
+                )
 
         if not balance_info:
             balance_info = await asyncio.get_event_loop().run_in_executor(
