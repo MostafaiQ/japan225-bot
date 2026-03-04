@@ -94,6 +94,7 @@ class TradingMonitor:
         self._current_price: float | None = None
         self._last_scan_detail: dict = {}  # dashboard: shows last scan outcome
         self._ai_reject_until: datetime | None = None  # U4: short cooldown after Sonnet/Opus rejection
+        self._dashboard_force_scan: bool = False  # Set by poll task, consumed by _scanning_cycle
         # Paths for dashboard integration
         self._state_path   = Path(__file__).parent / "storage" / "data" / "bot_state.json"
         self._overrides_path = Path(__file__).parent / "storage" / "data" / "dashboard_overrides.json"
@@ -332,7 +333,7 @@ class TradingMonitor:
             logger.debug(f"_write_state failed: {e}")
 
     def _check_force_scan_trigger(self) -> bool:
-        """Return True (and delete trigger) if dashboard requested a force scan."""
+        """Return True if dashboard requested a force scan (file or flag)."""
         try:
             if self._clear_cd_path.exists():
                 self._clear_cd_path.unlink()
@@ -340,14 +341,20 @@ class TradingMonitor:
                 logger.info("Dashboard clear-cooldown trigger: cooldown cleared.")
         except Exception:
             pass
+        # Check file (direct, e.g. SIGUSR1 path) or flag (set by poll task)
+        found = False
         try:
             if self._trigger_path.exists():
                 self._trigger_path.unlink()
-                logger.info("Dashboard force-scan trigger detected.")
-                return True
+                found = True
         except Exception:
             pass
-        return False
+        if self._dashboard_force_scan:
+            self._dashboard_force_scan = False
+            found = True
+        if found:
+            logger.info("Dashboard force-scan trigger detected.")
+        return found
 
     def _write_force_open_pending(self, setup: dict, session: dict, current_price: float):
         """Write pending force-open opportunity so dashboard can show Force Open button."""
@@ -1582,8 +1589,8 @@ class TradingMonitor:
         while self.running:
             try:
                 if self._trigger_path.exists():
-                    # Don't delete — let _check_force_scan_trigger() consume it
-                    # so force_scan=True overrides off-hours/pause checks.
+                    self._trigger_path.unlink(missing_ok=True)
+                    self._dashboard_force_scan = True
                     logger.info("Dashboard force-scan trigger detected (poll). Waking main loop.")
                     self._force_scan_event.set()
                 if self._force_open_trigger_path.exists():

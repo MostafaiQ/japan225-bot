@@ -509,8 +509,12 @@ class IGClient:
             deal_ref = self.ig.close_open_position(
                 deal_id=deal_id,
                 direction=close_direction,
-                size=size,
+                epic=EPIC,
+                expiry="-",
+                level=None,
                 order_type="MARKET",
+                quote_id=None,
+                size=size,
             )
 
             # trading_ig may return full confirmation dict or just a deal reference string
