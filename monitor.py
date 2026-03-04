@@ -166,6 +166,10 @@ class TradingMonitor:
             logger.info("Monitor loop cancelled")
         finally:
             self._trigger_poll_task.cancel()
+            try:
+                await self._trigger_poll_task
+            except (asyncio.CancelledError, Exception):
+                pass
             await self._shutdown()
 
     # ============================================================
@@ -1749,8 +1753,15 @@ class TradingMonitor:
     async def _shutdown(self):
         logger.info("Shutting down...")
         try:
-            await self.telegram.send_alert("Monitor shutting down. Positions remain protected by broker stops.")
-            await self.telegram.stop()
+            # Fire-and-forget with 2s timeout — don't block shutdown
+            await asyncio.wait_for(
+                self.telegram.send_alert("Monitor shutting down. Positions remain protected by broker stops."),
+                timeout=2.0,
+            )
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(self.telegram.stop(), timeout=2.0)
         except Exception:
             pass
         try:
@@ -1765,12 +1776,13 @@ def main():
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    _main_task = None
 
     def signal_handler(sig, frame):
-        logger.info(f"Signal {sig} received. Stopping...")
-        monitor.running = False
-        # Wake up any sleeping await (scan interval, force_scan_event, etc.)
-        loop.call_soon_threadsafe(monitor._force_scan_event.set)
+        logger.info(f"Signal {sig} received. Exiting immediately.")
+        # Positions are protected by broker stops — safe to hard-exit.
+        import os
+        os._exit(0)
 
     def force_scan_handler(sig, frame):
         logger.info("SIGUSR1 received — dashboard force scan. Waking main loop.")
@@ -1781,11 +1793,15 @@ def main():
     signal.signal(signal.SIGUSR1, force_scan_handler)
 
     try:
-        loop.run_until_complete(monitor.start())
-    except KeyboardInterrupt:
+        _main_task = loop.create_task(monitor.start())
+        loop.run_until_complete(_main_task)
+    except (KeyboardInterrupt, asyncio.CancelledError):
         monitor.running = False
     finally:
-        loop.close()
+        # Shutdown already ran inside start()'s finally block.
+        # Force-exit to avoid hanging on Telegram's internal polling tasks.
+        import os
+        os._exit(0)
 
 
 if __name__ == "__main__":
