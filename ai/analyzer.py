@@ -42,7 +42,7 @@ SETUPS — LONG MEAN-REVERSION (daily trend in reasoning; counter-trend allowed 
     → Caution if vol=LOW, but not auto-reject (late session vol naturally lower)
 
 SETUPS — LONG MOMENTUM / TREND-FOLLOWING:
-  momentum_continuation_long: above EMA50+VWAP | HA streak≥2 | RSI 45-70 | vol not LOW → strong trending rally
+  momentum_continuation_long: above EMA50+VWAP | HA streak≥2 | RSI 45-75 | vol not LOW (lenient if HA≥4) → strong trending rally
   breakout_long:              near BB upper(200pts) or swing_high(100pts) | vol≥1.3x | HA bullish | above EMA50 | RSI 55-75
   vwap_bounce_long:           near VWAP(120pts) | above EMA50 | bounce confirm (HA/candle/wick) | RSI 40-65
   ema9_pullback_long:         near EMA9(100pts) | above EMA50 | HA bullish or turning | RSI 40-65
@@ -59,7 +59,7 @@ SETUPS — SHORT (min confidence 75% — BOJ risk; counter-trend allowed if stro
   multi_tf_bearish:        rsi_15m<48 AND rsi_4h<48 AND daily bearish AND below EMA50 AND below VWAP AND HA bearish (≥4/5 factors)
 
 SETUPS — SHORT MOMENTUM / TREND-FOLLOWING:
-  momentum_continuation_short: below EMA50+VWAP | HA streak≤-2 | RSI 30-55 | vol not LOW → strong trending selloff
+  momentum_continuation_short: below EMA50+VWAP | HA streak≤-2 | RSI 30-55 | vol not LOW (lenient if HA≤-4) → strong trending selloff
   vwap_rejection_short_momentum: near VWAP(120pts) from below | below EMA50 | rejection confirm (HA/candle/wick) | RSI 35-60
 
 RULES: No trade: HIGH event <60min. SL=150 TP=400.
@@ -106,14 +106,14 @@ MEAN-REVERSION SHORT RULES (CRITICAL — read before evaluating overbought_rever
 
 MOMENTUM / TREND-FOLLOWING LONG RULES (CRITICAL — read before evaluating momentum_continuation_long, breakout_long, vwap_bounce_long, ema9_pullback_long):
   These setups fire BECAUSE the market is trending strongly upward. Do NOT reject them for mean-reversion reasons:
-  - RSI 60-70 is HEALTHY in a trend, NOT overbought. Only RSI>75 is overbought in momentum context.
+  - RSI 60-75 is HEALTHY in a trend, NOT overbought. Only RSI>78 is overbought in momentum context.
   - Price above BB mid is EXPECTED — momentum trades target BB upper / new highs, not BB mid.
   - Positive pullback_depth (price rising) is EXPECTED — this IS the trend, not a chase.
   - HA bullish streak ≥2 is a CONFIRMATION signal, not overextension (that's streak ≥5+).
   - Above VWAP is EXPECTED — institutional flow is bullish, price holds above fair value.
-  - For momentum_continuation_long: DEFAULT APPROVE if above EMA50, above VWAP, HA bullish, RSI 45-70.
+  - For momentum_continuation_long: DEFAULT APPROVE if above EMA50, above VWAP, HA bullish, RSI 45-75.
     Only reject if: (1) 4H RSI>68 with exhaustion (overbought prohibition), or
-    (2) price >800pts above session open on extreme day, or (3) volume is LOW.
+    (2) price >800pts above session open on extreme day. Volume LOW alone is NOT a reject if HA streak ≥4.
   - For breakout_long: volume conviction (≥1.3x) is the key signal. Do NOT downgrade for "extended" price.
   - For vwap_bounce_long/ema9_pullback_long: these ARE pullback entries in a trend. They have dip-buying characteristics.
 
@@ -126,7 +126,7 @@ MOMENTUM / TREND-FOLLOWING SHORT RULES (CRITICAL — read before evaluating mome
   - Below VWAP is EXPECTED — institutional flow is bearish, price holds below fair value.
   - For momentum_continuation_short: DEFAULT APPROVE if below EMA50, below VWAP, HA bearish, RSI 30-55.
     Only reject if: (1) 4H RSI<32 with exhaustion (oversold prohibition), or
-    (2) price >800pts below session open on extreme day, or (3) volume is LOW.
+    (2) price >800pts below session open on extreme day. Volume LOW alone is NOT a reject if HA streak ≤-4.
 
 BREAKDOWN / MOMENTUM SHORT RULES (CRITICAL — read before evaluating breakdown_continuation, bear_flag_breakdown, multi_tf_bearish):
   These setups fire BECAUSE of bearish momentum already in progress. Do NOT reject them for daily being bullish:

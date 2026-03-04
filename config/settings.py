@@ -90,7 +90,7 @@ RSI_ENTRY_HIGH_BOUNCE = 55    # Backtest: RSI 55-65 LONG WR=38%, cut off
 
 # --- Momentum / Trend-Following LONG Setups ---
 MOMENTUM_RSI_LOW = 45         # RSI floor for momentum continuation
-MOMENTUM_RSI_HIGH = 70        # RSI ceiling (60-70 is healthy trend, not overbought)
+MOMENTUM_RSI_HIGH = 75        # RSI ceiling (widened: extreme rally days RSI hits 73-75)
 BREAKOUT_RSI_LOW = 55         # RSI floor for breakout
 BREAKOUT_RSI_HIGH = 75        # RSI ceiling for breakout
 VWAP_BOUNCE_RSI_LOW = 40      # RSI floor for VWAP bounce

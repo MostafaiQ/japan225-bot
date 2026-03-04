@@ -50,7 +50,7 @@ detect_setup(tf_daily, tf_4h, tf_15m, tf_5m=None, exclude_direction=None) -> dic
   #   breakout_long:              near BB upper(200pts) or swing_high(100pts) + vol≥1.3x + HA bullish + above EMA50 | RSI 55-75
   #   vwap_bounce_long:           near VWAP(120pts) + above EMA50 + bounce confirm (HA/candle/wick) | RSI 40-65
   #   ema9_pullback_long:         near EMA9(100pts) + above EMA50 + HA bullish or turning | RSI 40-65
-  #   momentum_continuation_long: above EMA50 + above VWAP + HA streak≥2 + vol not LOW | RSI 45-70 (broadest catch-all)
+  #   momentum_continuation_long: above EMA50 + above VWAP + HA streak≥2 + vol not LOW (lenient when HA≥4: IG CFD vol unreliable) | RSI 45-70 (broadest catch-all)
   #
   # SHORT mean-reversion (13 total): bb_upper_rejection, ema50_rejection, bb_mid_rejection,
   #   overbought_reversal, breakdown_continuation, dead_cat_bounce_short, bear_flag_breakdown,
@@ -58,9 +58,10 @@ detect_setup(tf_daily, tf_4h, tf_15m, tf_5m=None, exclude_direction=None) -> dic
   #   lower_lows_bearish_momentum, pivot_r1_rejection
   #
   # SHORT momentum/trend-following (NEW 2026-03-04):
-  #   momentum_continuation_short: below EMA50+VWAP + HA streak≤-2 + vol not LOW | RSI 30-55
+  #   momentum_continuation_short: below EMA50+VWAP + HA streak≤-2 + vol not LOW (lenient when HA≤-4: IG CFD vol unreliable) | RSI 30-55
   #   vwap_rejection_short_momentum: near VWAP(120pts) from below + below EMA50 + rejection confirm | RSI 35-60
   #
+  # No-setup diagnostic: includes BB_mid dist, RSI, bounce status, daily trend, AND momentum indicators (EMA50/VWAP/HA/vol)
   # SL/TP: DEFAULT_SL_DISTANCE=150, DEFAULT_TP_DISTANCE=400
 
 detect_higher_lows(prices, lookback=5) -> bool

@@ -35,6 +35,7 @@ _scanning_cycle() writes save_scan() for all active-session outcomes.
     event_block_{long|short}, friday_block_{long|short}, low_conf_{long|short}, no_setup
   off_hours early return does NOT write scan records (no analysis done).
   NO COOLDOWNS — subscription is $0/call, always scan every 5 min.
+  No-setup reasoning truncated to 200 chars in log output (was 80).
 
 _scanning_cycle() -> int (sleep seconds):
   1. get_current_session() → skip if not active

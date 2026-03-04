@@ -1346,7 +1346,9 @@ def detect_setup(
         rsi_ok_mom = MOMENTUM_RSI_LOW <= rsi_15m <= MOMENTUM_RSI_HIGH
         above_vwap_ok = above_vwap is True
         ha_streak_ok = ha_streak is not None and ha_streak >= MOMENTUM_HA_STREAK_MIN
-        vol_ok_mom = vol_signal != "LOW"
+        # Volume: IG CFD volume unreliable (often LOW during strong moves).
+        # Lenient when HA streak confirms strong trend (>=4).
+        vol_ok_mom = vol_signal != "LOW" or (ha_streak is not None and ha_streak >= 4)
 
         if rsi_ok_mom and above_vwap_ok and ha_streak_ok and vol_ok_mom:
             entry = price
@@ -1997,7 +1999,8 @@ def detect_setup(
     if not _skip_short and ema50_15m and rsi_15m and below_ema50_s:
         rsi_ok_mom_s = 30 <= rsi_15m <= 55
         ha_streak_ok_s = ha_streak_s is not None and ha_streak_s <= -MOMENTUM_HA_STREAK_MIN
-        vol_ok_mom_s = vol_signal_s != "LOW"
+        # Volume: IG CFD volume unreliable. Lenient when HA streak confirms strong trend (<=−4).
+        vol_ok_mom_s = vol_signal_s != "LOW" or (ha_streak_s is not None and ha_streak_s <= -4)
 
         if rsi_ok_mom_s and below_vwap_s and ha_streak_ok_s and vol_ok_mom_s:
             entry = price
@@ -2081,8 +2084,18 @@ def detect_setup(
     if prev_close is not None:
         diag_parts.append(f"bounce={'OK' if price > prev_close else 'NO'}")
     daily_str = "bullish" if daily_bullish else ("bearish" if daily_bullish is not None else "N/A")
+    # Momentum diagnostic — shows why momentum setups didn't fire
+    mom_flags = []
+    _ae50 = tf_15m.get("above_ema50")
+    _avw = tf_15m.get("above_vwap")
+    _hs = tf_15m.get("ha_streak")
+    _vs = tf_15m.get("volume_signal", "?")
+    mom_flags.append(f"EMA50={'above' if _ae50 else 'below'}")
+    mom_flags.append(f"VWAP={'above' if _avw else 'below'}")
+    mom_flags.append(f"HA={_hs}")
+    mom_flags.append(f"vol={_vs}")
     diag = " | ".join(diag_parts)
-    result["reasoning"] = f"No setup. {diag} | Daily={daily_str}"
+    result["reasoning"] = f"No setup. {diag} | Daily={daily_str} | Mom: {' '.join(mom_flags)}"
     return result
 
 

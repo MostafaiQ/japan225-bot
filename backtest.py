@@ -1449,6 +1449,280 @@ def run_account_simulation(all_setups: list[SetupRecord], start_balance: float =
         print(f"  $20 >= ${min_margin:.2f} minimum — can trade 0.01 lots. See results above for viability.")
 
 
+# ── 90-Day Full Simulation ($20 start, no AI filter) ─────────────────────────
+
+SIM90_SWING = {"sl": 150, "tp": 400, "be": 150, "trail": 150, "label": "SWING"}
+SIM90_SCALP = {"sl": 60,  "tp": 300, "be": 60,  "trail": 60,  "label": "SCALP"}
+
+
+def run_90day_simulation(all_setups: list[SetupRecord], start_balance: float = 20.0):
+    """
+    Full 90-day simulation with $20 start, local confidence only (no AI filter).
+    Runs SWING and SCALP independently. Reports by session, R:R, balance progression.
+    """
+    sim_setups = sorted(all_setups, key=lambda x: x.entry_time)
+
+    if not sim_setups:
+        print("\n  No setups found. Nothing to simulate.")
+        return
+
+    date_range = f"{sim_setups[0].entry_time.date()} -> {sim_setups[-1].entry_time.date()}"
+    unique_dates = sorted(set(s.entry_time.date() for s in sim_setups))
+    n_days = len(unique_dates)
+
+    print(f"\n{'='*80}")
+    print("  90-DAY $20 SIMULATION — Local Confidence Only (No AI Filter)")
+    print(f"{'='*80}")
+    print(f"  Period:        {date_range} ({n_days} trading days)")
+    print(f"  Start balance: ${start_balance:.2f}")
+    print(f"  Margin:        {SIM_MARGIN_FACTOR*100:.1f}% per lot, {SIM_MAX_MARGIN_PCT*100:.0f}% balance cap")
+    print(f"  AI filter:     OFF (local confidence gate only)")
+    print(f"  Setups:        {len(sim_setups)} total")
+    print(f"  SWING params:  SL={SIM90_SWING['sl']} TP={SIM90_SWING['tp']}")
+    print(f"  SCALP params:  SL={SIM90_SCALP['sl']} TP={SIM90_SCALP['tp']}")
+
+    results = {}  # label -> summary dict
+
+    for params in [SIM90_SCALP, SIM90_SWING]:
+        label = params["label"]
+        sl, tp, be, trail = params["sl"], params["tp"], params["be"], params["trail"]
+        rr_ratio = tp / sl
+
+        print(f"\n{'━'*80}")
+        print(f"  {label} TRACK  (SL={sl} / TP={tp} / R:R=1:{rr_ratio:.1f})")
+        print(f"{'━'*80}")
+
+        balance = start_balance
+        peak_balance = start_balance
+        max_dd = 0.0
+        trades_taken = 0
+        total_lots = 0.0
+        skip_until = datetime.min.replace(tzinfo=timezone.utc)
+        blown = False
+        blown_date = None
+
+        # Track per-trade details for session/setup analysis
+        trade_log = []  # list of dicts
+
+        # Day-by-day tracking
+        by_date = defaultdict(list)
+        for s in sim_setups:
+            by_date[s.entry_time.date()].append(s)
+
+        print(f"\n  {'Date':>10}  {'#':>2}  {'Lots':>5}  {'Day P&L':>9}  {'Balance':>9}  Details")
+        print("  " + "─" * 72)
+
+        for date in sorted(by_date.keys()):
+            if blown:
+                break
+            day_setups = by_date[date]
+            day_pnl = 0.0
+            day_trades = 0
+            day_details = []
+
+            for s in day_setups:
+                if blown:
+                    break
+                if s.entry_time < skip_until:
+                    continue
+
+                # Dynamic lot sizing
+                lot_size = _sim_lot_size(balance, s.entry_price)
+                if lot_size < SIM_MIN_LOT:
+                    min_needed = _sim_min_margin(s.entry_price)
+                    if not day_details:
+                        day_details.append(f"skip (need ${min_needed:.2f})")
+                    continue
+
+                # Simulate trade
+                pnl_pts, reason, duration = simulate_trade(
+                    s.direction, s.entry_price, s.future_candles,
+                    sl, tp, be, trail
+                )
+                pnl_usd = pnl_pts * lot_size * SIM_CONTRACT_SIZE
+
+                balance += pnl_usd
+                trades_taken += 1
+                day_trades += 1
+                day_pnl += pnl_usd
+                total_lots += lot_size
+
+                # Drawdown tracking
+                if balance > peak_balance:
+                    peak_balance = balance
+                dd = peak_balance - balance
+                if dd > max_dd:
+                    max_dd = dd
+
+                # Record trade
+                actual_rr = abs(pnl_pts) / sl if sl > 0 else 0
+                trade_log.append({
+                    "date": date,
+                    "time": s.entry_time,
+                    "direction": s.direction,
+                    "setup_type": s.setup_type,
+                    "session": s.session,
+                    "entry": s.entry_price,
+                    "pnl_pts": pnl_pts,
+                    "pnl_usd": pnl_usd,
+                    "lot_size": lot_size,
+                    "reason": reason,
+                    "confidence": s.confidence_score,
+                    "rr_achieved": actual_rr if pnl_usd > 0 else -actual_rr,
+                    "balance_after": balance,
+                    "win": pnl_usd > 0,
+                })
+
+                arrow = "▲" if s.direction == "LONG" else "▼"
+                wl = "W" if pnl_usd > 0 else "L"
+                day_details.append(
+                    f"{arrow}{s.setup_type[:12]} {wl} ${pnl_usd:+.2f} @{lot_size:.2f}L"
+                )
+
+                # Skip overlapping trades
+                tf = getattr(s, "timeframe", "15M")
+                candle_min = CANDLE_MINUTES.get(tf, 15)
+                skip_until = s.entry_time + timedelta(minutes=duration * candle_min)
+
+                # Check if blown
+                if balance < _sim_min_margin(s.entry_price):
+                    blown = True
+                    blown_date = date
+                    day_details.append("BLOWN")
+
+            detail_str = " | ".join(day_details[:3])
+            if len(day_details) > 3:
+                detail_str += f" +{len(day_details)-3} more"
+            if not day_details:
+                detail_str = "—"
+            print(
+                f"  {str(date):>10}  {day_trades:>2}  "
+                f"{lot_size if day_trades > 0 else 0:>5.2f}  "
+                f"${day_pnl:>+8.2f}  ${balance:>8.2f}  {detail_str}"
+            )
+
+        # ── Summary ──
+        wins = [t for t in trade_log if t["win"]]
+        losses = [t for t in trade_log if not t["win"]]
+        total_return = (balance - start_balance) / start_balance * 100
+        avg_lot = total_lots / trades_taken if trades_taken else 0
+        wr = len(wins) / trades_taken * 100 if trades_taken else 0
+        gp = sum(t["pnl_usd"] for t in wins)
+        gl = abs(sum(t["pnl_usd"] for t in losses)) or 0.01
+        pf = gp / gl
+
+        print(f"\n  {label} SUMMARY")
+        print(f"  {'━'*50}")
+        print(f"  Final balance:   ${balance:.2f}  ({total_return:+.1f}%)")
+        print(f"  Peak balance:    ${peak_balance:.2f}")
+        print(f"  Max drawdown:    ${max_dd:.2f}")
+        print(f"  Trades:          {trades_taken}  (W:{len(wins)} / L:{len(losses)})")
+        print(f"  Win rate:        {wr:.1f}%")
+        print(f"  Profit factor:   {pf:.2f}")
+        print(f"  Avg lot size:    {avg_lot:.3f}")
+        if blown:
+            print(f"  STATUS:          BLOWN on {blown_date}")
+        elif total_return > 0:
+            print(f"  STATUS:          PROFITABLE")
+        else:
+            print(f"  STATUS:          UNPROFITABLE (account survives)")
+
+        # ── By Session ──
+        print(f"\n  BY SESSION")
+        for sess in ["Tokyo", "London", "New York"]:
+            st = [t for t in trade_log if t["session"] == sess]
+            if not st:
+                continue
+            sw = [t for t in st if t["win"]]
+            sess_pnl = sum(t["pnl_usd"] for t in st)
+            sess_wr = len(sw) / len(st) * 100
+            print(f"    {sess:<10}  {len(st):>3} trades | {sess_wr:>5.1f}% WR | ${sess_pnl:>+8.2f}")
+
+        # ── By Setup Type ──
+        print(f"\n  BY SETUP TYPE")
+        setup_groups = defaultdict(list)
+        for t in trade_log:
+            setup_groups[t["setup_type"]].append(t)
+        for st_name, st_trades in sorted(setup_groups.items(), key=lambda x: -len(x[1])):
+            st_wins = [t for t in st_trades if t["win"]]
+            st_pnl = sum(t["pnl_usd"] for t in st_trades)
+            st_wr = len(st_wins) / len(st_trades) * 100
+            print(f"    {st_name:<30} {len(st_trades):>3} | {st_wr:>5.1f}% WR | ${st_pnl:>+8.2f}")
+
+        # ── By Direction ──
+        print(f"\n  BY DIRECTION")
+        for d in ["LONG", "SHORT"]:
+            dt = [t for t in trade_log if t["direction"] == d]
+            if not dt:
+                continue
+            dw = [t for t in dt if t["win"]]
+            d_pnl = sum(t["pnl_usd"] for t in dt)
+            d_wr = len(dw) / len(dt) * 100
+            print(f"    {d:<6} {len(dt):>3} trades | {d_wr:>5.1f}% WR | ${d_pnl:>+8.2f}")
+
+        # ── R:R Distribution ──
+        print(f"\n  R:R DISTRIBUTION")
+        rr_brackets = [(0, 0.5), (0.5, 1.0), (1.0, 2.0), (2.0, 3.0), (3.0, 100)]
+        for lo, hi in rr_brackets:
+            bracket_trades = [t for t in trade_log if lo <= abs(t["rr_achieved"]) < hi]
+            if not bracket_trades:
+                continue
+            bw = [t for t in bracket_trades if t["win"]]
+            b_pnl = sum(t["pnl_usd"] for t in bracket_trades)
+            label_rr = f"{lo:.1f}-{hi:.1f}R" if hi < 100 else f"{lo:.1f}R+"
+            print(f"    {label_rr:<10} {len(bracket_trades):>3} trades | W:{len(bw)} L:{len(bracket_trades)-len(bw)} | ${b_pnl:>+8.2f}")
+
+        # ── Balance Progression (weekly) ──
+        if trade_log:
+            print(f"\n  BALANCE PROGRESSION (weekly snapshots)")
+            # Group by ISO week
+            weekly = defaultdict(lambda: start_balance)
+            for t in trade_log:
+                week_key = t["date"].isocalendar()[:2]
+                weekly[week_key] = t["balance_after"]
+            prev = start_balance
+            for wk in sorted(weekly.keys()):
+                bal = weekly[wk]
+                change = bal - prev
+                yr, wn = wk
+                print(f"    W{wn:02d}/{yr}  ${bal:>8.2f}  ({change:+.2f})")
+                prev = bal
+
+        results[label] = {
+            "balance": balance,
+            "return": total_return,
+            "trades": trades_taken,
+            "wr": wr,
+            "pf": pf,
+            "max_dd": max_dd,
+            "blown": blown,
+        }
+
+    # ── Side-by-side ──
+    print(f"\n{'='*80}")
+    print("  SCALP vs SWING — FINAL COMPARISON")
+    print(f"{'='*80}")
+    scalp_r = results.get("SCALP", {})
+    swing_r = results.get("SWING", {})
+    print(f"  {'Metric':>18}  {'SCALP':>12}  {'SWING':>12}")
+    print(f"  {'─'*46}")
+    print(f"  {'Final Balance':>18}  ${scalp_r.get('balance', 0):>10.2f}  ${swing_r.get('balance', 0):>10.2f}")
+    print(f"  {'Return':>18}  {scalp_r.get('return', 0):>+10.1f}%  {swing_r.get('return', 0):>+10.1f}%")
+    print(f"  {'Trades':>18}  {scalp_r.get('trades', 0):>12}  {swing_r.get('trades', 0):>12}")
+    print(f"  {'Win Rate':>18}  {scalp_r.get('wr', 0):>10.1f}%  {swing_r.get('wr', 0):>10.1f}%")
+    print(f"  {'Profit Factor':>18}  {scalp_r.get('pf', 0):>12.2f}  {swing_r.get('pf', 0):>12.2f}")
+    print(f"  {'Max Drawdown':>18}  ${scalp_r.get('max_dd', 0):>10.2f}  ${swing_r.get('max_dd', 0):>10.2f}")
+    print(f"  {'Status':>18}  {'BLOWN' if scalp_r.get('blown') else 'OK':>12}  {'BLOWN' if swing_r.get('blown') else 'OK':>12}")
+
+    winner = "SCALP" if scalp_r.get("balance", 0) > swing_r.get("balance", 0) else "SWING"
+    print(f"\n  WINNER: {winner}")
+    if scalp_r.get("blown") and swing_r.get("blown"):
+        print(f"  Both accounts blown. $20 is not viable for Japan 225 at current prices.")
+        price_est = sim_setups[0].entry_price if sim_setups else 38000
+        min_bal = _sim_min_margin(price_est)
+        print(f"  Minimum viable balance: ${min_bal:.2f} (at price ~{price_est:.0f})")
+
+
 # ── Entry point ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -1460,6 +1734,8 @@ if __name__ == "__main__":
                         help="Run AI evaluation on last 10 trading days (Sonnet + Opus, ~45 min)")
     parser.add_argument("--sim20", action="store_true",
                         help="Simulate $20 account with dynamic lot sizing (swing + scalp, last 10 days)")
+    parser.add_argument("--sim90", action="store_true",
+                        help="Full 90-day $20 simulation, local confidence only, scalp + swing")
     args = parser.parse_args()
 
     print("Japan 225 Bot — Backtest (v2)")
@@ -1531,5 +1807,9 @@ if __name__ == "__main__":
     # 9. $20 account simulation (optional)
     if args.sim20:
         run_account_simulation(all_setups, start_balance=20.0)
+
+    # 10. Full 90-day $20 simulation (optional)
+    if args.sim90:
+        run_90day_simulation(all_setups, start_balance=20.0)
 
     print(f"\nTotal runtime: {time.time()-t_start:.1f}s")

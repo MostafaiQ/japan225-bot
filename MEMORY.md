@@ -91,6 +91,7 @@ ADVERSE_MILD_PTS = 60          ADVERSE_MODERATE_PTS = 120     ADVERSE_SEVERE_PTS
 PAPER_TRADING_SESSION_GATE = REMOVED. All sessions live.
 ENABLE_EMA50_BOUNCE_SETUP = False (disabled until validated)
 RSI_ENTRY_HIGH_BOUNCE = 55 (backtest: RSI 55-65 LONG WR=38%, cut off dead zone)
+MOMENTUM_RSI_HIGH = 75 (was 70, widened 2026-03-04 to avoid rejecting valid momentum LONGs)
 SONNET_MODEL = "claude-sonnet-4-6"   OPUS_MODEL = "claude-opus-4-6"   (HAIKU_MODEL removed — 2-tier pipeline)
 TRADING_MODE default = "live" (env var in .env also set to "live"). Paper mode code REMOVED.
 ```
@@ -245,22 +246,22 @@ Live trading active 2026-03-01. Historical backtest (bad): 613 trades, 0.8% WR �
 | breakout_long | near BB upper(200pts) or swing_high(100pts) | 55-75 | vol≥1.3x + HA bullish + above EMA50 |
 | vwap_bounce_long | near VWAP(120pts) + above EMA50 | 40-65 | bounce confirm (HA/candle/wick) |
 | ema9_pullback_long | near EMA9(100pts) + above EMA50 | 40-65 | HA bullish or turning |
-| momentum_continuation_long | above EMA50 + above VWAP | 45-70 | HA streak≥2 + vol not LOW |
+| momentum_continuation_long | above EMA50 + above VWAP | 45-70 | HA streak≥2 + vol not LOW (lenient when HA≥4) |
 ### SHORT (13 mean-reversion + 2 momentum)
 bb_upper_rejection, ema50_rejection, bb_mid_rejection, overbought_reversal, breakdown_continuation,
 dead_cat_bounce_short, bear_flag_breakdown, vwap_rejection_short, high_volume_distribution,
 multi_tf_bearish, ema200_rejection, lower_lows_bearish_momentum, pivot_r1_rejection,
-**momentum_continuation_short** (below EMA50+VWAP, HA≤-2, RSI 30-55),
+**momentum_continuation_short** (below EMA50+VWAP, HA≤-2, vol lenient when HA≤-4, RSI 30-55),
 **vwap_rejection_short_momentum** (near VWAP from below, below EMA50, rejection confirm, RSI 35-60)
 ### Monitor: Momentum Scan Bypass
 When detect_setup() returns no_setup but 4+/5 bullish signals active (above EMA50, above VWAP, HA≥2, RSI 45-72, 4H above EMA50), bypasses directly to Opus evaluate_scalp().
 ### Confidence: Momentum-Aware Scoring
-_momentum_setup flag: C1 exempt (daily EMA lags), C2 accepts above VWAP/BB upper/EMA9, C3 widens to 40-70, C4 passes (above BB mid expected), C12 passes (trending up expected).
+_momentum_setup flag: C1 exempt (daily EMA lags), C2 accepts above VWAP/BB upper/EMA9, C3 widens to 40-75, C4 passes (above BB mid expected), C12 passes (trending up expected).
 _momentum_short_setup flag: C1 exempt, C4 passes, C12 passes.
 ### General
 SL=150 (WFO-validated), TP=400 for all types.
 5M fallback: all types can fire on 5M candles with `_5m` suffix.
-No-setup reasoning: diagnostic string with BB_mid dist, RSI status, bounce status, daily trend.
+No-setup reasoning: diagnostic string with BB_mid dist, RSI status, bounce status, daily trend, momentum indicators (EMA50/VWAP/HA/vol).
 ### Fibonacci S/R
 Full fibonacci dict (fib_236/382/500/618/786) now in indicators_snapshot. _build_confluence uses fib levels as S/R (within 100pts): support for LONG, resistance for SHORT.
 
@@ -276,6 +277,7 @@ WFO best swing: SL=150 TP=600 PF=0.74 | best scalp: SL=60 TP=300 PF=0.91 (scalp 
 `--ai` flag: AI eval on last 10 trading days (Sonnet+Opus, cached). Runtime: 110s local, ~45min with AI.
 `--sim20` flag: $20 account sim, last 10 days, dynamic lots, swing+scalp side-by-side, AI proxy (conf>=88%).
   Swing: blown by day 4 (SL=150 too wide for $20). Scalp: survives 10d but -32% ($13.60 final).
+`--sim90` flag: full 90-day $20 simulation with scalp+swing, session breakdown, R:R distribution, balance progression.
 PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 
 ## AI Pipeline (updated 2026-03-03) — Single subprocess: Sonnet 4.6 + Opus sub-agent

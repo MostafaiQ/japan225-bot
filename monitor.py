@@ -733,8 +733,8 @@ class TradingMonitor:
                     logger.warning(f"Momentum bypass Opus eval failed: {e}")
 
             reasoning = setup_long.get("reasoning", "") or setup_short.get("reasoning", "")
-            logger.info(f"Pre-screen: no setup (both dirs). {reasoning[:80]}")
-            self._last_scan_detail = {"outcome": "no_setup", "price": current_price, "details": reasoning[:80]}
+            logger.info(f"Pre-screen: no setup (both dirs). {reasoning[:200]}")
+            self._last_scan_detail = {"outcome": "no_setup", "price": current_price, "details": reasoning[:200]}
             self.storage.save_scan({
                 "timestamp": datetime.now().isoformat(), "session": session["name"],
                 "price": current_price, "indicators": {}, "market_context": {},

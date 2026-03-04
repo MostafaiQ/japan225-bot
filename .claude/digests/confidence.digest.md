@@ -15,7 +15,7 @@ SHORT_RSI_LOW/HIGH=55/75
 # 12 criteria:
 # 1. daily_trend:   EMA50 PRIMARY. Oversold exempt. Momentum LONG exempt. Breakdown/momentum SHORT exempt.
 # 2. entry_level:   Near BB mid/EMA50/BB lower/VWAP. MOMENTUM: accepts above VWAP, near BB upper, near EMA9.
-# 3. rsi_15m:       LONG 30-55. BB lower 20-40. MOMENTUM LONG 40-70. SHORT 55-75.
+# 3. rsi_15m:       LONG 30-55. BB lower 20-40. MOMENTUM LONG 40-75. SHORT 55-75.
 # 4. tp_viable:     LONG: price<=bb_mid. MOMENTUM: always pass. SHORT breakdown/momentum: always pass.
 # 5. structure:     LONG: above EMA50. SHORT: below EMA50. Oversold/overbought: reversal signals.
 # 6. macro:         4H RSI range. LONG 35-75. SHORT 30-60.

@@ -261,9 +261,9 @@ def compute_confidence(
                 c3 = 20 <= rsi_15m <= 40
                 reasons["rsi_15m"] = f"RSI 15M: {rsi_15m:.1f} (BB lower zone 20-40)"
             elif _momentum_setup:
-                # Momentum: RSI 45-70 is healthy trending, not overbought
-                c3 = 40 <= rsi_15m <= 70
-                reasons["rsi_15m"] = f"RSI 15M: {rsi_15m:.1f} (momentum zone 40-70)"
+                # Momentum: RSI 40-75 is healthy trending (widened: extreme rally RSI hits 73-75)
+                c3 = 40 <= rsi_15m <= 75
+                reasons["rsi_15m"] = f"RSI 15M: {rsi_15m:.1f} (momentum zone 40-75)"
             else:
                 c3 = LONG_RSI_LOW <= rsi_15m <= LONG_RSI_HIGH
                 reasons["rsi_15m"] = f"RSI 15M: {rsi_15m:.1f} (zone {LONG_RSI_LOW}-{LONG_RSI_HIGH})"
