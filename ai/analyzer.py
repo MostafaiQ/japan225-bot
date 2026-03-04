@@ -768,13 +768,10 @@ class AIAnalyzer:
             "- Explain WHERE SL/TP are placed and WHY."
         )
 
-        if parallel_mode:
-            context_block = f"PRE-SCREEN CONTEXT: {ai_reasoning}\n\n"
-        else:
-            context_block = (
-                f"SONNET CONFIDENCE: {ai_confidence}% (rejected)\n"
-                f"SONNET REASONING: {ai_reasoning}\n\n"
-            )
+        context_block = (
+            f"SONNET CONFIDENCE: {ai_confidence}% (rejected)\n"
+            f"SONNET REASONING: {ai_reasoning}\n\n"
+        )
 
         # Directional consistency: show recent Opus decision to prevent flip-flopping
         consistency_block = ""
