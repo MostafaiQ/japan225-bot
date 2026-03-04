@@ -1577,6 +1577,7 @@ function _updateTierBadge(thinkEl, tier) {
   if (badge) {
     badge.textContent = _tierLabels[tier] || tier;
     badge.style.background = _tierColors[tier] || '#6366f1';
+    badge.style.display = 'inline-block';
   }
 }
 
