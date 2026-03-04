@@ -319,33 +319,71 @@ def _fetch_journal_locked(days):
         closed_by = _channel_label(close_ch) if close_ch else "Manual"
 
         # Build concise notes
+        RESULT_LABELS = {
+            "TP_HIT": "TP hit",
+            "SL_HIT": "SL hit",
+            "MANUAL_CLOSE": "manually closed",
+            "CLOSED_UNKNOWN": None,   # will use channel info instead
+            "BREAKEVEN": "breakeven close",
+            "TIMEOUT": "time-based exit",
+        }
+        SETUP_LABELS = {
+            "bear_flag_breakdown": "Bear Flag Breakdown",
+            "bull_flag_breakout": "Bull Flag Breakout",
+            "bb_lower_bounce": "BB Lower Bounce",
+            "bb_upper_bounce": "BB Upper Bounce",
+            "bb_mid_bounce": "BB Mid Bounce",
+            "recovered": None,  # startup recovery — not a real setup signal
+        }
+
         notes_parts = []
         if db_match:
-            setup = db_match.get("setup_type")
-            if setup:
-                notes_parts.append(setup.replace("_", " ").title())
-            close_reason = db_match.get("close_reason", "")
+            setup = db_match.get("setup_type", "")
             result_str = db_match.get("result", "")
-            if close_reason:
-                notes_parts.append(close_reason.replace("_", " "))
-            elif result_str:
-                notes_parts.append(result_str.replace("_", " "))
+            phase = db_match.get("exit_phase", "")  # db_reader renames phase_at_close → exit_phase
+
+            if setup == "recovered":
+                # Position was open when bot started — not a bot-generated signal
+                result_label = RESULT_LABELS.get(result_str, result_str.replace("_", " ").lower() if result_str else "")
+                notes_parts.append(f"Bot startup recovery")
+                if result_label:
+                    notes_parts.append(result_label)
+            else:
+                setup_label = SETUP_LABELS.get(setup, setup.replace("_", " ").title() if setup else "")
+                if setup_label:
+                    notes_parts.append(setup_label)
+
+                result_label = RESULT_LABELS.get(result_str)
+                if result_label:
+                    notes_parts.append(result_label)
+                else:
+                    # CLOSED_UNKNOWN — infer from channel
+                    if close_ch == "SYSTEM":
+                        notes_parts.append("SL/TP hit")
+                    elif close_ch in ("WEB", "MOBILE", "PUBLIC_FIX_API"):
+                        notes_parts.append("manually closed")
+                    elif pnl > 0:
+                        notes_parts.append("closed in profit")
+                    elif pnl < 0:
+                        notes_parts.append("closed at loss")
+
+                if phase and phase not in ("initial",):
+                    notes_parts.append(f"phase: {phase}")
         else:
             # Manual trade — build meaningful note from available data
-            is_j225 = "Japan 225" in instrument
             dir_label = "Long" if direction == "LONG" else "Short"
             result_label = "win" if pnl > 0 else ("loss" if pnl < 0 else "breakeven")
-            # How was it closed?
             if close_ch == "SYSTEM":
                 close_label = "SL/TP hit"
             elif close_ch in ("WEB", "MOBILE", "PUBLIC_FIX_API"):
                 close_label = "manually closed"
             else:
                 close_label = "closed"
-            if is_j225:
+            instrument_short = instrument.split("(")[0].strip()
+            if "Japan 225" in instrument:
                 notes_parts.append(f"Manual {dir_label.lower()} | {close_label} | {result_label}")
             else:
-                notes_parts.append(f"Manual {dir_label.lower()} on {instrument.split('(')[0].strip()} | {close_label}")
+                notes_parts.append(f"Manual {dir_label.lower()} on {instrument_short} | {close_label} | {result_label}")
 
         entry = float(txn.get("openLevel", 0))
         exit_p = float(txn.get("closeLevel", 0))
