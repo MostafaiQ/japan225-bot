@@ -906,11 +906,11 @@ class TradingMonitor:
             self._last_scan_detail = {"outcome": "ai_rejected", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
 
             # --- Sequential Opus scalp eval (Sonnet rejected → Opus gets full context) ---
-            # Gate: skip Opus for quick-rejects (Sonnet conf < 35%). These are clearly
-            # bad setups — no point wasting an Opus call. Saves API cost.
-            if final_confidence < 35:
+            # Gate: skip Opus for quick-rejects (Sonnet conf < 50%). Saves API cost
+            # and prevents Opus from trading on clearly bad setups (Trade #3: 65%, #4: 38%).
+            if final_confidence < 50:
                 logger.info(
-                    f"Sonnet quick-reject (conf {final_confidence}% < 35%). "
+                    f"Sonnet quick-reject (conf {final_confidence}% < 50%). "
                     f"Skipping Opus — setup too weak."
                 )
                 return SCAN_INTERVAL_SECONDS
@@ -966,6 +966,43 @@ class TradingMonitor:
                 }
                 if scalp_result.get("scalp_viable"):
                     opus_direction = scalp_result.get("direction", direction)
+                    opus_conf = scalp_result.get("confidence", 0)
+                    setup_type = setup.get("type", "unknown")
+
+                    # --- Guard 1: Opus must have >= 60% confidence ---
+                    if opus_conf < 60:
+                        logger.info(
+                            f"Opus scalp rejected: confidence {opus_conf}% < 60% minimum"
+                        )
+                        return SCAN_INTERVAL_SECONDS
+
+                    # --- Guard 2: Block direction flip on inherently-directional setups ---
+                    # Bounce setups (lower_bounce, oversold_reversal) are inherently LONG.
+                    # Breakdown setups are inherently SHORT. Opus should NOT flip these.
+                    _bounce_setups = {
+                        "bollinger_lower_bounce", "bollinger_mid_bounce", "ema50_bounce",
+                        "oversold_reversal", "extreme_oversold_reversal",
+                    }
+                    _breakdown_setups = {
+                        "bear_flag_breakdown", "breakdown_continuation", "multi_tf_bearish",
+                        "dead_cat_bounce_short", "vwap_rejection_short",
+                        "high_volume_distribution", "lower_lows_bearish",
+                        "bollinger_upper_rejection", "ema50_rejection", "bb_mid_rejection",
+                        "overbought_reversal", "ema200_rejection", "pivot_r1_rejection",
+                    }
+                    if setup_type in _bounce_setups and opus_direction == "SHORT":
+                        logger.info(
+                            f"Opus scalp blocked: {setup_type} is a LONG setup, "
+                            f"Opus tried SHORT — contradicts setup thesis"
+                        )
+                        return SCAN_INTERVAL_SECONDS
+                    if setup_type in _breakdown_setups and opus_direction == "LONG":
+                        logger.info(
+                            f"Opus scalp blocked: {setup_type} is a SHORT setup, "
+                            f"Opus tried LONG — contradicts setup thesis"
+                        )
+                        return SCAN_INTERVAL_SECONDS
+
                     logger.info(f"Opus scalp: {opus_direction} (pre-screen was {direction})")
                     await self._execute_scalp(
                         scalp_result=scalp_result,
@@ -1428,6 +1465,7 @@ class TradingMonitor:
             "timestamp": datetime.now().isoformat(),
             "is_scalp": True,
             "local_confidence": local_conf.get("score"),
+            "opus_confidence": scalp_result.get("confidence", 0),
             "scalp_tp_distance": tp_distance,
             "scalp_sl_distance": sl_distance,
             "effective_rr": scalp_result.get("effective_rr"),
@@ -1467,16 +1505,31 @@ class TradingMonitor:
 
         # --- C2/C3 fix: Lightweight risk re-validation ---
         account = self.storage.get_account_state()
-        # Check loss limits (can't bypass these)
         consec_losses = account.get("consecutive_losses", 0)
         last_loss_time = account.get("last_loss_time")
         from config.settings import MAX_CONSECUTIVE_LOSSES, COOLDOWN_HOURS
         if consec_losses >= MAX_CONSECUTIVE_LOSSES and last_loss_time:
             cooldown_end = datetime.fromisoformat(last_loss_time) + timedelta(hours=COOLDOWN_HOURS)
             if datetime.now() < cooldown_end:
-                logger.warning(f"Trade aborted: in loss cooldown until {cooldown_end.strftime('%H:%M')}")
-                await self.telegram.send_alert(f"Trade blocked: loss cooldown until {cooldown_end.strftime('%H:%M')}.")
-                return
+                # High-confidence bypass: skip cooldown for strong setups
+                local_conf_score = alert_data.get("local_confidence", 0)
+                sonnet_conf = alert_data.get("confidence", 0)
+                opus_conf = alert_data.get("opus_confidence", 0)
+                bypass = False
+                if local_conf_score >= 100:
+                    bypass = True
+                    logger.info(f"Cooldown bypass: local confidence 100% — resetting cooldown")
+                    self.storage.reset_consecutive_losses()
+                elif sonnet_conf >= 85:
+                    bypass = True
+                    logger.info(f"Cooldown bypass: Sonnet confidence {sonnet_conf}% >= 85%")
+                elif opus_conf >= 80:
+                    bypass = True
+                    logger.info(f"Cooldown bypass: Opus confidence {opus_conf}% >= 80%")
+                if not bypass:
+                    logger.warning(f"Trade aborted: in loss cooldown until {cooldown_end.strftime('%H:%M')}")
+                    await self.telegram.send_alert(f"Trade blocked: loss cooldown until {cooldown_end.strftime('%H:%M')}.")
+                    return
 
         # Check daily loss limit
         balance_info = await asyncio.get_event_loop().run_in_executor(None, self.ig.get_account_info)

@@ -445,6 +445,10 @@ class Storage:
         """Reset weekly loss counter."""
         self.update_account_state(weekly_loss=0, weekly_loss_start=date.today().isoformat())
     
+    def reset_consecutive_losses(self):
+        """Reset consecutive loss counter (high-confidence cooldown bypass)."""
+        self.update_account_state(consecutive_losses=0, last_loss_time=None)
+
     def set_system_active(self, active: bool):
         """Pause or resume the trading system."""
         self.update_account_state(system_active=1 if active else 0)
