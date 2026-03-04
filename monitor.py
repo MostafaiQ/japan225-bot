@@ -954,7 +954,7 @@ class TradingMonitor:
         final_result = sonnet_result
         final_confidence = final_result.get("confidence", 0)
         logger.info(f"AI: found={final_result.get('setup_found')}, confidence={final_confidence}%")
-        logger.info(f"AI reasoning: {final_result.get('reasoning', 'N/A')[:200]}")
+        logger.info(f"AI reasoning: {final_result.get('reasoning', 'N/A')[:500]}")
 
         # --- Determine final outcome before saving ---
         direction = final_result.get("direction") or prescreen_direction
@@ -1010,7 +1010,7 @@ class TradingMonitor:
             try:
                 sonnet_reasoning = final_result.get("reasoning", "")
                 opus_context = (
-                    f"SONNET ANALYSIS: {sonnet_reasoning[:500]}\n"
+                    f"SONNET ANALYSIS: {sonnet_reasoning}\n"
                     f"SONNET CONFIDENCE: {final_confidence}%\n"
                     f"SONNET DECISION: {'APPROVED' if final_result.get('setup_found') else 'REJECTED'}\n"
                     f"LOCAL PRE-SCREEN: {prescreen_direction} {setup.get('type', 'unknown')} "
@@ -1021,7 +1021,7 @@ class TradingMonitor:
                     opus_context += (
                         f"\nSECONDARY: {sec['direction']} {sec.get('type', '?')} "
                         f"local conf {sec.get('confidence', '?')}%: "
-                        f"{sec.get('reasoning', '')[:200]}"
+                        f"{sec.get('reasoning', '')}"
                     )
 
                 # Recent Opus decision for consistency
@@ -1039,7 +1039,7 @@ class TradingMonitor:
                         setup_type=setup.get("type", "unknown"),
                         local_confidence=local_score,
                         ai_confidence=final_confidence,
-                        ai_reasoning=opus_context[:700],
+                        ai_reasoning=opus_context,
                         recent_opus_decision=recent_opus,
                     ),
                 )
@@ -1534,7 +1534,7 @@ class TradingMonitor:
             f"SL_dist={sl_distance} TP_dist={tp_distance}, lots={lots}, spread={live_spread:.1f}"
         )
 
-        # --- Risk validation (same as Sonnet pipeline) ---
+        # --- Risk validation (scalp uses lower confidence floor: 60% LONG / 65% SHORT) ---
         validation = self.risk.validate_trade(
             direction=direction,
             lots=lots,
@@ -1545,6 +1545,7 @@ class TradingMonitor:
             balance=balance,
             upcoming_events=[],
             indicators_snapshot=indicators_snapshot or {},
+            is_scalp=True,
         )
         if not validation["approved"]:
             logger.info(f"Scalp risk validation failed: {validation['rejection_reason']}")
