@@ -617,15 +617,48 @@
         </div>
         <!-- Summary stats bar -->
         <div id="histSummary" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;"></div>
+        <!-- Filters -->
+        <div id="histFilters" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+          <select id="hfDir" onchange="applyHistFilters()" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;">
+            <option value="">All Directions</option>
+            <option value="LONG">Long</option>
+            <option value="SHORT">Short</option>
+          </select>
+          <select id="hfResult" onchange="applyHistFilters()" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;">
+            <option value="">All Results</option>
+            <option value="WIN">Wins</option>
+            <option value="LOSS">Losses</option>
+          </select>
+          <select id="hfInst" onchange="applyHistFilters()" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;">
+            <option value="">All Instruments</option>
+            <option value="Japan 225">Japan 225</option>
+            <option value="other">Other</option>
+          </select>
+          <input type="date" id="hfDateFrom" onchange="applyHistFilters()" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:12px;" title="From date">
+          <input type="date" id="hfDateTo" onchange="applyHistFilters()" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:12px;" title="To date">
+          <button class="btn btn-ghost btn-sm" onclick="clearHistFilters()" style="font-size:11px;">Clear</button>
+          <span id="hfCount" style="font-size:11px;color:var(--text-muted);margin-left:auto;"></span>
+        </div>
         <div class="tbl-wrap">
           <table id="histTable">
             <thead><tr>
-              <th>#</th><th>Date</th><th>Instrument</th><th>Dir</th><th>Lots</th>
-              <th>Entry</th><th>Exit</th><th>P/L ($)</th>
-              <th>Opened</th><th>Closed</th><th>Duration</th><th>Balance</th>
-              <th style="min-width:260px;">Notes</th>
+              <th class="sortable" data-col="idx" onclick="sortHist('idx')"># <em class="sort-icon"></em></th>
+              <th class="sortable" data-col="date" onclick="sortHist('date')">Date <em class="sort-icon"></em></th>
+              <th>Inst</th>
+              <th class="sortable" data-col="dir" onclick="sortHist('dir')">Dir <em class="sort-icon"></em></th>
+              <th>Lots</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>SL</th>
+              <th>TP</th>
+              <th class="sortable" data-col="rr" onclick="sortHist('rr')">R:R <em class="sort-icon"></em></th>
+              <th class="sortable" data-col="pnl" onclick="sortHist('pnl')">P/L <em class="sort-icon"></em></th>
+              <th class="sortable" data-col="bal" onclick="sortHist('bal')">Balance <em class="sort-icon"></em></th>
+              <th>Duration</th>
+              <th>Source</th>
+              <th style="min-width:160px;">Notes</th>
             </tr></thead>
-            <tbody id="histBody"><tr><td colspan="13" class="empty">Loading…</td></tr></tbody>
+            <tbody id="histBody"><tr><td colspan="15" class="empty">Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -1132,80 +1165,161 @@ async function saveRestart() {
 // ══════════════════════════════════════════════
 //  HISTORY
 // ══════════════════════════════════════════════
+// ── History state ──
+let _histTrades = [];      // raw from API
+let _histFiltered = [];    // after filters
+let _histSortCol = 'date';
+let _histSortAsc = true;
+
 async function loadHistory() {
   if (!S.url) return;
   try {
     const d = await req('GET', '/api/history');
-    const trades = d.trades || [];
-    const acc    = d.account || {};
-    const wins   = acc.j225_wins ?? trades.filter(t => (t.pnl ?? 0) > 0).length;
-    const total  = acc.j225_total ?? trades.length;
-    const losses = total - wins;
-    const wr     = total ? Math.round(wins / total * 100) : 0;
-    const startBal = acc.starting_balance ?? null;
-    const curBal   = acc.balance ?? null;
-    const totPnl   = acc.total_pnl ?? null;
+    _histTrades = d.trades || [];
+    const acc = d.account || {};
 
-    // Summary stats bar
+    // Summary stats
+    const wins = acc.j225_wins ?? 0;
+    const total = acc.j225_total ?? 0;
+    const losses = total - wins;
+    const wr = total ? Math.round(wins / total * 100) : 0;
+    const startBal = acc.starting_balance ?? null;
+    const curBal = acc.balance ?? null;
+    const totPnl = acc.total_pnl ?? null;
+
     const sumEl = document.getElementById('histSummary');
-    const statCard = (label, val, color) =>
+    const sc = (label, val, color) =>
       `<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;">
         <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">${label}</div>
         <div style="font-size:18px;font-weight:700;color:${color||'var(--text)'};">${val}</div>
       </div>`;
     sumEl.innerHTML = [
-      statCard('Starting Balance', startBal != null ? '$'+startBal.toFixed(2) : '—', ''),
-      statCard('Current Balance',  curBal != null ? '$'+curBal.toFixed(2) : '—', curBal > startBal ? 'var(--long)' : curBal < startBal ? 'var(--short)' : ''),
-      statCard('Total P/L',        totPnl != null ? (totPnl>=0?'+$':'-$')+Math.abs(totPnl).toFixed(2) : '—', totPnl >= 0 ? 'var(--long)' : 'var(--short)'),
-      statCard('Win Rate (J225)',   total ? `${wins}W / ${losses}L (${wr}%)` : '—', wr >= 50 ? 'var(--long)' : 'var(--short)'),
+      sc('Starting Balance', startBal != null ? '$'+startBal.toFixed(2) : '—', ''),
+      sc('Current Balance', curBal != null ? '$'+curBal.toFixed(2) : '—', curBal > startBal ? 'var(--long)' : curBal < startBal ? 'var(--short)' : ''),
+      sc('Total P/L', totPnl != null ? (totPnl>=0?'+$':'-$')+Math.abs(totPnl).toFixed(2) : '—', totPnl >= 0 ? 'var(--long)' : 'var(--short)'),
+      sc('Win Rate (J225)', total ? `${wins}W / ${losses}L (${wr}%)` : '—', wr >= 50 ? 'var(--long)' : 'var(--short)'),
     ].join('');
 
-    const tb = document.getElementById('histBody');
-    if (!trades.length) { tb.innerHTML = '<tr><td colspan="13" class="empty">No trades yet</td></tr>'; return; }
-
-    const srcBadge = (label) => {
-      if (label === 'Auto')   return '<span style="color:#4ade80;font-size:10px;font-weight:600;">Auto</span>';
-      if (label === 'System') return '<span style="color:#60a5fa;font-size:10px;font-weight:600;">System</span>';
-      return '<span style="color:#fbbf24;font-size:10px;font-weight:600;">Manual</span>';
-    };
-
-    const shortInst = (name) => {
-      if (!name) return '—';
-      if (name.includes('Japan 225')) return 'Japan 225';
-      if (name.includes('US Tech 100')) return 'US Tech';
-      if (name.includes('Wall Street')) return 'US30';
-      return name.split(' ').slice(0, 2).join(' ');
-    };
-
-    tb.innerHTML = trades.map((t, i) => {
-      const pnl    = t.pnl ?? 0;
-      const pc     = pnl >= 0 ? 'var(--long)' : 'var(--short)';
-      const pnlStr = `<span style="color:${pc};font-weight:700;">${pnl>=0?'+':''}$${Math.abs(pnl).toFixed(2)}</span>`;
-      const balStr = t.balance_after != null ? '$' + t.balance_after.toFixed(2) : '—';
-      const inst   = shortInst(t.instrument);
-      const isJ225 = (t.instrument || '').includes('Japan 225');
-
-      return `<tr style="${isJ225 ? '' : 'opacity:0.7;'}">
-        <td style="color:var(--text-muted);font-weight:600;">${i + 1}</td>
-        <td style="white-space:nowrap;">${fmtDt(t.opened_at)}</td>
-        <td style="color:var(--text-muted);font-size:11px;">${esc(inst)}</td>
-        <td>${t.direction==='LONG'
-          ? '<span class="badge b-long">LONG</span>'
-          : '<span class="badge b-short">SHORT</span>'}</td>
-        <td>${t.lots ?? '—'}</td>
-        <td>${fmt1(t.entry_price)}</td>
-        <td>${fmt1(t.exit_price)}</td>
-        <td>${pnlStr}</td>
-        <td>${srcBadge(t.opened_by)}</td>
-        <td>${srcBadge(t.closed_by)}</td>
-        <td style="font-size:11px;color:var(--text-muted);">${esc(t.duration || '—')}</td>
-        <td style="font-weight:600;">${balStr}</td>
-        <td style="font-size:11px;max-width:320px;color:var(--text-muted);line-height:1.4;">${esc(t.notes || '—')}</td>
-      </tr>`;
-    }).join('');
+    applyHistFilters();
   } catch(e) {
-    document.getElementById('histBody').innerHTML = `<tr><td colspan="13" class="empty">Error: ${esc(e.message)}</td></tr>`;
+    document.getElementById('histBody').innerHTML = `<tr><td colspan="15" class="empty">Error: ${esc(e.message)}</td></tr>`;
   }
+}
+
+function applyHistFilters() {
+  const dir = document.getElementById('hfDir').value;
+  const res = document.getElementById('hfResult').value;
+  const inst = document.getElementById('hfInst').value;
+  const dfrom = document.getElementById('hfDateFrom').value;
+  const dto = document.getElementById('hfDateTo').value;
+
+  _histFiltered = _histTrades.filter(t => {
+    if (dir && t.direction !== dir) return false;
+    if (res === 'WIN' && (t.pnl ?? 0) <= 0) return false;
+    if (res === 'LOSS' && (t.pnl ?? 0) >= 0) return false;
+    if (inst === 'Japan 225' && !(t.instrument||'').includes('Japan 225')) return false;
+    if (inst === 'other' && (t.instrument||'').includes('Japan 225')) return false;
+    if (dfrom) { const d = (t.opened_at||'').slice(0,10); if (d < dfrom) return false; }
+    if (dto) { const d = (t.opened_at||'').slice(0,10); if (d > dto) return false; }
+    return true;
+  });
+
+  document.getElementById('hfCount').textContent = `${_histFiltered.length} of ${_histTrades.length} trades`;
+  sortAndRenderHist();
+}
+
+function clearHistFilters() {
+  document.getElementById('hfDir').value = '';
+  document.getElementById('hfResult').value = '';
+  document.getElementById('hfInst').value = '';
+  document.getElementById('hfDateFrom').value = '';
+  document.getElementById('hfDateTo').value = '';
+  applyHistFilters();
+}
+
+function sortHist(col) {
+  if (_histSortCol === col) { _histSortAsc = !_histSortAsc; }
+  else { _histSortCol = col; _histSortAsc = true; }
+  // Update header indicators
+  document.querySelectorAll('#histTable th.sortable').forEach(th => {
+    const icon = th.querySelector('.sort-icon');
+    if (th.dataset.col === col) {
+      th.classList.add('sort-active');
+      icon.textContent = _histSortAsc ? ' \u25B2' : ' \u25BC';
+    } else {
+      th.classList.remove('sort-active');
+      icon.textContent = '';
+    }
+  });
+  sortAndRenderHist();
+}
+
+function sortAndRenderHist() {
+  const arr = [..._histFiltered];
+  const asc = _histSortAsc ? 1 : -1;
+  const col = _histSortCol;
+  arr.sort((a, b) => {
+    let va, vb;
+    if (col === 'idx')  { va = 0; vb = 0; } // natural order
+    else if (col === 'date') { va = a.opened_at||''; vb = b.opened_at||''; }
+    else if (col === 'dir')  { va = a.direction||''; vb = b.direction||''; }
+    else if (col === 'pnl')  { va = a.pnl||0; vb = b.pnl||0; }
+    else if (col === 'bal')  { va = a.balance_after||0; vb = b.balance_after||0; }
+    else if (col === 'rr')   { va = a.rr||0; vb = b.rr||0; }
+    else { va = 0; vb = 0; }
+    if (col === 'idx') return 0; // keep original order
+    if (typeof va === 'string') return va < vb ? -asc : va > vb ? asc : 0;
+    return (va - vb) * asc;
+  });
+  renderHistTable(arr);
+}
+
+function renderHistTable(trades) {
+  const tb = document.getElementById('histBody');
+  if (!trades.length) { tb.innerHTML = '<tr><td colspan="15" class="empty">No trades match filters</td></tr>'; return; }
+
+  const shortInst = (name) => {
+    if (!name) return '—';
+    if (name.includes('Japan 225')) return 'J225';
+    if (name.includes('US Tech 100')) return 'NQ100';
+    if (name.includes('Wall Street')) return 'US30';
+    return name.split(' ').slice(0, 2).join(' ');
+  };
+  const srcBadge = (openBy, closeBy) => {
+    const label = openBy === 'Auto' ? 'Bot' : openBy === 'System' ? 'Sys' : 'Manual';
+    const color = openBy === 'Auto' ? '#4ade80' : openBy === 'System' ? '#60a5fa' : '#fbbf24';
+    return `<span style="color:${color};font-size:10px;font-weight:600;">${label}</span>`;
+  };
+
+  tb.innerHTML = trades.map((t, i) => {
+    const pnl = t.pnl ?? 0;
+    const pc = pnl >= 0 ? 'var(--long)' : 'var(--short)';
+    const isJ225 = (t.instrument||'').includes('Japan 225');
+    const sl = t.stop_loss ? fmt1(t.stop_loss) : '—';
+    const tp = t.take_profit ? fmt1(t.take_profit) : '—';
+    const rr = t.rr ? `1:${t.rr}` : '—';
+    const rrColor = t.rr >= 2 ? 'var(--long)' : t.rr ? 'var(--text-dim)' : 'var(--text-muted)';
+
+    return `<tr style="${isJ225 ? '' : 'opacity:0.6;'}">
+      <td style="color:var(--text-muted);font-weight:600;font-size:11px;">${i + 1}</td>
+      <td style="white-space:nowrap;font-size:12px;">${fmtDt(t.opened_at)}</td>
+      <td style="color:var(--text-muted);font-size:11px;">${esc(shortInst(t.instrument))}</td>
+      <td>${t.direction==='LONG'
+        ? '<span class="badge b-long" style="padding:2px 7px;font-size:10px;">LONG</span>'
+        : '<span class="badge b-short" style="padding:2px 7px;font-size:10px;">SHORT</span>'}</td>
+      <td style="font-size:12px;">${t.lots ?? '—'}</td>
+      <td style="font-size:12px;">${fmt1(t.entry_price)}</td>
+      <td style="font-size:12px;">${fmt1(t.exit_price)}</td>
+      <td style="font-size:11px;color:var(--text-muted);">${sl}</td>
+      <td style="font-size:11px;color:var(--text-muted);">${tp}</td>
+      <td style="font-size:11px;color:${rrColor};font-weight:600;">${rr}</td>
+      <td><span style="color:${pc};font-weight:700;font-size:12px;">${pnl>=0?'+':''}$${Math.abs(pnl).toFixed(2)}</span></td>
+      <td style="font-weight:600;font-size:12px;">${t.balance_after != null ? '$' + t.balance_after.toFixed(2) : '—'}</td>
+      <td style="font-size:11px;color:var(--text-muted);">${esc(t.duration || '—')}</td>
+      <td>${srcBadge(t.opened_by, t.closed_by)}</td>
+      <td style="font-size:11px;max-width:200px;color:var(--text-muted);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${esc(t.notes||'')}">${esc(t.notes || '—')}</td>
+    </tr>`;
+  }).join('');
 }
 
 // ══════════════════════════════════════════════

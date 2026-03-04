@@ -15,6 +15,14 @@ async def history(days: int = Query(30, ge=1, le=90)):
     return fetch_full_journal(days=days)
 
 
+@router.post("/api/history/clear-cache")
+async def clear_history_cache():
+    from dashboard.services.ig_history import _cache
+    _cache["ts"] = 0
+    _cache["data"] = None
+    return {"ok": True}
+
+
 @router.get("/api/scans")
 async def scans(
     limit: int = Query(50, ge=1, le=500),

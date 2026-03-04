@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 _cache = {"ts": 0, "data": None}
 CACHE_TTL = 300  # seconds — 5 min to avoid spamming IG API
 
+# Date cutoff: only show trades from this date onwards
+JOURNAL_CUTOFF = "2026-02-26T00:00:00"
+
 # Reuse IG session tokens across calls (avoid creating/destroying sessions)
 _ig_session = {"cst": None, "token": None, "ts": 0}
 _IG_SESSION_TTL = 3600  # 1 hour — IG sessions last ~6h
@@ -315,34 +318,36 @@ def _fetch_journal_locked(days):
         opened_by = _channel_label(open_ch) if open_ch else "Manual"
         closed_by = _channel_label(close_ch) if close_ch else "Manual"
 
-        # Build the notes
+        # Build concise notes
         notes_parts = []
         if db_match:
-            ai = db_match.get("ai_analysis")
-            if isinstance(ai, dict):
-                for key in ["reasoning", "why_entry", "risk_notes", "lesson", "exit_reason"]:
-                    val = ai.get(key)
-                    if val:
-                        notes_parts.append(val)
-            elif isinstance(ai, str) and ai:
-                notes_parts.append(ai)
-            if db_match.get("setup_type"):
-                notes_parts.insert(0, f"Setup: {db_match['setup_type']}")
-            if db_match.get("exit_phase"):
-                notes_parts.append(f"Phase: {db_match['exit_phase']}")
-            if db_match.get("close_reason"):
-                notes_parts.append(f"Close: {db_match['close_reason']}")
-            if db_match.get("result"):
-                notes_parts.append(f"Result: {db_match['result']}")
+            setup = db_match.get("setup_type")
+            if setup:
+                notes_parts.append(setup.replace("_", " ").title())
+            close_reason = db_match.get("close_reason", "")
+            result_str = db_match.get("result", "")
+            if close_reason:
+                notes_parts.append(close_reason.replace("_", " "))
+            elif result_str:
+                notes_parts.append(result_str.replace("_", " "))
         else:
-            # No bot data — generate basic notes from the trade itself
-            pts = abs(float(txn.get("closeLevel", 0)) - float(txn.get("openLevel", 0)))
-            if pnl > 0:
-                notes_parts.append(f"Winner +{pts:.1f}pts")
-            elif pnl < 0:
-                notes_parts.append(f"Loser -{pts:.1f}pts")
             if "Japan 225" not in instrument:
-                notes_parts.append("Non-bot instrument")
+                notes_parts.append("Manual (non-bot)")
+            else:
+                notes_parts.append("Manual")
+
+        entry = float(txn.get("openLevel", 0))
+        exit_p = float(txn.get("closeLevel", 0))
+        sl = db_match.get("stop_loss") if db_match else None
+        tp = db_match.get("take_profit") if db_match else None
+
+        # Compute R:R (risk : reward)
+        rr = None
+        if sl and tp and entry:
+            risk = abs(entry - sl)
+            reward = abs(tp - entry)
+            if risk > 0:
+                rr = round(reward / risk, 1)
 
         trade = {
             "opened_at": txn.get("openDateUtc", ""),
@@ -350,19 +355,20 @@ def _fetch_journal_locked(days):
             "instrument": instrument,
             "direction": direction,
             "lots": abs(size_val),
-            "entry_price": float(txn.get("openLevel", 0)),
-            "exit_price": float(txn.get("closeLevel", 0)),
-            "stop_loss": db_match.get("stop_loss") if db_match else None,
-            "take_profit": db_match.get("take_profit") if db_match else None,
+            "entry_price": entry,
+            "exit_price": exit_p,
+            "stop_loss": sl,
+            "take_profit": tp,
             "pnl": pnl,
             "opened_by": opened_by,
             "closed_by": closed_by,
-            "notes": " · ".join(notes_parts) if notes_parts else "",
+            "notes": " | ".join(notes_parts) if notes_parts else "",
             "reference": ref,
             "confidence": db_match.get("confidence") if db_match else None,
             "session": db_match.get("session") if db_match else None,
             "result": db_match.get("result") if db_match else ("WIN" if pnl > 0 else "LOSS" if pnl < 0 else "BE"),
             "duration": db_match.get("duration") if db_match else None,
+            "rr": rr,
         }
 
         # Compute duration if not from DB
@@ -377,6 +383,10 @@ def _fetch_journal_locked(days):
                 trade["duration"] = "—"
 
         trades.append(trade)
+
+    # Filter: only trades from Feb 26, 2026 onwards
+    cutoff = JOURNAL_CUTOFF
+    trades = [t for t in trades if (t.get("opened_at") or "") >= cutoff]
 
     # Compute running balance (work backwards from current balance)
     current_bal = acc.get("balance", 0)
