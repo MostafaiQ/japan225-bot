@@ -38,6 +38,7 @@ from config.settings import (
     MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, BREAKEVEN_BUFFER,
     DAILY_EMA200_CANDLES, PRE_SCREEN_CANDLES, AI_ESCALATION_CANDLES,
     MINUTE_5_CANDLES, DISPLAY_TZ, display_now,
+    CRASH_DAY_RANGE_PTS,
 )
 from core.ig_client import IGClient, POSITIONS_API_ERROR
 from core.indicators import analyze_timeframe, detect_setup
@@ -619,6 +620,11 @@ class TradingMonitor:
         tf_daily = analyze_timeframe(candles_daily) if candles_daily else {}
         tf_5m = analyze_timeframe(candles_5m) if candles_5m else {}
         tf_4h = analyze_timeframe(candles_4h) if candles_4h else {}
+
+        # Crash day detection logging
+        daily_range = tf_daily.get("high", 0) - tf_daily.get("low", 0) if tf_daily else 0
+        if daily_range > CRASH_DAY_RANGE_PTS:
+            logger.warning(f"CRASH DAY: intraday range={daily_range:.0f}pts")
         if not candles_4h:
             logger.warning("Failed to fetch 4H candles — pre-screen will degrade gracefully.")
 
@@ -1014,6 +1020,7 @@ class TradingMonitor:
                         current_price=current_price,
                         local_conf=local_conf,
                         final_confidence=final_confidence,
+                        indicators_snapshot=indicators,
                     )
                     return 0  # Enter monitoring immediately
                 else:
@@ -1088,6 +1095,7 @@ class TradingMonitor:
             confidence=final_confidence,
             balance=balance,
             upcoming_events=web_research.get("economic_calendar", []),
+            indicators_snapshot=indicators,
         )
 
         if not validation["approved"]:
@@ -1404,7 +1412,7 @@ class TradingMonitor:
     async def _execute_scalp(
         self, scalp_result: dict, direction: str, setup: dict,
         session: dict, current_price: float, local_conf: dict,
-        final_confidence: int,
+        final_confidence: int, indicators_snapshot: dict = None,
     ):
         """Auto-execute a scalp trade approved by Opus. No user confirmation needed."""
         tp_distance = scalp_result.get("tp_distance", 200)
@@ -1453,6 +1461,7 @@ class TradingMonitor:
             confidence=scalp_result.get("confidence", final_confidence),
             balance=balance,
             upcoming_events=[],
+            indicators_snapshot=indicators_snapshot or {},
         )
         if not validation["approved"]:
             logger.info(f"Scalp risk validation failed: {validation['rejection_reason']}")

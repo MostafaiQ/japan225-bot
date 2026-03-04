@@ -108,6 +108,31 @@ BREAKDOWN / MOMENTUM SHORT RULES (CRITICAL — read before evaluating breakdown_
     (3) volume is LOW (no conviction behind the move).
   - Do NOT reject because "daily trend is bullish" or "price above daily EMA50/200" — that is EXPECTED.
 
+CRASH DAY RULES (intraday range > 1000pts — OVERRIDES mean-reversion defaults):
+  On crash days, normal setups degrade. SLs get blown on spikes, bounces fail, TPs don't reach.
+  - Do NOT short into oversold (4H RSI < 32) — bounces are violent and unpredictable.
+  - Do NOT go long on a single 15M reversal candle — these fail 80%+ of the time in crashes.
+  - LONG requires: multiple TF reversal confirmation (not just 15M), volume surge on reversal,
+    AND price must be at a hard support (S2/S3/BB_lower/swing_low), not just near BB_mid.
+  - SHORT requires: price must NOT already be extended >800pts below session open.
+    Short the bounce, not the continuation into oversold.
+  - If you see 4+ self-warnings in your analysis, confidence MUST be <70%.
+    4+ warnings at 76% is unacceptable — warnings exist to reduce confidence, not decorate reasoning.
+  - DEFAULT on crash days: REJECT unless confluence is overwhelming (all TFs + volume + pattern + level).
+
+OVERSOLD SHORTING PROHIBITION:
+  When 4H RSI < 32:
+  - Do NOT approve SHORT unless price is actively breaking a clear support level WITH volume confirmation.
+  - 4H spinning_top + contracting bodies = exhaustion, NOT continuation signal.
+  - Bullish FVG/engulfing on lower TF while 4H exhausted = bounce incoming.
+  - If 4H RSI < 32 AND any exhaustion signal (spinning_top, contracting bodies, doji): REJECT SHORT.
+
+WARNING SEVERITY RULE:
+  Your warnings are not decoration. Each warning should reduce confidence by 3-5%.
+  If you list 4+ warnings, your confidence MUST be below 70%.
+  If you list 6+ warnings, your confidence MUST be below 60%.
+  If your reasoning says "proceed with caution" but confidence is 76%, something is wrong.
+
 QUICK REJECT: If ≥4 technical criteria fail AND volume is LOW AND no macro catalyst → set setup_found=false immediately.
   Do not spend analysis time on junk setups. Volume=LOW alone is NOT a reject (Tokyo session inherently lower).
 
@@ -125,6 +150,7 @@ def _fmt_indicators(indicators: dict) -> str:
         ("D1",  ["daily", "d1", "1d"]),
         ("4H",  ["4h", "tf_4h", "4hour", "h4"]),
         ("15M", ["15m", "tf_15m", "15min", "m15"]),
+        ("5M",  ["5m", "tf_5m", "5min", "m5"]),
     ]
     lines = []
     for label, keys in TF_KEYS:
@@ -187,8 +213,28 @@ def _fmt_indicators(indicators: dict) -> str:
         if fvg_bull or fvg_bear:
             fvg_type = "bull" if fvg_bull else "bear"
             parts.append(f"fvg={fvg_type}" + (f"@{fvg_lvl}" if fvg_lvl else ""))
-        if fibn:
+        # Full fibonacci grid with distances from price
+        fib_data = tf.get("fibonacci", {})
+        if fib_data and p != "?":
+            try:
+                fp = float(p)
+                fib_parts = []
+                for lvl in ("fib_236", "fib_382", "fib_500", "fib_618", "fib_786"):
+                    val = fib_data.get(lvl)
+                    if val:
+                        dist = val - fp
+                        fib_parts.append(f"{lvl.split('_')[1]}={val:.0f}({dist:+.0f})")
+                if fib_parts:
+                    parts.append(f"fibs=[{','.join(fib_parts)}]")
+            except (TypeError, ValueError):
+                if fibn:
+                    parts.append(f"fib={fibn}")
+        elif fibn:
             parts.append(f"fib={fibn}")
+        # BB width (volatility proxy)
+        bbw = tf.get("bb_width")
+        if bbw and isinstance(bbw, (int, float)):
+            parts.append(f"bb_width={bbw:.0f}")
         if swlo or swhi:
             parts.append(f"sweep={'low' if swlo else 'high'}")
         # Candlestick pattern
@@ -371,10 +417,23 @@ def build_scan_prompt(
     learnings_block = load_prompt_learnings()
     learnings_str = f"\n{learnings_block}\n" if learnings_block else ""
 
+    # Compute intraday range from daily TF data
+    from config.settings import CRASH_DAY_RANGE_PTS
+    daily_tf = indicators.get("daily") or indicators.get("d1") or {}
+    daily_high = daily_tf.get("high", 0)
+    daily_low = daily_tf.get("low", 0)
+    daily_range = daily_high - daily_low if daily_high and daily_low else 0
+    crash_day = daily_range > CRASH_DAY_RANGE_PTS
+
+    range_block = f"\nMARKET REGIME: Intraday range={daily_range:.0f}pts (H={daily_high:.0f} L={daily_low:.0f})"
+    if crash_day:
+        range_block += " *** CRASH DAY — EXTREME VOLATILITY ***"
+
     return (
         f"Japan 225 CFD analysis — {now}\n"
         f"{prescreen_block}{secondary_block}{local_conf_block}"
         f"\nTIMEFRAME SNAPSHOT:\n{_fmt_indicators(indicators)}\n"
+        f"{range_block}\n"
         f"\nRECENT SCANS (last 5):\n{_fmt_recent_scans(recent_scans)}\n"
         f"\nRECENT TRADES (last 5):\n{_fmt_recent_trades(recent_trades or [])}\n"
         f"\nMARKET CONTEXT: session={market_context.get('session_name','?')} | "

@@ -268,9 +268,9 @@ class TestShortCriteria:
         result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
         assert result["criteria"]["daily_trend"] is True
 
-    def test_daily_trend_above_ema200_fails_for_short(self):
+    def test_daily_trend_above_ema50_fails_for_short(self):
         tf_daily, tf_4h, tf_15m = ideal_short_setup()
-        tf_daily["above_ema200"] = True
+        tf_daily["above_ema50"] = True  # EMA50 is primary; above = not bearish = C1 fail
         result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
         assert result["criteria"]["daily_trend"] is False
 
@@ -583,16 +583,18 @@ class TestOversoldSetupTypeAware:
         assert result["criteria"]["structure"] is False
 
     def test_c1_passes_for_oversold_when_daily_bearish(self):
-        """C1 should pass for oversold setup even when daily is bearish."""
+        """C1 should pass for oversold setup even when daily is bearish (EMA50 primary)."""
         tf_daily, tf_4h, tf_15m = self._oversold_setup()
+        tf_daily["above_ema50"] = False  # EMA50 is primary now
         tf_daily["above_ema200"] = False
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m, setup_type="bollinger_lower_bounce")
         assert result["criteria"]["daily_trend"] is True
         assert "oversold exempt" in result["reasons"]["daily_trend"]
 
     def test_c1_fails_for_regular_when_daily_bearish(self):
-        """C1 should still fail for regular setup when daily is bearish."""
+        """C1 should still fail for regular setup when daily is bearish (EMA50 primary)."""
         tf_daily, tf_4h, tf_15m = self._oversold_setup()
+        tf_daily["above_ema50"] = False  # EMA50 is primary now
         tf_daily["above_ema200"] = False
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m, setup_type="bollinger_mid_bounce")
         assert result["criteria"]["daily_trend"] is False

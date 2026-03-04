@@ -5,14 +5,16 @@
 __init__(storage): holds reference to Storage
 
 validate_trade(direction, lots, entry, stop_loss, take_profit, confidence, balance,
-               upcoming_events=None) -> dict
+               upcoming_events=None, indicators_snapshot=None) -> dict
   # direction: "LONG"/"SHORT"/"BUY"/"SELL" (BUY→LONG, SELL→SHORT normalized internally)
+  # indicators_snapshot: dict with "daily" key containing high/low for crash day detection
   # Returns: {approved: bool, checks: {name: {pass, detail}}, rejection_reason, warnings, summary}
   # Checks in order:
   #   0. sl_tp_direction: LONG needs SL<entry<TP. SHORT needs TP<entry<SL. HARD ABORT.
   #   1. confidence: LONG>=70%, SHORT>=75%
   #   2. margin: margin_pct = lots*1*entry*0.005/balance <= 0.50
   #   3. risk_reward: effective_rr = (reward-7)/(risk+7) >= 1.5  (spread=7pts each side)
+  #   3B. crash_day: if daily range > 1000pts, requires confidence >= 85%
   #   4. max_positions: storage.get_position_state().has_open_position must be False
   #   5. consecutive_losses: >=2 losses + last_loss within 4hrs = cooldown
   #   6. daily_loss: abs(daily_loss_today) < balance*0.10

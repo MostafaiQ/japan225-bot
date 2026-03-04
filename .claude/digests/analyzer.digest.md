@@ -47,6 +47,9 @@ Logs warning if parse fails.
 Compact reference card. ~350 tokens. Includes HA, FVG, Fibonacci, sweep signal guidance.
 VWAP guidance: above=premium (SHORT), below=discount (LONG). PDH/PDL.
 11-criteria confidence breakdown. Quick-reject guidance for junk setups.
+NEW: CRASH DAY RULES section — prohibits shorting into oversold 4H RSI<32, requires multi-TF reversal for LONG.
+NEW: OVERSOLD SHORTING PROHIBITION — 4H RSI<32 + exhaustion = REJECT SHORT.
+NEW: WARNING SEVERITY RULE — 4+ warnings → <70%, 6+ warnings → <60%.
 NEW: MEAN-REVERSION BOUNCE RULES section:
   - bb_lower_bounce: ±150pts from lower band, RSI 20-40, reversal confirms on wick/HA/candle/sweep.
   - oversold_reversal: RSI<30 + daily bullish + reversal confirm.
@@ -64,9 +67,13 @@ Dead context_note removed (was telling AI about files it can't access since --to
 PRE-SCREEN line includes `Entry TF: {entry_tf}`.
 SECONDARY SETUP block: shown when bidirectional scan finds both directions. Includes direction, type, conf, reasoning.
 failed_criteria → FAILED LOCAL CRITERIA block.
+MARKET REGIME block: intraday range + crash day flag injected into user prompt.
 Role block: 5-step analysis (structure → quality → risk → edge → opus review if borderline).
 Key formatters:
-  _fmt_indicators(indicators)   → pipe-format table (HA, FVG, fib_near, sweep, VWAP, PDH/PDL)
+  _fmt_indicators(indicators)   → pipe-format table (HA, FVG, full fib grid, sweep, VWAP, PDH/PDL, BB width)
+                                  TF_KEYS: D1, 4H, 15M, 5M (5M data now formatted for AI).
+                                  Full fibonacci: 5 levels (236/382/500/618/786) with distance from price.
+                                  BB width: volatility proxy per TF.
   _fmt_recent_scans(scans)      → 1-line per scan summary
   _fmt_web_research(web)        → 3 lines, HIGH-impact calendar only
 

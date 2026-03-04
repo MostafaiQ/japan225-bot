@@ -44,6 +44,7 @@ _scanning_cycle() -> int (sleep seconds):
   5. asyncio.gather(15M, 5M, 4H) parallel → then await Daily sequential (avoids 28 req/min burst)
      Cold start: all 4 sequential (rate limit). Warm: 5M+15M+4H parallel, Daily time-gated.
      All use candle caching: full fetch on first call, delta on subsequent (see ig_client.digest.md)
+  5b. Crash day detection: if tf_daily high-low > CRASH_DAY_RANGE_PTS (1000pts) → logs warning.
   6. BIDIRECTIONAL detect_setup(): two calls with exclude_direction="SHORT" and "LONG"
   6b. 5M FALLBACK (per-direction): if 15M no setup → try 5M with _5m_aligns_with_15m() guard
       → LONG: 15M RSI<65 + price within 300pts of 15M BB mid/lower
@@ -84,9 +85,10 @@ _auto_execute_after_timeout(alert_data, timeout_secs=120): asyncio background ta
   Waits 120s, then checks if pending alert still exists (user didn't respond).
   If same alert still pending → auto-execute via _on_trade_confirm(). Sends Telegram "Auto-executing" notice.
 
-_execute_scalp(scalp_result, direction, setup, session, current_price, local_conf, final_confidence):
+_execute_scalp(scalp_result, direction, setup, session, current_price, local_conf, final_confidence, indicators_snapshot=None):
   Auto-execute Opus-approved scalp. Uses Opus's structure-based SL (60-120pts) and TP (150-300pts).
-  Validates R:R >= 1.5 after spread. Gets balance, computes lots. Calls send_scalp_executed() then _on_trade_confirm().
+  Validates R:R >= 1.5 after spread. Gets balance, computes lots. Passes indicators_snapshot to validate_trade().
+  Calls send_scalp_executed() then _on_trade_confirm().
 
 Near-miss flow (in _scanning_cycle, after AI rejection):
   Triggers when: local_score >= min_conf AND not QUICK REJECT

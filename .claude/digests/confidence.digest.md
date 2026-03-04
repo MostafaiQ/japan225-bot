@@ -20,11 +20,12 @@ SHORT_RSI_LOW/HIGH=55/75
 # 6/12=65% (fails 70 gate), 5/12=59% (below 60% gate)
 
 # 12 criteria:
-# 1. daily_trend:        LONG=above EMA200 daily.  SHORT=below EMA200 daily.  (EMA50 fallback)
+# 1. daily_trend:        EMA50 PRIMARY (not EMA200). EMA200 = fallback only.
+#                        LONG=above EMA50 daily.  SHORT=below EMA50 daily.
+#                        EMA200 lags thousands of pts in crashes — always reads "bullish" = useless.
 #                        OVERSOLD EXEMPT: bb_lower_bounce/oversold_reversal pass C1 even when daily bearish.
 #                        BREAKDOWN EXEMPT: breakdown_continuation/bear_flag_breakdown/multi_tf_bearish pass C1
 #                        even when daily bullish. Daily EMA lags on big selloff days (transition phase).
-#                        Backtest: counter-trend LONG WR=48% vs trend-aligned 41%.
 # 2. entry_level:        LONG=near BB_mid (±150pts) OR EMA50 (±150pts) OR BB_lower (±150pts) OR VWAP below (±150pts).
 #                        SHORT=near BB_upper or BB_mid or EMA50_from_below (price<=ema50) OR VWAP above (±150pts).
 # 3. rsi_15m:            LONG standard=RSI 30-55 (was 30-65, tightened — RSI 55-65 WR=38%).

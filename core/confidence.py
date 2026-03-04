@@ -103,50 +103,51 @@ def compute_confidence(
         "breakdown_continuation", "bear_flag_breakdown", "multi_tf_bearish"
     )
     # ---- Criterion 1: Daily Trend Aligned (oversold-exempt) ----
+    # Uses EMA50 as PRIMARY (more responsive to recent trend changes).
+    # EMA200 as fallback only. On crash days, EMA200 lags by thousands of points
+    # and always reads "bullish" — useless for trend detection.
     # Oversold bounces (bb_lower_bounce, oversold_reversal) pass C1 even when daily is bearish.
-    # Backtest data: counter-trend LONG trades win 48% vs trend-aligned at 41%.
-    # Mean-reversion into a daily downtrend produces sharper, more decisive bounces.
     if direction == "LONG":
-        if above_ema200_daily is not None:
-            c1 = bool(above_ema200_daily)
-            if not c1 and _oversold_setup:
-                c1 = True
-                reasons["daily_trend"] = f"Daily EMA200: below (oversold exempt — counter-trend bounce)"
-            else:
-                reasons["daily_trend"] = f"Daily EMA200: {'above' if c1 else 'below'} (price={price:.0f})"
-        elif above_ema50_daily is not None:
+        if above_ema50_daily is not None:
             c1 = bool(above_ema50_daily)
             if not c1 and _oversold_setup:
                 c1 = True
                 reasons["daily_trend"] = f"Daily EMA50: below (oversold exempt — counter-trend bounce)"
             else:
-                reasons["daily_trend"] = f"Daily EMA200 N/A, using EMA50: {'above' if c1 else 'below'}"
+                reasons["daily_trend"] = f"Daily EMA50: {'above' if c1 else 'below'} (price={price:.0f})"
+        elif above_ema200_daily is not None:
+            c1 = bool(above_ema200_daily)
+            if not c1 and _oversold_setup:
+                c1 = True
+                reasons["daily_trend"] = f"Daily EMA200: below (oversold exempt — counter-trend bounce)"
+            else:
+                reasons["daily_trend"] = f"Daily EMA50 N/A, using EMA200: {'above' if c1 else 'below'}"
         else:
             c1 = False
             reasons["daily_trend"] = "Daily EMA data unavailable"
     else:  # SHORT
-        if above_ema200_daily is not None:
-            c1 = not bool(above_ema200_daily)
-            if not c1 and _overbought_setup:
-                c1 = True
-                reasons["daily_trend"] = f"Daily EMA200: above (overbought exempt — counter-trend reversal)"
-            elif not c1 and _breakdown_setup:
-                # Breakdown/momentum shorts: daily bullish is EXPECTED during transition.
-                # 4H/15M already turned bearish but daily EMA lags on big selloff days.
-                c1 = True
-                reasons["daily_trend"] = f"Daily EMA200: above (breakdown exempt — daily lags in transition)"
-            else:
-                reasons["daily_trend"] = f"Daily EMA200: {'below (bearish)' if c1 else 'above (not bearish)'}"
-        elif above_ema50_daily is not None:
+        if above_ema50_daily is not None:
             c1 = not bool(above_ema50_daily)
             if not c1 and _overbought_setup:
                 c1 = True
                 reasons["daily_trend"] = f"Daily EMA50: above (overbought exempt — counter-trend reversal)"
             elif not c1 and _breakdown_setup:
+                # Breakdown/momentum shorts: daily bullish is EXPECTED during transition.
+                # 4H/15M already turned bearish but daily EMA lags on big selloff days.
                 c1 = True
                 reasons["daily_trend"] = f"Daily EMA50: above (breakdown exempt — daily lags in transition)"
             else:
-                reasons["daily_trend"] = f"Daily EMA200 N/A, using EMA50: {'below' if c1 else 'above'}"
+                reasons["daily_trend"] = f"Daily EMA50: {'below (bearish)' if c1 else 'above (not bearish)'}"
+        elif above_ema200_daily is not None:
+            c1 = not bool(above_ema200_daily)
+            if not c1 and _overbought_setup:
+                c1 = True
+                reasons["daily_trend"] = f"Daily EMA200: above (overbought exempt — counter-trend reversal)"
+            elif not c1 and _breakdown_setup:
+                c1 = True
+                reasons["daily_trend"] = f"Daily EMA200: above (breakdown exempt — daily lags in transition)"
+            else:
+                reasons["daily_trend"] = f"Daily EMA50 N/A, using EMA200: {'below (bearish)' if c1 else 'above (not bearish)'}"
         else:
             c1 = False
             reasons["daily_trend"] = "Daily EMA data unavailable"

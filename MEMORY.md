@@ -43,7 +43,7 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 | `core/indicators.py` | Pure math. analyze_timeframe(), detect_setup() (LONG+SHORT bidirectional), ema/rsi/bb/vwap/heiken_ashi. Phase 1: HA, FVG, Fibonacci, PDH/PDL, liquidity sweep. Phase 2: pivot_points (daily floor pivots), detect_candlestick_patterns (12 patterns), analyze_body_trend (expansion/exhaustion). _build_confluence() uses pivots+candle+body for confluence/counter. indicators_snapshot includes all Phase 1+2 keys. |
 | `core/session.py` | get_current_session() UTC, is_no_trade_day(), is_weekend(), is_friday_blackout() |
 | `core/momentum.py` | MomentumTracker class. add_price(), should_alert(), is_stale(), milestone_alert() |
-| `core/confidence.py` | compute_confidence(direction, tf_daily, tf_4h, tf_15m, events, web) → score dict. 11-criteria proportional scoring (C11=HA alignment+streak). C2 has VWAP fallback. |
+| `core/confidence.py` | compute_confidence(direction, tf_daily, tf_4h, tf_15m, events, web) → score dict. 12-criteria proportional scoring. C1 uses EMA50 primary (not EMA200). C2 has VWAP fallback. |
 | `ai/analyzer.py` | AIAnalyzer. scan_with_sonnet() (single subprocess + Opus sub-agent). **CLI subprocess (OAuth/subscription, no API key)**. post_trade_analysis(), load_prompt_learnings(). |
 | `ai/context_writer.py` | write_context() — writes storage/context/*.md before each AI call. market_snapshot, recent_activity, macro, live_edge. Called by monitor.py before Sonnet. |
 | `trading/risk_manager.py` | RiskManager.validate_trade() 11 checks. get_safe_lot_size() |
@@ -76,6 +76,7 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 EPIC = "IX.D.NIKKEI.IFM.IP"   CONTRACT_SIZE = 1 ($1/pt)   MARGIN_FACTOR = 0.005 (0.5%)
 Lot size = margin cap only (50% of balance). AI finds the setup, you go in with conviction.
 MIN_CONFIDENCE = 70            MIN_CONFIDENCE_SHORT = 75 (BOJ risk)
+CRASH_DAY_RANGE_PTS = 1000     CRASH_DAY_MIN_CONFIDENCE = 85   OVERSOLD_SHORT_BLOCK_RSI_4H = 32
 DEFAULT_SL_DISTANCE = 150      DEFAULT_TP_DISTANCE = 400      MIN_RR_RATIO = 1.5
 BREAKEVEN_TRIGGER = 150        BREAKEVEN_BUFFER = 10          TRAILING_STOP_DISTANCE = 150
 SCAN_INTERVAL_SECONDS = 300    MONITOR_INTERVAL_SECONDS = 2   OFFHOURS_INTERVAL_SECONDS = 1800
@@ -102,6 +103,21 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 - dashboard chat: non-atomic _write_history() race condition on concurrent writes (MEDIUM)
 - monitor.py: _handle_position_closed uses last monitored price, not actual IG fill price (MEDIUM)
 - exit_manager.py: Runner phase trailing stop can exceed IG rate limit (30 non-trading/min) (MEDIUM)
+
+## AI Decision Quality Fixes (2026-03-04)
+- confidence.py: **C1 daily trend: EMA50 primary** (was EMA200). EMA200 at 48,795 vs price 54,000 = always "bullish" = useless. EMA50 (55,205) is responsive to recent price action. On crash day, price below EMA50 → C1 FAILS for LONG → knife-catching LONGs blocked.
+- settings.py: **Crash day constants** — CRASH_DAY_RANGE_PTS=1000, CRASH_DAY_MIN_CONFIDENCE=85, OVERSOLD_SHORT_BLOCK_RSI_4H=32.
+- risk_manager.py: **Crash day gate** — new `indicators_snapshot` param on validate_trade(). If intraday range > 1000pts AND confidence < 85%, trade is blocked. Prevents medium-confidence trades during extreme volatility.
+- analyzer.py: **5M data in AI prompt** — added to TF_KEYS. Was already in indicators dict, just never formatted.
+- analyzer.py: **Full fibonacci grid** — all 5 levels (236/382/500/618/786) with distances from price. Was single `fib_near` only.
+- analyzer.py: **BB width** — volatility proxy added to each TF line.
+- analyzer.py: **MARKET REGIME block** — intraday range + crash day flag injected into user prompt.
+- analyzer.py: **Crash day rules** in system prompt — prohibits shorting into oversold 4H RSI<32, prohibits LONG on single 15M candle during crash, requires multi-TF reversal for LONG, warns about SL blowouts.
+- analyzer.py: **Oversold shorting prohibition** — 4H RSI<32 + exhaustion signals = REJECT SHORT.
+- analyzer.py: **Warning severity rule** — 4+ warnings → <70%, 6+ warnings → <60%. Prevents high confidence with many self-warnings.
+- monitor.py: **Crash day logging** — logs warning when intraday range > 1000pts.
+- monitor.py: **indicators_snapshot wired** to both validate_trade() calls (Sonnet pipeline + scalp auto-execute).
+- Tests: 338/338 passing. Test fixtures updated for EMA50-primary C1.
 
 ## Critical Fixes Applied (2026-03-04)
 - monitor.py: **SL/TP verification after order placement** — verifies IG returned stopLevel/limitLevel in deal confirmation. If missing, immediately calls modify_position() to add SL/TP + sends CRITICAL Telegram alert. Root cause of Trade #3 losing 224pts past 102pt SL.
