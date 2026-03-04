@@ -39,6 +39,7 @@ from config.settings import (
     DAILY_EMA200_CANDLES, PRE_SCREEN_CANDLES, AI_ESCALATION_CANDLES,
     MINUTE_5_CANDLES, DISPLAY_TZ, display_now,
     EXTREME_DAY_RANGE_PTS, MOMENTUM_SCAN_BYPASS_SIGNALS,
+    TOKYO_FORCED_LOTS, TOKYO_MAX_CONSECUTIVE_LOSSES,
 )
 from core.ig_client import IGClient, POSITIONS_API_ERROR
 from core.indicators import analyze_timeframe, detect_setup
@@ -89,6 +90,7 @@ class TradingMonitor:
         self._position_empty_count = 0   # Consecutive empty responses from IG
         self._position_check_counter = 0  # Increments every 2s cycle; position existence checked every N cycles
         self._force_scan_event = asyncio.Event()
+        self._pos_check_running = False
         self._trade_execution_lock = asyncio.Lock()  # C1 fix: prevent double position opening
         self._started_at = datetime.now(timezone.utc)
         self._last_scan_time: datetime | None = None
@@ -100,6 +102,7 @@ class TradingMonitor:
         self._last_opus_decision: dict | None = None  # Track Opus direction consistency
         self._opus_pos_eval_counter = 0          # Counts monitoring cycles; eval fires every OPUS_POSITION_EVAL_EVERY_N
         self._position_price_buffer: list = []   # Rolling price buffer for Opus position evaluator
+        self._streaming_reconnect_counter = 0    # Consecutive cycles without streaming price → triggers reconnect
         # Paths for dashboard integration
         self._state_path   = Path(__file__).parent / "storage" / "data" / "bot_state.json"
         self._overrides_path = Path(__file__).parent / "storage" / "data" / "dashboard_overrides.json"
@@ -108,6 +111,8 @@ class TradingMonitor:
         self._force_open_pending_path = Path(__file__).parent / "storage" / "data" / "force_open_pending.json"
         self._force_open_trigger_path = Path(__file__).parent / "storage" / "data" / "force_open.trigger"
         self._pos_check_trigger_path  = Path(__file__).parent / "storage" / "data" / "pos_check.trigger"
+        self._price_buffer_cache_path = Path(__file__).parent / "storage" / "data" / "price_buffer_cache.json"
+        self._buffer_save_counter = 0  # Save every N monitoring cycles
 
     # ============================================================
     # STARTUP
@@ -158,6 +163,9 @@ class TradingMonitor:
 
         # Startup sync — reconcile DB state with IG reality
         await self.startup_sync()
+
+        # Start Lightstreamer price tick streaming (transparent REST fallback if unavailable)
+        self.ig.start_streaming()
 
         # Check for AI result that survived a bot restart
         await self._recover_pending_ai()
@@ -259,6 +267,10 @@ class TradingMonitor:
             # Init momentum tracker for recovered position
             direction = "LONG" if (pos.get("direction") or "BUY").upper() in ("BUY", "LONG") else "SHORT"
             self.momentum_tracker = MomentumTracker(direction, float(pos.get("level") or 0))
+            # Restore price buffer from disk cache + gap-fill from IG
+            opened_at_str = pos.get("created", "")
+            if opened_at_str:
+                await self._async_fetch_fetch_and_set_buffer(opened_at_str)
             await self.telegram.send_alert(
                 "Bot restarted. Found open position on IG not in DB.\n"
                 f"Deal: {pos.get('deal_id')} | {pos.get('direction')} @ {pos.get('level')}\n"
@@ -295,6 +307,10 @@ class TradingMonitor:
                 entry = float(db_state.get("entry_price") or 0)
                 self.momentum_tracker = MomentumTracker(direction, entry)
                 logger.info("RECOVERY: Position intact on both. Resuming monitoring.")
+                # Restore price buffer from disk cache + gap-fill from IG
+                opened_at_str = db_state.get("opened_at", "")
+                if opened_at_str:
+                    await self._async_fetch_fetch_and_set_buffer(opened_at_str)
                 await self.telegram.send_alert(
                     f"Bot restarted. {db_dir} position intact.\n"
                     f"Entry: {db_state.get('entry_price', 0):.0f} | "
@@ -1221,6 +1237,7 @@ class TradingMonitor:
             "confidence_breakdown": final_result.get("confidence_breakdown", {}),
             "local_confidence": local_conf.get("score"),
             "ai_analysis": final_result.get("reasoning", ""),
+            "indicators_compact": setup.get("indicators_snapshot", {}),
         }
 
         self._last_scan_detail = {"outcome": "trade_alert", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
@@ -1292,16 +1309,32 @@ class TradingMonitor:
             self._position_empty_count = 0
             return
 
-        # --- Get current price (every 2s, all non-position-check cycles) ---
-        market = await asyncio.get_event_loop().run_in_executor(
-            None, self.ig.get_market_info
-        )
-        if not market:
-            logger.warning("Failed to get market price for monitoring")
-            return
+        # --- Get current price (streaming preferred; REST fallback on stale/disconnect) ---
+        streaming_price = self.ig.get_streaming_price()
+        if streaming_price:
+            current_price = streaming_price
+            self._current_price = current_price
+            self._streaming_reconnect_counter = 0
+        else:
+            # Streaming stale or unavailable — attempt background reconnect after 30 consecutive misses (60s)
+            self._streaming_reconnect_counter += 1
+            if self._streaming_reconnect_counter >= 30:
+                self._streaming_reconnect_counter = 0
+                async def _try_reconnect_streaming():
+                    ok = await asyncio.get_event_loop().run_in_executor(None, self.ig.start_streaming)
+                    if ok:
+                        logger.info("Lightstreamer streaming reconnected")
+                asyncio.create_task(_try_reconnect_streaming())
 
-        current_price = market.get("bid", 0) if logical_direction == "LONG" else market.get("offer", 0)
-        self._current_price = current_price
+            # REST fallback
+            market = await asyncio.get_event_loop().run_in_executor(
+                None, self.ig.get_market_info
+            )
+            if not market:
+                logger.warning("Failed to get market price for monitoring")
+                return
+            current_price = market.get("bid", 0) if logical_direction == "LONG" else market.get("offer", 0)
+            self._current_price = current_price
 
         # --- Update momentum tracker ---
         if self.momentum_tracker is None:
@@ -1361,8 +1394,14 @@ class TradingMonitor:
 
         # --- Opus position evaluator (every 2 minutes, or on-demand via dashboard/telegram) ---
         self._position_price_buffer.append(current_price)
-        if len(self._position_price_buffer) > 30:  # keep last 30 readings = 60s
+        if len(self._position_price_buffer) > 10800:  # hard cap at 6hrs (~6hrs × 1800 readings)
             self._position_price_buffer.pop(0)
+
+        # Persist buffer to disk every ~60 cycles (2 min) so restarts only gap-fill
+        self._buffer_save_counter += 1
+        if self._buffer_save_counter >= 60:
+            self._buffer_save_counter = 0
+            self._save_price_buffer(pos_state.get("opened_at", ""))
 
         if self._pos_check_trigger_path.exists():
             try:
@@ -1374,59 +1413,72 @@ class TradingMonitor:
         self._opus_pos_eval_counter += 1
         if self._opus_pos_eval_counter >= OPUS_POSITION_EVAL_EVERY_N:
             self._opus_pos_eval_counter = 0
-            logger.info("Opus position eval triggered (periodic 2-min)")
-            sl_level = pos_state.get("stop_level") or 0
-            tp_level = pos_state.get("limit_level") or 0
-            setup_type = pos_state.get("setup_type", "unknown")
-            opened_at_str = pos_state.get("opened_at", "")
-            try:
-                opened_at = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
-                time_open_min = (datetime.now(timezone.utc) - opened_at).total_seconds() / 60
-            except Exception:
-                time_open_min = 0
+            if self._pos_check_running:
+                logger.info("Opus position eval skipped (on-demand check already running)")
+            else:
+                logger.info("Opus position eval triggered (periodic 2-min)")
+                self._pos_check_running = True
+                try:
+                    sl_level = pos_state.get("stop_level") or 0
+                    tp_level = pos_state.get("limit_level") or 0
+                    opened_at_str = pos_state.get("opened_at", "")
+                    try:
+                        opened_at = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
+                        time_open_min = (datetime.now(timezone.utc) - opened_at).total_seconds() / 60
+                    except Exception:
+                        time_open_min = 0
+                    try:
+                        entry_context = json.loads(pos_state.get("entry_context") or "{}")
+                    except Exception:
+                        entry_context = {}
+                    current_indicators = await self._fetch_current_indicators()
 
-            eval_result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self.analyzer.evaluate_open_position(
-                    direction=logical_direction,
-                    entry=entry,
-                    current_price=current_price,
-                    stop_loss=sl_level,
-                    take_profit=tp_level,
-                    phase=phase,
-                    time_in_trade_min=time_open_min,
-                    recent_prices=list(self._position_price_buffer),
-                    setup_type=setup_type,
-                    lots=pos_state.get("lots", 1.0),
-                ),
-            )
-
-            rec = eval_result.get("recommendation", "HOLD")
-            conf = eval_result.get("confidence", 0)
-
-            await self.telegram.send_position_eval(
-                eval_result=eval_result,
-                direction=logical_direction,
-                entry=entry,
-                current_price=current_price,
-                pnl_pts=pnl_points,
-                phase=phase,
-                deal_id=deal_id,
-            )
-
-            # Auto-close if Opus says CLOSE_NOW with high confidence
-            if rec == "CLOSE_NOW" and conf >= 70:
-                logger.warning(
-                    f"Opus position eval recommends CLOSE_NOW ({conf}%). Auto-closing."
-                )
-                await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self.ig.close_position(
-                        deal_id=deal_id,
-                        direction=logical_direction,
-                        size=pos_state.get("lots", 1.0),
+                    eval_result = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: self.analyzer.evaluate_open_position(
+                            direction=logical_direction,
+                            entry=entry,
+                            current_price=current_price,
+                            stop_loss=sl_level,
+                            take_profit=tp_level,
+                            phase=phase,
+                            time_in_trade_min=time_open_min,
+                            recent_prices=list(self._position_price_buffer),
+                            lots=pos_state.get("lots", 1.0),
+                            entry_context=entry_context,
+                            current_indicators=current_indicators,
+                        ),
                     )
-                )
+
+                    rec = eval_result.get("recommendation", "HOLD")
+                    conf = eval_result.get("confidence", 0)
+
+                    await self.telegram.send_position_eval(
+                        eval_result=eval_result,
+                        direction=logical_direction,
+                        entry=entry,
+                        current_price=current_price,
+                        pnl_pts=pnl_points,
+                        phase=phase,
+                        deal_id=deal_id,
+                        lots=pos_state.get("lots", 1.0),
+                    )
+
+                    # Auto-close if Opus says CLOSE_NOW with high confidence
+                    if rec == "CLOSE_NOW" and conf >= 70:
+                        logger.warning(
+                            f"Opus position eval recommends CLOSE_NOW ({conf}%). Auto-closing."
+                        )
+                        await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: self.ig.close_position(
+                                deal_id=deal_id,
+                                direction=logical_direction,
+                                size=pos_state.get("lots", 1.0),
+                            )
+                        )
+                finally:
+                    self._pos_check_running = False
 
         # --- 3-Phase exit strategy ---
         position_data = {
@@ -1546,6 +1598,11 @@ class TradingMonitor:
         )
         logger.info(f"Position closed: {result} | P&L: {pnl_points:+.0f}pts (${pnl_dollars:+.2f})")
 
+        # Clear price buffer cache — no longer needed for this trade
+        self._price_buffer_cache_path.unlink(missing_ok=True)
+        self._position_price_buffer = []
+        self._buffer_save_counter = 0
+
         # Post-trade learning: update prompt_learnings.json + brier_scores.json
         try:
             trade_data = {
@@ -1647,6 +1704,7 @@ class TradingMonitor:
                 f"SL={sl_distance}pts, TP={tp_distance}pts, R:R={effective_rr:.2f}. "
                 f"{scalp_result.get('reasoning', '')}"
             ),
+            "indicators_compact": setup.get("indicators_snapshot", {}) if setup else {},
         }
 
         # Notify user THEN execute (no confirmation needed)
@@ -1681,12 +1739,16 @@ class TradingMonitor:
         ig_direction = "BUY" if direction == "LONG" else "SELL"
         analyzed_entry = float(alert_data.get("entry", 0))
 
+        # Session-specific rules (Tokyo: minimum lots, tighter TP, higher loss tolerance)
+        _is_tokyo = get_current_session()["name"] == "tokyo"
+
         # --- C2/C3 fix: Lightweight risk re-validation ---
         account = self.storage.get_account_state()
         consec_losses = account.get("consecutive_losses", 0)
         last_loss_time = account.get("last_loss_time")
         from config.settings import MAX_CONSECUTIVE_LOSSES, COOLDOWN_HOURS
-        if consec_losses >= MAX_CONSECUTIVE_LOSSES and last_loss_time:
+        _max_consec = TOKYO_MAX_CONSECUTIVE_LOSSES if _is_tokyo else MAX_CONSECUTIVE_LOSSES
+        if consec_losses >= _max_consec and last_loss_time:
             cooldown_end = datetime.fromisoformat(last_loss_time) + timedelta(hours=COOLDOWN_HOURS)
             if datetime.now() < cooldown_end:
                 # High-confidence bypass: skip cooldown for strong setups
@@ -1759,13 +1821,19 @@ class TradingMonitor:
             sl_distance = int(DEFAULT_SL_DISTANCE)
             tp_distance = 400
 
+        # --- Tokyo session mode: minimum lots (AI still decides SL/TP based on volatility) ---
+        _final_lots = alert_data.get("lots", 0.01)
+        if _is_tokyo and _final_lots > TOKYO_FORCED_LOTS:
+            logger.info(f"Tokyo mode: capping lots {_final_lots}→{TOKYO_FORCED_LOTS} (min-risk, AI sets SL/TP)")
+            _final_lots = TOKYO_FORCED_LOTS
+
         # --- Place order with distance-based SL/TP ---
         try:
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.ig.open_position(
                     direction=ig_direction,
-                    size=alert_data.get("lots", 0.01),
+                    size=_final_lots,
                     stop_distance=sl_distance,
                     limit_distance=tp_distance,
                 )
@@ -1856,11 +1924,35 @@ class TradingMonitor:
             )
             balance = balance_info.get("balance", 0) if balance_info else 0
 
+        sl_pts = abs(actual_entry - actual_sl)
+        tp_pts = abs(actual_tp - actual_entry)
+        entry_rr = round((tp_pts - SPREAD_ESTIMATE) / (sl_pts + SPREAD_ESTIMATE), 2) if sl_pts > 0 else 0
+        ind = alert_data.get("indicators_compact") or {}
+        entry_context = {
+            "setup_type":    alert_data.get("setup_type", "unknown"),
+            "confidence":    alert_data.get("confidence"),
+            "session":       alert_data.get("session"),
+            "sl_pts":        round(sl_pts),
+            "tp_pts":        round(tp_pts),
+            "rr":            entry_rr,
+            "ai_reasoning":  alert_data.get("ai_analysis") or "",
+            "rsi_15m":       ind.get("rsi_15m"),
+            "rsi_4h":        ind.get("rsi_4h"),
+            "ema50_15m":     ind.get("ema50_15m"),
+            "above_vwap":    ind.get("above_vwap"),
+            "ha_bullish":    ind.get("ha_bullish"),
+            "ha_streak":     ind.get("ha_streak"),
+            "daily_bullish": ind.get("daily_bullish"),
+            "volume_ratio":  ind.get("volume_ratio"),
+            "swing_high_20": ind.get("swing_high_20"),
+            "swing_low_20":  ind.get("swing_low_20"),
+        }
+
         trade_num = self.storage.open_trade_atomic(
             trade={
                 "deal_id": result.get("deal_id"),
                 "direction": direction,
-                "lots": alert_data.get("lots"),
+                "lots": _final_lots,
                 "entry_price": actual_entry,
                 "stop_loss": actual_sl,
                 "take_profit": actual_tp,
@@ -1874,17 +1966,23 @@ class TradingMonitor:
             position={
                 "deal_id": result.get("deal_id"),
                 "direction": direction,
-                "lots": alert_data.get("lots"),
+                "lots": _final_lots,
                 "entry_price": actual_entry,
                 "stop_level": actual_sl,
                 "limit_level": actual_tp,
                 "confidence": alert_data.get("confidence"),
+                "entry_context": entry_context,
             }
         )
 
-        # Init momentum tracker
+        # Init momentum tracker + reset price buffer for fresh trade history
         self.momentum_tracker = MomentumTracker(direction, actual_entry)
+        self._position_price_buffer = []
+        self._opus_pos_eval_counter = 0
+        self._buffer_save_counter = 0
         self._position_empty_count = 0
+        # Clear stale buffer cache from previous trade
+        self._price_buffer_cache_path.unlink(missing_ok=True)
 
         # Clean up pending force-open file — trade is now open
         self._force_open_pending_path.unlink(missing_ok=True)
@@ -1920,6 +2018,102 @@ class TradingMonitor:
                 pass
             await asyncio.sleep(2)
 
+    def _save_price_buffer(self, opened_at_str: str) -> None:
+        """Persist price buffer to disk so restarts don't lose history."""
+        try:
+            data = {
+                "opened_at": opened_at_str,
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+                "prices": self._position_price_buffer,
+            }
+            self._price_buffer_cache_path.write_text(json.dumps(data))
+        except Exception as e:
+            logger.warning(f"Price buffer save failed: {e}")
+
+    def _load_price_buffer(self, opened_at_str: str) -> tuple:
+        """
+        Load price buffer from disk cache.
+        Returns (prices: list, saved_at: datetime | None) if cache exists and matches this trade.
+        Returns ([], None) otherwise.
+        """
+        try:
+            if not self._price_buffer_cache_path.exists():
+                return [], None
+            data = json.loads(self._price_buffer_cache_path.read_text())
+            if data.get("opened_at") != opened_at_str:
+                # Stale cache from a different trade
+                self._price_buffer_cache_path.unlink(missing_ok=True)
+                return [], None
+            saved_at = datetime.fromisoformat(data["saved_at"].replace("Z", "+00:00"))
+            return data.get("prices", []), saved_at
+        except Exception as e:
+            logger.warning(f"Price buffer load failed: {e}")
+            return [], None
+
+    async def _async_fetch_fetch_and_set_buffer(self, opened_at_str: str) -> None:
+        """
+        On startup with existing position: load cached buffer from disk, then
+        fetch only the gap (saved_at → now) from IG and append. Far cheaper than
+        re-fetching the full history on every restart.
+        """
+        try:
+            opened_at_dt = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
+        except Exception:
+            return
+
+        cached_prices, saved_at = self._load_price_buffer(opened_at_str)
+
+        if cached_prices and saved_at:
+            # Cache hit — only fetch the gap
+            gap_prices = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self.ig.get_trade_history_buffer(saved_at)
+            )
+            self._position_price_buffer = (cached_prices + gap_prices)[-10800:]
+            logger.info(
+                f"Buffer restored: {len(cached_prices)} cached + {len(gap_prices)} gap → "
+                f"{len(self._position_price_buffer)} total"
+            )
+        else:
+            # No cache — full fetch from trade open
+            full_prices = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self.ig.get_trade_history_buffer(opened_at_dt)
+            )
+            self._position_price_buffer = full_prices
+            logger.info(f"Buffer cold-filled: {len(full_prices)} price points from IG")
+
+        # Immediately persist so next restart has this as baseline
+        self._save_price_buffer(opened_at_str)
+
+    async def _fetch_current_indicators(self) -> dict:
+        """Fetch fresh 15M + 4H candles and return compact indicator snapshot for position evaluator."""
+        try:
+            candles_15m, candles_4h = await asyncio.gather(
+                asyncio.get_event_loop().run_in_executor(None, lambda: self.ig.get_prices("MINUTE_15", 30)),
+                asyncio.get_event_loop().run_in_executor(None, lambda: self.ig.get_prices("HOUR_4", 30)),
+            )
+            tf_15m = analyze_timeframe(candles_15m) if candles_15m else {}
+            tf_4h  = analyze_timeframe(candles_4h)  if candles_4h  else {}
+            price  = tf_15m.get("price", 0) or 0
+            ema9   = tf_15m.get("ema9",  0) or 0
+            ema50  = tf_15m.get("ema50", 0) or 0
+            return {
+                "rsi_15m":     tf_15m.get("rsi"),
+                "rsi_4h":      tf_4h.get("rsi"),
+                "ema9_dist":   round(price - ema9,  1) if price and ema9  else None,
+                "ema50_dist":  round(price - ema50, 1) if price and ema50 else None,
+                "above_vwap":  tf_15m.get("above_vwap"),
+                "vwap":        tf_15m.get("vwap"),
+                "bb_upper":    tf_15m.get("bollinger_upper"),
+                "bb_mid":      tf_15m.get("bollinger_mid"),
+                "bb_lower":    tf_15m.get("bollinger_lower"),
+                "ha_bullish":  tf_15m.get("ha_bullish"),
+                "ha_streak":   tf_15m.get("ha_streak"),
+                "daily_bullish": tf_15m.get("above_ema200_fallback"),
+            }
+        except Exception as e:
+            logger.warning(f"_fetch_current_indicators failed: {e}")
+            return {}
+
     async def _on_force_scan(self):
         """Triggered by /force command. Wakes the main loop immediately."""
         await self.telegram.send_alert("Force scan requested. Running next cycle immediately...")
@@ -1927,60 +2121,77 @@ class TradingMonitor:
 
     async def _on_pos_check(self):
         """Triggered by /poscheck command or dashboard button. Runs Opus position eval immediately."""
+        if self._pos_check_running:
+            await self.telegram.send_alert("⏳ Position check already running — please wait.")
+            return
         pos_state = self.storage.get_position_state()
         if not pos_state.get("has_open"):
             logger.info("Opus position eval triggered (on-demand) — no open position")
             await self.telegram.send_alert("ℹ️ No open position to evaluate.")
             return
-        logger.info("Opus position eval triggered (on-demand)")
-        await self.telegram.send_alert("🔍 Running Opus position check…")
-        direction = pos_state.get("direction", "LONG")
-        logical_direction = "LONG" if direction == "BUY" else ("SHORT" if direction == "SELL" else direction)
-        entry = pos_state.get("entry_price", 0)
-        sl_level = pos_state.get("stop_level") or 0
-        tp_level = pos_state.get("limit_level") or 0
-        setup_type = pos_state.get("setup_type", "unknown")
-        opened_at_str = pos_state.get("opened_at", "")
+        self._pos_check_running = True
         try:
-            opened_at = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
-            time_open_min = (datetime.now(timezone.utc) - opened_at).total_seconds() / 60
+            logger.info("Opus position eval triggered (on-demand)")
+            await self.telegram.send_alert("🔍 Running Opus position check…")
         except Exception:
-            time_open_min = 0
+            self._pos_check_running = False
+            raise
         try:
-            current_price_data = await asyncio.get_event_loop().run_in_executor(None, self.ig.get_market_info)
-            current_price = (
-                current_price_data.get("bid", entry) if logical_direction == "LONG"
-                else current_price_data.get("offer", entry)
-            ) if isinstance(current_price_data, dict) else entry
-        except Exception:
-            current_price = self._current_price or entry
-        pnl_pts = (current_price - entry) if logical_direction == "LONG" else (entry - current_price)
-        phase = pos_state.get("phase", "initial") or "initial"
+            direction = pos_state.get("direction", "LONG")
+            logical_direction = "LONG" if direction == "BUY" else ("SHORT" if direction == "SELL" else direction)
+            entry = pos_state.get("entry_price", 0)
+            sl_level = pos_state.get("stop_level") or 0
+            tp_level = pos_state.get("limit_level") or 0
+            opened_at_str = pos_state.get("opened_at", "")
+            try:
+                opened_at = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
+                time_open_min = (datetime.now(timezone.utc) - opened_at).total_seconds() / 60
+            except Exception:
+                time_open_min = 0
+            try:
+                current_price_data = await asyncio.get_event_loop().run_in_executor(None, self.ig.get_market_info)
+                current_price = (
+                    current_price_data.get("bid", entry) if logical_direction == "LONG"
+                    else current_price_data.get("offer", entry)
+                ) if isinstance(current_price_data, dict) else entry
+            except Exception:
+                current_price = self._current_price or entry
+            pnl_pts = (current_price - entry) if logical_direction == "LONG" else (entry - current_price)
+            phase = pos_state.get("phase", "initial") or "initial"
+            try:
+                entry_context = json.loads(pos_state.get("entry_context") or "{}")
+            except Exception:
+                entry_context = {}
+            current_indicators = await self._fetch_current_indicators()
 
-        eval_result = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: self.analyzer.evaluate_open_position(
+            eval_result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.analyzer.evaluate_open_position(
+                    direction=logical_direction,
+                    entry=entry,
+                    current_price=current_price,
+                    stop_loss=sl_level,
+                    take_profit=tp_level,
+                    phase=phase,
+                    time_in_trade_min=time_open_min,
+                    recent_prices=list(self._position_price_buffer),
+                    lots=pos_state.get("lots", 1.0),
+                    entry_context=entry_context,
+                    current_indicators=current_indicators,
+                ),
+            )
+            await self.telegram.send_position_eval(
+                eval_result=eval_result,
                 direction=logical_direction,
                 entry=entry,
                 current_price=current_price,
-                stop_loss=sl_level,
-                take_profit=tp_level,
+                pnl_pts=pnl_pts,
                 phase=phase,
-                time_in_trade_min=time_open_min,
-                recent_prices=list(self._position_price_buffer),
-                setup_type=setup_type,
+                deal_id=pos_state.get("deal_id", ""),
                 lots=pos_state.get("lots", 1.0),
-            ),
-        )
-        await self.telegram.send_position_eval(
-            eval_result=eval_result,
-            direction=logical_direction,
-            entry=entry,
-            current_price=current_price,
-            pnl_pts=pnl_pts,
-            phase=phase,
-            deal_id=pos_state.get("deal_id", ""),
-        )
+            )
+        finally:
+            self._pos_check_running = False
 
     # ============================================================
     # SHUTDOWN
@@ -1988,6 +2199,10 @@ class TradingMonitor:
 
     async def _shutdown(self):
         logger.info("Shutting down...")
+        try:
+            self.ig.stop_streaming()
+        except Exception:
+            pass
         try:
             # Only attempt Telegram alert if the app was fully initialized
             if self.telegram and getattr(self.telegram, 'app', None) and self.telegram.app.running:

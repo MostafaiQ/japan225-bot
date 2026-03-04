@@ -22,7 +22,7 @@ from trading_ig.rest import IGException
 from config.settings import (
     IG_API_KEY, IG_USERNAME, IG_PASSWORD, IG_ACC_NUMBER, IG_ENV,
     EPIC, CURRENCY, EXPIRY, CONTRACT_SIZE, MARGIN_FACTOR,
-    STORAGE_DIR,
+    STORAGE_DIR, STREAMING_STALE_SECONDS,
 )
 
 _CACHE_FILE = STORAGE_DIR / "candle_cache.json"
@@ -46,6 +46,11 @@ class IGClient:
         self._candle_cache: dict[str, list[dict]] = {}  # resolution -> candles
         self._cache_full_fetch_done: dict[str, bool] = {}  # resolution -> True after first full fetch
         self._load_disk_cache()
+        # Lightstreamer streaming state
+        self._lightstreamer_endpoint: str | None = None
+        self._ls_client = None
+        self._streaming_price: float | None = None
+        self._streaming_price_ts: float = 0.0  # time.monotonic() of last tick
 
     def _load_disk_cache(self) -> None:
         """Load candle cache from disk (survives restarts)."""
@@ -80,7 +85,8 @@ class IGClient:
     acc_number=IG_ACC_NUMBER,
                 use_rate_limiter=True,
             )
-            self.ig.create_session()
+            session_resp = self.ig.create_session()
+            self._lightstreamer_endpoint = (session_resp or {}).get("lightstreamerEndpoint")
             self.authenticated = True
             self.last_auth_time = datetime.now()
             logger.info(f"IG API connected ({IG_ENV} mode)")
@@ -116,6 +122,85 @@ class IGClient:
             return True
         return False
     
+    # ==========================================
+    # LIGHTSTREAMER STREAMING
+    # ==========================================
+
+    def start_streaming(self) -> bool:
+        """Start Lightstreamer price tick subscription.
+        Uses existing REST session tokens — no re-authentication needed.
+        Returns True if subscription started, False if streaming unavailable.
+        Fallback: caller uses get_streaming_price() → None → REST polling.
+        """
+        try:
+            from lightstreamer.client import LightstreamerClient, Subscription, SubscriptionListener
+
+            if not self._lightstreamer_endpoint:
+                logger.warning("No lightstreamer endpoint saved — streaming unavailable")
+                return False
+
+            # Stop any existing connection cleanly
+            self.stop_streaming()
+
+            cst = self.ig.session.headers.get("CST", "")
+            xst = self.ig.session.headers.get("X-SECURITY-TOKEN", "")
+            if not cst or not xst:
+                logger.warning("No session tokens for streaming — REST polling will be used")
+                return False
+
+            ls_password = f"CST-{cst}|XST-{xst}"
+            self._ls_client = LightstreamerClient(self._lightstreamer_endpoint, None)
+            self._ls_client.connectionDetails.setUser(IG_ACC_NUMBER)
+            self._ls_client.connectionDetails.setPassword(ls_password)
+            self._ls_client.connect()
+
+            client_ref = self
+
+            class _TickListener(SubscriptionListener):
+                def onItemUpdate(self, update):
+                    fields = update.getChangedFields()
+                    bid = fields.get("BID")
+                    ofr = fields.get("OFR")
+                    if bid and ofr:
+                        try:
+                            mid = (float(bid) + float(ofr)) / 2
+                            client_ref._streaming_price = mid
+                            client_ref._streaming_price_ts = time.monotonic()
+                        except (ValueError, TypeError):
+                            pass
+
+            sub = Subscription(
+                mode="DISTINCT",
+                items=[f"CHART:{EPIC}:TICK"],
+                fields=["BID", "OFR"],
+            )
+            sub.addListener(_TickListener())
+            self._ls_client.subscribe(sub)
+            logger.info("Lightstreamer streaming started (CHART tick)")
+            return True
+        except Exception as e:
+            logger.warning(f"Streaming start failed (will use REST polling): {e}")
+            self._ls_client = None
+            return False
+
+    def stop_streaming(self) -> None:
+        """Disconnect Lightstreamer and clear streaming state."""
+        try:
+            if self._ls_client:
+                self._ls_client.disconnect()
+        except Exception:
+            pass
+        finally:
+            self._ls_client = None
+            self._streaming_price = None
+            self._streaming_price_ts = 0.0
+
+    def get_streaming_price(self) -> float | None:
+        """Return streaming mid-price if fresh, else None (caller uses REST fallback)."""
+        if self._streaming_price and (time.monotonic() - self._streaming_price_ts) < STREAMING_STALE_SECONDS:
+            return self._streaming_price
+        return None
+
     # ==========================================
     # MARKET DATA
     # ==========================================
@@ -370,7 +455,50 @@ class IGClient:
                 cached = self._candle_cache.get(resolution, [])
                 return cached[-num_points:] if cached else []
         return []
-    
+
+    def get_trade_history_buffer(self, since: datetime) -> list:
+        """
+        Fetch 1-min OHLC candles from `since` until now and return a flat
+        price list (O,H,L,C per candle) suitable for _position_price_buffer.
+        Pass `opened_at` for full history, or last-saved timestamp for gap-fill.
+        Returns [] on any failure so caller can fall back gracefully.
+        """
+        from math import ceil
+
+        try:
+            now = datetime.utcnow()
+            if since.tzinfo is not None:
+                now = datetime.now(since.tzinfo)
+            mins = (now - since).total_seconds() / 60
+            mins = min(max(1, ceil(mins)), 360)  # cap at 6hr = 360 candles
+
+            result = self.ig.fetch_historical_prices_by_epic(
+                epic=EPIC,
+                resolution="1min",
+                numpoints=mins + 5,  # +5 buffer for timing edges
+            )
+            prices_df = result.get("prices", None)
+            if prices_df is None or prices_df.empty:
+                return []
+
+            flat = []
+            for _, row in prices_df.iterrows():
+                try:
+                    o = float(row.get(("bid", "Open"),  row.get(("last", "Open"),  0)))
+                    h = float(row.get(("bid", "High"),  row.get(("last", "High"),  0)))
+                    l = float(row.get(("bid", "Low"),   row.get(("last", "Low"),   0)))
+                    c = float(row.get(("bid", "Close"), row.get(("last", "Close"), 0)))
+                    if c > 0:
+                        flat.extend([o, h, l, c])
+                except (KeyError, TypeError):
+                    continue
+
+            logger.info(f"Fetched {mins} MINUTE candles since {since.strftime('%H:%M')} → {len(flat)} price points")
+            return flat
+        except Exception as e:
+            logger.warning(f"get_trade_history_buffer failed: {e}")
+            return []
+
     # ==========================================
     # POSITION MANAGEMENT
     # ==========================================

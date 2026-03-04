@@ -129,7 +129,7 @@ OPUS_MODEL   = "claude-opus-4-6"
 # POSITION MONITOR
 # ============================================
 MONITOR_INTERVAL_SECONDS = 2        # Price check interval (seconds) — get_market_info only, 30 calls/min
-POSITION_CHECK_EVERY_N_CYCLES = 15  # Check position existence every N cycles: 15 × 2s = 30s, 2 calls/min
+POSITION_CHECK_EVERY_N_CYCLES = 5   # Check position existence every N cycles: 5 × 2s = 10s, 6 calls/min
 OPUS_POSITION_EVAL_EVERY_N = 60     # Run Opus position evaluator every N monitor cycles (60 × 2s = 120s = 2min)
 SCAN_INTERVAL_SECONDS = 300         # Entry scan interval when flat (5 min)
 OFFHOURS_INTERVAL_SECONDS = 1800    # Off-hours heartbeat (30 min)
@@ -174,6 +174,19 @@ FRIDAY_BLACKOUT_END_UTC = "16:00"
 # ============================================
 USD_JPY_API = "https://api.frankfurter.app/latest?from=USD&to=JPY"
 SAFETY_CONSECUTIVE_EMPTY = 2        # Require N consecutive empty position responses before accepting close
+STREAMING_STALE_SECONDS = 10       # Treat streaming price as stale if no tick for this long → fallback to REST
+
+# ============================================
+# TOKYO SESSION VOLATILITY MODE
+# ============================================
+TOKYO_FORCED_LOTS = 0.01           # Force minimum lots for entire Tokyo session (volatile, data-gathering)
+TOKYO_RR_TARGET = 1.5              # TP = SL × this during Tokyo (tight, realistic for 2-10min moves)
+TOKYO_MAX_CONSECUTIVE_LOSSES = 5   # Higher loss tolerance before cooldown (each loss is only $1.50)
+
+# ============================================
+# ATR-BASED ENTRY GATE
+# ============================================
+ATR_PERIOD = 14                    # ATR(14) lookback — require this many candles before any entry
 
 # ============================================
 # COMPOUND PLAN

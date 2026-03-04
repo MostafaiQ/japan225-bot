@@ -600,6 +600,9 @@ def analyze_timeframe(candles: list[dict]) -> dict:
     else:
         result["bb_width"] = None
 
+    # ATR(14) — true volatility per candle, used by AI to set appropriate SL/TP width
+    result["atr"] = round(compute_atr(candles, period=14), 1)
+
     return result
 
 
@@ -2121,3 +2124,30 @@ def _last(lst: list) -> Optional[float]:
         if val is not None:
             return round(val, 2)
     return None
+
+
+def compute_atr(candles: list[dict], period: int = 14) -> float:
+    """
+    Compute Average True Range over the last `period` candles.
+
+    Uses standard Wilder ATR (simple mean of True Ranges for simplicity).
+    Candles must have keys: high, low, close.
+
+    Returns 0.0 if there are fewer than period+1 candles (insufficient data).
+    Callers should treat 0.0 as "ATR not established — skip entry".
+    """
+    if len(candles) < period + 1:
+        return 0.0
+    trs = []
+    for i in range(1, len(candles)):
+        h = candles[i].get("high", 0)
+        l = candles[i].get("low", 0)
+        pc = candles[i - 1].get("close", 0)
+        if h == 0 or l == 0 or pc == 0:
+            continue
+        tr = max(h - l, abs(h - pc), abs(l - pc))
+        trs.append(tr)
+    if len(trs) < period:
+        return 0.0
+    return sum(trs[-period:]) / period
+

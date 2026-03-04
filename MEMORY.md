@@ -20,7 +20,9 @@ Oracle VM: monitor.py (24/7, systemd: japan225-bot)
     → Single subprocess: Sonnet analyzes, delegates to Opus sub-agent internally when needed
     → if AI confirms & risk passes: auto-execute immediately + Telegram notification
   MONITORING (position open): every 2s
-    → check IG position exists every 15 cycles (SAFETY_CONSECUTIVE_EMPTY=2)
+    → Lightstreamer streaming price ticks (BID/OFR mid) — real-time, ~0 REST calls for price
+    → REST fallback if streaming stale >10s. Background reconnect after 30 stale cycles (60s).
+    → Position existence REST check every N cycles unchanged (SAFETY_CONSECUTIVE_EMPTY=2)
     → MomentumTracker.add_price() → SEVERE adverse tier → auto-breakeven safety net
     → MILD/MODERATE adverse alerts REMOVED — replaced by Opus position evaluator
     → Opus position eval every 60 cycles (120s): evaluate_open_position() → send_position_eval()
@@ -111,6 +113,36 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 - dashboard chat: non-atomic _write_history() race condition on concurrent writes (MEDIUM)
 - monitor.py: _handle_position_closed uses last monitored price, not actual IG fill price (MEDIUM)
 - exit_manager.py: Runner phase trailing stop can exceed IG rate limit (30 non-trading/min) (MEDIUM)
+
+## Tokyo Volatility Mode (2026-03-04)
+All trades during Tokyo session (00:00-06:00 UTC) auto-apply in _on_trade_confirm_inner():
+- TOKYO_FORCED_LOTS=0.01 (cap lots at minimum — tiny loss if SL hits, gather more data freely)
+- TOKYO_MAX_CONSECUTIVE_LOSSES=5 (vs 2 for other sessions — each loss only ~$1.50)
+- AI (Sonnet + Opus) now receives ATR14 value in prompt for every timeframe
+- Sonnet system prompt + Opus scalp prompt: explicit rule to widen SL/TP when ATR > 120pts
+- Outside Tokyo: zero changes. Business as usual.
+compute_atr(candles, period) added to core/indicators.py. Called in analyze_timeframe() → result["atr"].
+Formatted in analyzer.py _fmt_indicators() as "ATR14=Xpts" alongside bb_width.
+Multi-position (>1 simultaneous trade) intentionally deferred — needs full monitoring/DB rewrite.
+
+## Streaming (2026-03-04) — Edge Cases & Test Notes
+Edge cases considered:
+- Streaming connect fails → start_streaming() returns False → monitoring uses REST (unaffected)
+- No lightstreamer endpoint (IG env doesn't provide one) → warns + returns False
+- Session tokens missing (before connect()) → warns + returns False
+- Streaming drops mid-session → get_streaming_price() returns None → REST fallback automatically
+- After 30 consecutive REST fallback cycles (60s) → background reconnect task fires once
+- Reconnect task itself calls start_streaming() in executor (non-blocking to monitor loop)
+- stop_streaming() always safe to call even if _ls_client is None (no-op)
+- _streaming_price is float | None; reading/writing is GIL-protected (no lock needed)
+- Position-existence REST checks (every N cycles) are completely unchanged by streaming
+- During scanning mode (no position), streaming is idle but still connected (0 overhead)
+Test cases to add (not yet written):
+  test_get_streaming_price_fresh(): set _streaming_price=100.0, _ts=now → returns 100.0
+  test_get_streaming_price_stale(): set _ts=now-20 (>10s) → returns None
+  test_get_streaming_price_none(): _streaming_price=None → returns None
+  test_stop_streaming_noop(): _ls_client=None, stop_streaming() → no exception
+  test_start_streaming_no_endpoint(): _lightstreamer_endpoint=None → returns False
 
 ## AI Decision Quality Fixes (2026-03-04)
 - confidence.py: **C1 daily trend: EMA50 primary** (was EMA200). EMA200 at 48,795 vs price 54,000 = always "bullish" = useless. EMA50 (55,205) is responsive to recent price action. On crash day, price below EMA50 → C1 FAILS for LONG → knife-catching LONGs blocked.

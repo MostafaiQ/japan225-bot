@@ -28,7 +28,7 @@ _MARKET_CONTEXT_COLUMNS = {
 _POSITION_STATE_COLUMNS = {
     "has_open", "deal_id", "direction", "lots", "entry_price",
     "stop_level", "limit_level", "opened_at", "phase", "confidence",
-    "pending_alert", "updated_at",
+    "pending_alert", "updated_at", "entry_context",
 }
 
 
@@ -144,10 +144,19 @@ class Storage:
 
                 -- Initialize singleton rows if empty
                 INSERT OR IGNORE INTO position_state (id, has_open) VALUES (1, 0);
+
                 INSERT OR IGNORE INTO account_state (id, balance, starting_balance) VALUES (1, 20.09, 16.67);
                 INSERT OR IGNORE INTO market_context (id, date) VALUES (1, date('now'));
                 INSERT OR IGNORE INTO ai_cooldown (id) VALUES (1);
             """)
+            # Migrations — ADD COLUMN is idempotent via try/except
+            for migration in [
+                "ALTER TABLE position_state ADD COLUMN entry_context TEXT",
+            ]:
+                try:
+                    conn.execute(migration)
+                except sqlite3.OperationalError:
+                    pass  # column already exists
             logger.info("Database initialized")
     
     def _conn(self) -> sqlite3.Connection:
@@ -302,13 +311,14 @@ class Storage:
     
     def set_position_open(self, position: dict):
         """Record a new open position."""
+        entry_ctx = position.get("entry_context")
         with self._conn() as conn:
             conn.execute("""
                 UPDATE position_state SET
                     has_open = 1, deal_id = ?, direction = ?, lots = ?,
                     entry_price = ?, stop_level = ?, limit_level = ?,
                     opened_at = ?, phase = 'initial', confidence = ?,
-                    pending_alert = NULL, updated_at = ?
+                    pending_alert = NULL, updated_at = ?, entry_context = ?
                 WHERE id = 1
             """, (
                 position.get("deal_id"),
@@ -320,6 +330,7 @@ class Storage:
                 position.get("opened_at", datetime.now().isoformat()),
                 position.get("confidence"),
                 datetime.now().isoformat(),
+                json.dumps(entry_ctx) if entry_ctx else None,
             ))
     
     def set_position_closed(self):
@@ -560,12 +571,13 @@ class Storage:
                 json.dumps(trade.get("news_at_entry", [])),
             ))
 
+            entry_ctx = position.get("entry_context")
             conn.execute("""
                 UPDATE position_state SET
                     has_open = 1, deal_id = ?, direction = ?, lots = ?,
                     entry_price = ?, stop_level = ?, limit_level = ?,
                     opened_at = ?, phase = 'initial', confidence = ?,
-                    pending_alert = NULL, updated_at = ?
+                    pending_alert = NULL, updated_at = ?, entry_context = ?
                 WHERE id = 1
             """, (
                 position.get("deal_id"),
@@ -577,6 +589,7 @@ class Storage:
                 position.get("opened_at", datetime.now().isoformat()),
                 position.get("confidence"),
                 datetime.now().isoformat(),
+                json.dumps(entry_ctx) if entry_ctx else None,
             ))
 
         return trade_num

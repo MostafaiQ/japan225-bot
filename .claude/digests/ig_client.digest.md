@@ -1,4 +1,4 @@
-# core/ig_client.py — DIGEST (updated 2026-03-03)
+# core/ig_client.py — DIGEST (updated 2026-03-04)
 # Purpose: IG Markets REST API wrapper. Auth, price data, order management.
 # CANDLE CACHING: delta fetches after first full fetch. Disk-backed cache survives restarts.
 # DEAL CONFIRMATION: trading_ig may return full dict or string from open/close. Handles both.
@@ -12,6 +12,24 @@ __init__(): reads IG_API_KEY/USERNAME/PASSWORD/ACC_NUMBER/IG_ENV from settings.
             _candle_cache: dict[str, list] — resolution -> cached candles (disk-backed: candle_cache.json)
             _cache_full_fetch_done: dict[str, bool] — tracks which resolutions have been fully fetched
             Disk cache: _load_disk_cache() on init, _save_disk_cache() after each fetch. 4hr max age.
+            Streaming state: _lightstreamer_endpoint (str|None), _ls_client, _streaming_price (float|None),
+              _streaming_price_ts (float, time.monotonic())
+
+## LIGHTSTREAMER STREAMING (added 2026-03-04)
+connect() now saves lightstreamerEndpoint from session response → _lightstreamer_endpoint.
+
+start_streaming() -> bool
+  # Connect LightstreamerClient using existing session tokens (CST/XST from self.ig.session.headers).
+  # No re-authentication. Subscribes to CHART:{EPIC}:TICK (BID+OFR → mid stored in _streaming_price).
+  # Returns True if subscription started. Logs warning and returns False on any error.
+  # Safe to call multiple times — calls stop_streaming() first to clean up previous connection.
+
+stop_streaming() -> None
+  # Disconnects LightstreamerClient. Clears _ls_client, _streaming_price, _streaming_price_ts.
+
+get_streaming_price() -> float | None
+  # Returns mid-price if last tick was < STREAMING_STALE_SECONDS (10s) ago, else None.
+  # Callers use None as signal to fall back to REST get_market_info().
 
 connect() -> bool
   # POST /session, sets CST + X-SECURITY-TOKEN. Returns True on success.
@@ -44,6 +62,11 @@ _last_delta_ts: class-level dict tracking last delta fetch time per resolution
 Startup: ~320 points (5M:100 + 15M:220 = 320, Daily fetched sequentially after)
 Per day: ~620 points (5M delta every 4min + 15M every 14min + Daily once)
 Weekly: ~3,400 points = 34% of allowance. Safe.
+
+## compute_atr (core/indicators.py — standalone, 2026-03-04)
+compute_atr(candles, period=14) -> float
+  # ATR(14) from list of {high, low, close} dicts. Returns 0.0 if < period+1 candles (not established).
+  # Called in _on_trade_confirm_inner() with self.ig._candle_cache["MINUTE_15"] as input.
 
 get_prices(resolution: str, num_points: int) -> list[dict]
   # Pass IG-style strings: "MINUTE_5", "MINUTE_15", "HOUR_4", "DAY"

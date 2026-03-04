@@ -1,18 +1,20 @@
-# monitor.py — DIGEST (updated 2026-03-04)
+# monitor.py — DIGEST (updated 2026-03-04 streaming)
 # Purpose: Main VM process. Entry point. async event loop. Handles scan + monitor + Telegram.
 
 ## class TradingMonitor
 __init__(): creates Storage, IGClient, RiskManager, TelegramBot, ExitManager, AIAnalyzer,
             WebResearcher. Sets scanning_paused=False, momentum_tracker=None,
             _position_empty_count=0, _force_scan_event=asyncio.Event(),
-            _opus_pos_eval_counter=0, _position_price_buffer=[]
+            _opus_pos_eval_counter=0, _position_price_buffer=[],
+            _streaming_reconnect_counter=0 (consecutive cycles without streaming price → triggers reconnect)
             NOTE: telegram.on_trade_confirm and on_force_scan callbacks set AFTER initialize()
 
 start(): initializes Telegram FIRST (always available), then writes bot_state.json(phase=STARTING),
   then connects IG (3 fast retries). If IG fails → writes phase=IG_DISCONNECTED, sends Telegram alert,
   retries IG with exponential backoff (60s→120s→240s→300s max) until recovered (never exits).
   _main_cycle() also uses backoff on ensure_connected() failures: 60→120→240→300s cap, _ig_fail_count tracks attempts.
-  Once IG connected → startup_sync() → main loop.
+  Once IG connected → startup_sync() → ig.start_streaming() → main loop.
+  start_streaming() is best-effort: logs warning and falls back to REST on failure.
 
 startup_sync(): reconciles DB ↔ IG on every restart. 4 cases:
   - IG has / DB none → write DB, init MomentumTracker, alert
@@ -72,10 +74,13 @@ _scanning_cycle() -> int (sleep seconds):
   12. save_scan(), action_taken = pending_* (if confirmed) or ai_rejected_* (if not)
   13. risk.validate_trade(), set_pending_alert(), telegram.send_trade_alert()
 
-_monitoring_cycle(pos_state):  # every 2s price check; position existence check every 15 cycles (30s)
+_monitoring_cycle(pos_state):  # every 2s price check; position existence check every N cycles
   1. ig.get_open_positions() → check POSITIONS_API_ERROR sentinel
   2. consecutive empty check (SAFETY_CONSECUTIVE_EMPTY=2)
-  3. ig.get_market_info() → current price
+  3. STREAMING PRICE: ig.get_streaming_price() — if fresh (<10s old) → use as current_price
+     FALLBACK (streaming None/stale): REST ig.get_market_info(). After 30 consecutive REST cycles (60s)
+     → background asyncio.create_task(_try_reconnect_streaming()) to restore streaming.
+     REST fallback is transparent — position monitoring continues uninterrupted.
   4. momentum_tracker.add_price(), should_alert()
   5. SEVERE adverse tier + Phase.INITIAL → auto-move SL to entry+BREAKEVEN_BUFFER (safety net, kept)
      MILD/MODERATE alerts REMOVED — replaced by Opus 2-minute position evaluator (see below)
@@ -117,11 +122,14 @@ Force Open flow (in _scanning_cycle, after AI rejection):
 _on_trade_confirm(alert_data): protected by _trade_execution_lock (asyncio.Lock).
   Re-checks position-open under lock. Validates: loss cooldown, daily loss limit, system paused.
   Re-fetches live price, checks drift. Uses stop_distance/limit_distance (not absolute levels).
-  calls ig.open_position(), open_trade_atomic(), inits MomentumTracker
+  ATR GATE: compute_atr(15M_cache, 14) == 0 → abort (market just opened, <15 candles). All sessions.
+  TOKYO MODE (session=="tokyo"): _final_lots capped at TOKYO_FORCED_LOTS=0.01, tp_distance = sl×TOKYO_RR_TARGET=1.5.
+  CONSECUTIVE LOSSES: uses TOKYO_MAX_CONSECUTIVE_LOSSES=5 during Tokyo, MAX_CONSECUTIVE_LOSSES=2 elsewhere.
+  calls ig.open_position(size=_final_lots), open_trade_atomic(), inits MomentumTracker
 
 _on_force_scan(): sends alert + sets _force_scan_event (wakes scanning sleep immediately)
 
-_shutdown(): alerts Telegram, stops telegram polling, closes researcher
+_shutdown(): stops streaming (ig.stop_streaming()), alerts Telegram, stops telegram polling, closes researcher
 
 ## Main entry
 main(): creates monitor, runs asyncio loop, handles SIGINT/SIGTERM

@@ -66,6 +66,11 @@ SETUPS — SHORT MOMENTUM / TREND-FOLLOWING:
 RULES: No trade: HIGH event <60min. SL=150 TP=400.
 R:R CHECK (MANDATORY): Before approving ANY trade, compute effective R:R = (TP_dist - 7) / (SL_dist + 7).
   Must be >= 1.5. If not, REJECT. Report the R:R in your reasoning. SL/TP must come from structure (BB, pivots, fibs, EMA, PDH/PDL).
+ATR VOLATILITY RULE: ATR14 is shown for each timeframe. It measures how many points price moves per candle on average.
+  If 15M ATR14 > 120pts: market is VOLATILE. A 100pt SL will be hit by normal candle noise before the trade works.
+  In volatile conditions: widen SL to at least 1× ATR (e.g. ATR=150 → SL minimum 150pts). Widen TP proportionally.
+  Do NOT use tight SL in high ATR markets — it guarantees stop-out before the move develops.
+  Tokyo session often has ATR 140-220pts. Set SL/TP accordingly, not at default 150/400 if ATR demands wider.
 VOLUME: HIGH(>1.5x)=conviction. LOW(<0.7x)=caution, weigh alongside other criteria. Not auto-reject.
 SWING LEVELS: dist_swing_hi <200pts → TP obstacle, reduce confidence.
               dist_swing_lo <100pts → SL anchor, good for LONG.
@@ -286,6 +291,10 @@ def _fmt_indicators(indicators: dict) -> str:
         bbw = tf.get("bb_width")
         if bbw and isinstance(bbw, (int, float)):
             parts.append(f"bb_width={bbw:.0f}")
+        # ATR(14) — true per-candle volatility, critical for SL/TP sizing
+        atr_val = tf.get("atr")
+        if atr_val and isinstance(atr_val, (int, float)) and atr_val > 0:
+            parts.append(f"ATR14={atr_val:.0f}pts")
         if swlo or swhi:
             parts.append(f"sweep={'low' if swlo else 'high'}")
         # Candlestick pattern
@@ -766,6 +775,10 @@ class AIAnalyzer:
             "  pivot S1-S2/R1-R2, fib levels, PDL/PDH. BOUNDS: 60-120pts.\n"
             "- TP: Nearest obstacle. Use BB mid/upper, EMA50, pivots, VWAP, PDH/PDL, fibs.\n"
             "  BOUNDS: 150-300pts.\n\n"
+            "ATR VOLATILITY RULE: ATR14 is in the indicators. If 15M ATR14 > 120pts, price moves\n"
+            "  that many points PER CANDLE on average. A 60-80pt SL will be eaten by noise.\n"
+            "  In volatile markets: push SL toward the upper bound (120pts), widen TP accordingly.\n"
+            "  Tokyo session regularly shows ATR 140-220pts — account for this in SL placement.\n\n"
             "R:R REQUIREMENT: (TP - 7) / (SL + 7) >= 1.5  (7pt spread adjustment)\n\n"
             "RULES:\n"
             "- If Sonnet's rejection is about imminent risk (events, gap), respect it for BOTH.\n"
@@ -879,6 +892,8 @@ class AIAnalyzer:
         recent_prices: list,
         setup_type: str = "unknown",
         lots: float = 1.0,
+        entry_context: dict = None,
+        current_indicators: dict = None,
     ) -> dict:
         """
         Opus-powered position evaluator. Runs every 2 minutes on open positions.
@@ -897,24 +912,124 @@ class AIAnalyzer:
         sl_dist_remaining = abs(current_price - stop_loss)
         tp_dist_remaining = abs(take_profit - current_price)
 
-        # Worst adverse from recent price buffer
+        def _backoff_sample(prices: list, n_samples: int = 30) -> list:
+            """Quadratic index spacing: dense at recent end, sparse at older end."""
+            n = len(prices)
+            if n <= n_samples:
+                return prices
+            indices = set()
+            for i in range(n_samples):
+                frac = (i / (n_samples - 1)) ** 2  # 0..1 quadratic — bunches samples near i=0 (oldest)
+                idx = int((n - 1) * (1 - frac))    # map to array: frac=0 → newest, frac=1 → oldest
+                indices.add(max(0, min(n - 1, idx)))
+            return [prices[i] for i in sorted(indices)]
+
+        # Rich momentum analysis from price buffer
+        ec = entry_context or {}
+        raw_count = len(recent_prices)
+        recent_prices = _backoff_sample(recent_prices)  # dense-recent, sparse-old
         if recent_prices and len(recent_prices) > 1:
+            n = len(recent_prices)
+            # Overall trend
+            overall_move = recent_prices[-1] - recent_prices[0]
+            trend_dir = "bullish" if overall_move > 0 else "bearish" if overall_move < 0 else "flat"
+            # Worst adverse excursion
             if direction == "LONG":
                 worst_price = min(recent_prices)
                 worst_adverse = max(0, entry - worst_price)
             else:
                 worst_price = max(recent_prices)
                 worst_adverse = max(0, worst_price - entry)
-            price_trend = recent_prices[-1] - recent_prices[0]
-            trend_dir = "bullish" if price_trend > 0 else "bearish" if price_trend < 0 else "flat"
+            # Velocity: compare first third vs last third (momentum acceleration/deceleration)
+            third = max(1, n // 3)
+            early_avg = sum(recent_prices[:third]) / third
+            late_avg = sum(recent_prices[-third:]) / third
+            velocity = late_avg - early_avg
+            vel_dir = "accelerating toward TP" if (
+                (direction == "LONG" and velocity > 0) or (direction == "SHORT" and velocity < 0)
+            ) else "decelerating / reversing"
+            # HH/HL or LH/LL structure (simple: compare midpoint halves)
+            mid = n // 2
+            first_half_high = max(recent_prices[:mid])
+            first_half_low  = min(recent_prices[:mid])
+            second_half_high = max(recent_prices[mid:])
+            second_half_low  = min(recent_prices[mid:])
+            if second_half_high > first_half_high and second_half_low > first_half_low:
+                structure = "HH+HL (bullish structure)"
+            elif second_half_high < first_half_high and second_half_low < first_half_low:
+                structure = "LH+LL (bearish structure)"
+            elif second_half_high > first_half_high and second_half_low < first_half_low:
+                structure = "expanding range"
+            else:
+                structure = "contracting / sideways"
+            total_secs = raw_count * 2
             price_summary = (
-                f"  Range over last {len(recent_prices)} readings: {min(recent_prices):.0f}–{max(recent_prices):.0f}\n"
-                f"  Trend: {price_trend:+.0f}pts ({trend_dir})\n"
+                f"  Span: {raw_count} readings = {total_secs // 60}min {total_secs % 60}s "
+                f"(shown: {n} samples, exponential backoff — recent=dense, old=sparse)\n"
+                f"  Range: {min(recent_prices):.0f}–{max(recent_prices):.0f} ({max(recent_prices)-min(recent_prices):.0f}pt spread)\n"
+                f"  Overall move: {overall_move:+.0f}pts ({trend_dir})\n"
+                f"  Velocity (early→late avg): {velocity:+.0f}pts — {vel_dir}\n"
+                f"  Price structure: {structure}\n"
                 f"  Worst adverse from entry: {worst_adverse:.0f}pts\n"
             )
         else:
-            price_summary = "  No recent price history available.\n"
+            price_summary = "  Insufficient price history (<2 readings).\n"
             worst_adverse = 0
+
+        # Entry conditions snapshot
+        entry_block = ""
+        if ec:
+            entry_block = (
+                f"\nENTRY CONTEXT (conditions when trade was opened):\n"
+                f"  Setup: {ec.get('setup_type', 'unknown')} | Session: {ec.get('session', '?')} | "
+                f"Confidence: {ec.get('confidence', '?')}% | R:R at entry: 1:{ec.get('rr', '?')}\n"
+                f"  SL at entry: {ec.get('sl_pts', '?')}pts | TP at entry: {ec.get('tp_pts', '?')}pts\n"
+                f"  RSI 15M: {ec.get('rsi_15m', '?')} | RSI 4H: {ec.get('rsi_4h', '?')} | "
+                f"Above VWAP: {ec.get('above_vwap', '?')} | Daily bullish: {ec.get('daily_bullish', '?')}\n"
+                f"  HA bullish: {ec.get('ha_bullish', '?')} | HA streak: {ec.get('ha_streak', '?')} | "
+                f"Volume ratio: {ec.get('volume_ratio', '?')}\n"
+                f"  Swing high: {ec.get('swing_high_20', '?')} | Swing low: {ec.get('swing_low_20', '?')}\n"
+                f"  AI reasoning at entry: {ec.get('ai_reasoning', 'not available')}\n"
+            )
+
+        # Aggregate raw 2s readings into 1-minute OHLC candles
+        ohlc_block = ""
+        if recent_prices and raw_count >= 30:  # need at least 1 min of data
+            readings_per_min = 30  # 30 × 2s = 1 minute
+            # Use the FULL original buffer (before backoff sampling) by reconstructing from raw_count
+            # We have sampled_prices here; rebuild minute candles from sampled as best-effort
+            candles = []
+            bucket_size = max(1, len(recent_prices) // max(1, raw_count // readings_per_min))
+            i = 0
+            while i < len(recent_prices):
+                bucket = recent_prices[i:i + bucket_size]
+                if bucket:
+                    mins_ago = int((len(recent_prices) - i) * (raw_count / len(recent_prices)) * 2 / 60)
+                    candles.append(
+                        f"  T-{mins_ago:02d}min: O={bucket[0]:.0f} H={max(bucket):.0f} "
+                        f"L={min(bucket):.0f} C={bucket[-1]:.0f} "
+                        f"({'▲' if bucket[-1] >= bucket[0] else '▼'} {abs(bucket[-1]-bucket[0]):.0f}pts)"
+                    )
+                i += bucket_size
+            if candles:
+                ohlc_block = (
+                    f"\n1-MINUTE OHLC CANDLES SINCE OPEN ({len(candles)} candles, oldest→newest):\n"
+                    + "\n".join(candles) + "\n"
+                )
+
+        # Current live indicator snapshot
+        ci = current_indicators or {}
+        current_ind_block = ""
+        if ci:
+            current_ind_block = (
+                f"\nCURRENT MARKET INDICATORS (live, fetched now):\n"
+                f"  RSI 15M: {ci.get('rsi_15m', '?')} | RSI 4H: {ci.get('rsi_4h', '?')}\n"
+                f"  EMA9 dist: {ci.get('ema9_dist', '?')}pts | EMA50 dist: {ci.get('ema50_dist', '?')}pts\n"
+                f"  Above VWAP: {ci.get('above_vwap', '?')} | VWAP: {ci.get('vwap', '?')}\n"
+                f"  BB upper: {ci.get('bb_upper', '?')} | BB mid: {ci.get('bb_mid', '?')} | BB lower: {ci.get('bb_lower', '?')}\n"
+                f"  HA bullish: {ci.get('ha_bullish', '?')} | HA streak: {ci.get('ha_streak', '?')}\n"
+                f"  Daily bullish: {ci.get('daily_bullish', '?')}\n"
+            )
 
         system_prompt = (
             "You are monitoring an open Japan 225 Cash CFD position ($1/pt, ~7pt spread).\n"
@@ -939,20 +1054,27 @@ class AIAnalyzer:
             "OUTPUT: JSON only. No preamble."
         )
 
+        setup_display = ec.get("setup_type", setup_type) if ec else setup_type
         user_prompt = (
             f"POSITION:\n"
-            f"  Direction: {direction} | Setup: {setup_type} | Phase: {phase}\n"
+            f"  Direction: {direction} | Setup: {setup_display} | Phase: {phase}\n"
             f"  Entry: {entry:.0f} | Current: {current_price:.0f} | P&L: {pnl_pts:+.0f}pts (${pnl_dollars:+.2f})\n"
             f"  SL: {stop_loss:.0f} ({sl_dist_remaining:.0f}pts away) | TP: {take_profit:.0f} ({tp_dist_remaining:.0f}pts away)\n"
-            f"  Time open: {time_in_trade_min:.0f}min | Lots: {lots}\n\n"
-            f"RECENT PRICE MOVEMENT ({len(recent_prices)} readings, 2s apart):\n"
-            f"{price_summary}\n"
-            f"ADVERSE THRESHOLDS:\n"
-            f"  MILD at {ADVERSE_MILD_PTS}pts adverse | MODERATE at {ADVERSE_MODERATE_PTS}pts | SEVERE at {ADVERSE_SEVERE_PTS}pts\n\n"
-            f"Assess the position. Output ONLY valid JSON:\n"
+            f"  Time open: {time_in_trade_min:.0f}min | Lots: {lots}\n"
+            f"{entry_block}"
+            f"{current_ind_block}"
+            f"\nPRICE TRAJECTORY SINCE TRADE OPEN ({raw_count} readings = {raw_count//4} MINUTE candles"
+            f", trade age {time_in_trade_min:.0f}min):\n"
+            f"{price_summary}"
+            f"{ohlc_block}"
+            f"\nADVERSE THRESHOLDS:\n"
+            f"  MILD={ADVERSE_MILD_PTS}pts | MODERATE={ADVERSE_MODERATE_PTS}pts | SEVERE={ADVERSE_SEVERE_PTS}pts\n\n"
+            f"KEY QUESTION: Given the entry setup, current candle structure, live indicators, and full price "
+            f"trajectory since open — is the original thesis still valid? Will price continue to TP, or is "
+            f"the setup broken/stalling?\n\n"
+            f"Output ONLY valid JSON:\n"
             f'{{"recommendation": "HOLD", "confidence": 72, "adverse_risk": "LOW", '
-            f'"tp_probability": 0.65, "reasoning": "Price moving toward TP, momentum intact. '
-            f'SL well protected at {ADVERSE_SEVERE_PTS}pts.", "tighten_sl_to": null}}'
+            f'"tp_probability": 0.65, "reasoning": "...", "tighten_sl_to": null}}'
         )
 
         raw, tokens = self._run_claude(

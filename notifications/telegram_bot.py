@@ -554,21 +554,23 @@ class TelegramBot:
 
     async def send_position_eval(self, eval_result: dict, direction: str, entry: float,
                                  current_price: float, pnl_pts: float, phase: str,
-                                 deal_id: str):
+                                 deal_id: str, lots: float = 1.0):
         """Send Opus 2-min position evaluation to Telegram."""
         rec = eval_result.get("recommendation", "HOLD")
         conf = eval_result.get("confidence", 0)
         adverse = eval_result.get("adverse_risk", "LOW")
         tp_prob = eval_result.get("tp_probability", 0.5)
-        reasoning = eval_result.get("reasoning", "")[:200]
+        reasoning = eval_result.get("reasoning", "")
+        pnl_dollars = pnl_pts * lots  # CONTRACT_SIZE=1, so $1/pt per lot
 
         adverse_emoji = {"NONE": "✅", "LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}.get(adverse, "⚠️")
         rec_emoji = {"HOLD": "⏳", "CLOSE_NOW": "🔴", "TIGHTEN_SL": "🔒"}.get(rec, "🔍")
+        dollar_str = f"(${pnl_dollars:+.2f})"
 
         text = "\n".join([
             f"🔍 <b>Position Check — Opus</b>",
             DIV,
-            f"{_dir(direction)} @ {_price(entry)} → {_price(current_price)}  {_pnl(pnl_pts)}",
+            f"{_dir(direction)} @ {_price(entry)} → {_price(current_price)}  {_pnl(pnl_pts)} {dollar_str}",
             f"Phase: <b>{phase}</b>",
             f"{rec_emoji} <b>{rec}</b> ({conf}%)  |  {adverse_emoji} Adverse: <b>{adverse}</b>  |  TP prob: {tp_prob:.0%}",
             DIV,
