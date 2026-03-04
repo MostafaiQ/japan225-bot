@@ -962,6 +962,7 @@ class TradingMonitor:
                             local_conf=local_conf,
                             final_confidence=final_confidence,
                         )
+                        return 0  # Enter monitoring immediately
                     else:
                         logger.info(f"Opus rejected both directions: {scalp_result.get('reasoning', '')[:150]}")
                 except Exception as e:
