@@ -3,16 +3,24 @@ GET /api/history  — closed trade journal (fetches from IG API + merges DB)
 GET /api/scans    — scan history with date filter + pagination
 """
 from fastapi import APIRouter, Query
+from fastapi.responses import JSONResponse
 from typing import Optional
+import logging
 from dashboard.services import db_reader
 from dashboard.services.ig_history import fetch_full_journal
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
 @router.get("/api/history")
 async def history(days: int = Query(30, ge=1, le=90)):
-    return fetch_full_journal(days=days)
+    try:
+        return fetch_full_journal(days=days)
+    except Exception as e:
+        log.exception("History fetch failed")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @router.post("/api/history/clear-cache")

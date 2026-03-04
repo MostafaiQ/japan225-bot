@@ -423,7 +423,10 @@ def _fetch_journal_locked(days):
     for txn in reversed(transactions):
         ref = txn.get("reference", "")  # This is the close deal short ref
         size_str = txn.get("size", "0")
-        size_val = float(size_str)
+        try:
+            size_val = float(size_str)
+        except (ValueError, TypeError):
+            continue  # Skip non-trade transactions (deposits, adjustments)
         direction = "LONG" if size_val > 0 else "SHORT"
         pnl = _parse_pnl(txn.get("profitAndLoss", "$0"))
         instrument = txn.get("instrumentName", "Unknown")
