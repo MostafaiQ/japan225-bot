@@ -37,7 +37,7 @@ from config.settings import (
     calculate_margin, calculate_profit, SPREAD_ESTIMATE, DEFAULT_SL_DISTANCE,
     MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, BREAKEVEN_BUFFER,
     DAILY_EMA200_CANDLES, PRE_SCREEN_CANDLES, AI_ESCALATION_CANDLES,
-    MINUTE_5_CANDLES,
+    MINUTE_5_CANDLES, DISPLAY_TZ, display_now,
 )
 from core.ig_client import IGClient, POSITIONS_API_ERROR
 from core.indicators import analyze_timeframe, detect_setup
@@ -51,6 +51,8 @@ from notifications.telegram_bot import TelegramBot
 from ai.analyzer import AIAnalyzer, WebResearcher, post_trade_analysis
 
 logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
+# Set all log timestamps to Kuwait time (UTC+3)
+logging.Formatter.converter = lambda *args: display_now().timetuple()
 logger = logging.getLogger("monitor")
 
 
@@ -1537,8 +1539,9 @@ class TradingMonitor:
                     bypass = True
                     logger.info(f"Cooldown bypass: Opus confidence {opus_conf}% >= 80%")
                 if not bypass:
-                    logger.warning(f"Trade aborted: in loss cooldown until {cooldown_end.strftime('%H:%M')}")
-                    await self.telegram.send_alert(f"Trade blocked: loss cooldown until {cooldown_end.strftime('%H:%M')}.")
+                    cd_display = cooldown_end.replace(tzinfo=timezone.utc).astimezone(DISPLAY_TZ).strftime('%H:%M')
+                    logger.warning(f"Trade aborted: in loss cooldown until {cd_display}")
+                    await self.telegram.send_alert(f"Trade blocked: loss cooldown until {cd_display}.")
                     return
 
         # Check daily loss limit

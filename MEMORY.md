@@ -18,7 +18,7 @@ Oracle VM: monitor.py (24/7, systemd: japan225-bot)
     → if score >= 60%: Sonnet 4.6 scan (with Opus sub-agent for borderline 72-86%)
     → Sequential: Sonnet runs first → if rejected, Opus scalp eval with Sonnet's full analysis
     → Single subprocess: Sonnet analyzes, delegates to Opus sub-agent internally when needed
-    → if AI confirms & risk passes: Telegram CONFIRM/REJECT alert (15min TTL)
+    → if AI confirms & risk passes: auto-execute immediately + Telegram notification
   MONITORING (position open): every 60s
     → check IG position exists (2 consecutive empty = closed, SAFETY_CONSECUTIVE_EMPTY)
     → MomentumTracker.add_price() → adverse tier check → exit_manager.evaluate_position()
@@ -106,7 +106,7 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 ## Critical Fixes Applied (2026-03-04)
 - monitor.py: **SL/TP verification after order placement** — verifies IG returned stopLevel/limitLevel in deal confirmation. If missing, immediately calls modify_position() to add SL/TP + sends CRITICAL Telegram alert. Root cause of Trade #3 losing 224pts past 102pt SL.
 - monitor.py: **Sequential Opus pipeline** (was parallel). Sonnet runs first → Opus runs AFTER with Sonnet's full analysis as context. Opus gets: Sonnet reasoning, Sonnet confidence, Sonnet decision, local pre-screen, secondary setup. Clear chain of command.
-- monitor.py: **Opus confidence gate** — Sonnet rejects with confidence < 35% skip Opus entirely. Saves API cost on clear rejects.
+- monitor.py: **Sonnet confidence gate** — Sonnet rejects with confidence < 50% skip Opus entirely. Saves API cost on clear rejects.
 - analyzer.py: **Opus directional consistency** — `_last_opus_decision` tracks direction/reasoning/timestamp. Passed to evaluate_scalp() with actual elapsed time. Consistency rule: only flip direction on clear structural shift, not noise.
 - monitor.py: `_last_opus_decision: dict | None` state var tracks most recent Opus scalp eval result.
 - backtest.py: **Direct Anthropic API** — backtest AI evaluation now uses `anthropic` SDK instead of Claude CLI subprocess. No timeouts, ~5x faster. Sub-batching at 20 setups/call.
@@ -177,7 +177,18 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 - settings.py: DAILY_LOSS_LIMIT_PERCENT = 1.0 (effectively disabled — user manages risk).
 - ig_client.py: CRITICAL — `trailing_stop_distance` kwarg removed from `create_open_position()`. Not supported by trading_ig library. This caused ALL trade executions to fail silently. Root cause of 0 trades.
 - telegram_bot.py: HTML parse fallback — if HTML alert fails, retry as plain text. Prevents silent alert failures.
-- monitor.py: Normal trade alerts auto-execute after 2 min if user doesn't respond. `_auto_execute_after_timeout()` asyncio background task.
+- monitor.py: **Sonnet auto-execute** — trades auto-execute immediately when confidence passes thresholds (70% LONG, 75% SHORT). No 2-min timeout. Same flow as Opus scalps: send Telegram notification + execute.
+- monitor.py: **Opus guardrails** — minimum 60% confidence required. Direction-flip block: bounce setups (bb_lower/mid_bounce, oversold_reversal, etc.) cannot go SHORT; breakdown/rejection setups cannot go LONG. Opus now goes through full risk validation pipeline + saves ai_analysis to DB.
+- monitor.py: **High-confidence cooldown bypass** — local 100% → skip + reset consecutive losses; Sonnet >= 85% → skip; Opus >= 80% → skip.
+- storage/database.py: `reset_consecutive_losses()` added for cooldown bypass.
+- ai/analyzer.py: **R:R enforcement in Sonnet prompt** — mandatory `(TP_dist - 7) / (SL_dist + 7) >= 1.5` computation. `effective_rr` added to JSON schema.
+- LICENSE: **Proprietary** — all rights reserved, unauthorized use prohibited, legal action provisions.
+- analyzer.py: **BB values bug fixed** — `_fmt_indicators()` used `bb_upper/bb_mid/bb_lower` but indicators.py returns `bollinger_upper/bollinger_mid/bollinger_lower`. AI never saw actual BB levels (always `?/?/?`). Now uses correct keys.
+- risk_manager.py: **Max positions check fixed** — `has_open_position` → `has_open` (matching DB schema). Check 4 was always passing.
+- monitor.py: **Force-open NameError fixed** — `ai_reasoning` undefined → `final_result.get("reasoning", "")`.
+- monitor.py: **time.time() fix** — `time` module not imported → use `datetime.now().timestamp()`.
+- monitor.py: **Position closed TypeError fix** — `abs(last_price - sl)` when sl=None → added None guard.
+- monitor.py: Dead `_auto_execute_after_timeout` method removed (replaced by immediate auto-execute).
 - telegram_bot.py: `send_scalp_executed()` replaces old 3-button `send_near_miss_alert()`. Notification-only (no buttons). Near-miss callback handlers removed.
 - monitor.py + telegram_bot.py: Force Open feature. When local confidence == 100% (12/12) but AI rejects, Telegram alert with Force Open / Skip buttons. 15min TTL. No auto-execute — requires explicit user confirmation. Uses same `pending_alert` + `on_trade_confirm` flow as regular trades. Callback data: `force_open` / `reject_force`.
 
@@ -268,7 +279,7 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 - **Telegram starts FIRST** in TradingMonitor.start() — before IG connection. If IG is down, bot stays alive and retries IG every 5 min. on_trade_confirm / on_force_scan callbacks set immediately after initialize(), before start_polling().
 - **Startup sync** handles 4 cases: clean start, IG-has/DB-none (recovery), DB-has/IG-none (closed offline), both agree.
 - **MomentumTracker** is None when flat. Created at trade open, reset at close. Reinitiated in startup_sync if position recovered.
-- **Local confidence pre-gate**: only escalates to AI if local score >= 50%. AI cooldown 30min regardless of result.
+- **Local confidence pre-gate**: only escalates to AI if local score >= 60%. Sonnet rejects with conf < 50% skip Opus entirely. Opus minimum 60% confidence to execute.
 - **WebResearcher.research()** is synchronous/blocking. Called in executor: `run_in_executor(None, self.researcher.research)`.
 - **detect_setup()** bidirectional. No daily hard gate — C1 penalizes counter-trend in confidence.py.
   RSI: bb_mid 35-65 | bb_lower 20-40 | bb_upper 55-75 | ema50_rej 50-70.

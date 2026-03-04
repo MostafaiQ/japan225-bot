@@ -148,7 +148,8 @@ def recent_errors():
 # ─────────────────────────────────────────────────────────────
 print("=" * W)
 print(f"  JAPAN 225 BOT — HEALTH CHECK")
-print(f"  {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+from config.settings import display_now, DISPLAY_TZ_LABEL
+print(f"  {display_now().strftime(f'%Y-%m-%d %H:%M {DISPLAY_TZ_LABEL}')}")
 print("=" * W)
 
 # SERVICES

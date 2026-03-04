@@ -13,7 +13,7 @@ import asyncio
 import html as _html
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -319,7 +319,8 @@ class TelegramBot:
             icon = _icons.get(act_key, "🔍" if s.get("setup_found") else "·")
             ts = s.get("timestamp", "")
             try:
-                t_str = datetime.fromisoformat(ts).strftime("%H:%M")
+                from config.settings import DISPLAY_TZ
+                t_str = datetime.fromisoformat(ts).replace(tzinfo=timezone.utc).astimezone(DISPLAY_TZ).strftime("%H:%M")
             except Exception:
                 t_str = "—"
             direction = "LONG" if "long" in act else ("SHORT" if "short" in act else None)

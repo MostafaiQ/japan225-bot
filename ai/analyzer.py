@@ -306,7 +306,8 @@ def build_scan_prompt(
     failed_criteria: list = None,
     recent_trades: list = None,
 ) -> str:
-    now = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+    from config.settings import display_now, DISPLAY_TZ_LABEL
+    now = display_now().strftime(f"%Y-%m-%d %H:%M {DISPLAY_TZ_LABEL}")
 
     prescreen_block = ""
     if prescreen_direction:

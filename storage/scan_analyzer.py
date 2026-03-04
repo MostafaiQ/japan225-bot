@@ -252,16 +252,22 @@ def _build_rsi_buckets(missed_data: list[dict]) -> dict[str, dict]:
 
 
 def _format_time(iso_str: str) -> str:
-    """Extract HH:MM from ISO timestamp."""
+    """Extract HH:MM from ISO timestamp, converted to Kuwait time (UTC+3)."""
     try:
-        return datetime.fromisoformat(iso_str).strftime("%H:%M")
+        from config.settings import DISPLAY_TZ
+        dt = datetime.fromisoformat(iso_str)
+        if dt.tzinfo is None:
+            from datetime import timezone as tz
+            dt = dt.replace(tzinfo=tz.utc)
+        return dt.astimezone(DISPLAY_TZ).strftime("%H:%M")
     except (ValueError, TypeError):
         return "??:??"
 
 
 def generate_report(scans: list[dict]) -> str:
     """Generate the full scan analysis markdown report."""
-    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    from config.settings import display_now
+    now = display_now().strftime("%Y-%m-%dT%H:%M:%S")
 
     # Categorize scans
     total = len(scans)

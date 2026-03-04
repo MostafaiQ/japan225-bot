@@ -4,7 +4,7 @@ Every trade must pass through here before execution.
 Non-negotiable rules enforced in code, not by willpower.
 """
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from config.settings import (
     MAX_MARGIN_PERCENT, MAX_OPEN_POSITIONS,
@@ -145,7 +145,9 @@ class RiskManager:
             "detail": f"{consec_losses} consecutive losses. Cooldown: {'ACTIVE' if in_cooldown else 'clear'}",
         }
         if not checks["consecutive_losses"]["pass"]:
-            rejection = rejection or f"{consec_losses} consecutive losses. Cooling down until {cooldown_end.strftime('%H:%M')}."
+            from config.settings import DISPLAY_TZ
+            cd_display = cooldown_end.replace(tzinfo=timezone.utc).astimezone(DISPLAY_TZ).strftime('%H:%M')
+            rejection = rejection or f"{consec_losses} consecutive losses. Cooling down until {cd_display}."
         
         # --- CHECK 6: Daily Loss Limit ---
         daily_loss = account.get("daily_loss_today", 0)
@@ -192,7 +194,6 @@ class RiskManager:
         
         # --- CHECK 9: Friday / Month-End ---
         import calendar as cal_module
-        from datetime import timezone
         now = datetime.now()
         now_utc = datetime.now(timezone.utc)
         is_blocked_day = False

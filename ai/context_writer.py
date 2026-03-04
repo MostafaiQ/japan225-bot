@@ -13,6 +13,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from config.settings import display_now, DISPLAY_TZ_LABEL
+
 logger = logging.getLogger(__name__)
 
 CONTEXT_DIR = Path(__file__).parent.parent / "storage" / "context"
@@ -52,7 +54,7 @@ def _write_market_snapshot(
     prescreen_direction: str,
     tf_5m: dict = None,
 ) -> None:
-    now = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+    now = display_now().strftime(f"%Y-%m-%d %H:%M {DISPLAY_TZ_LABEL}")
     lines = [
         f"# Market Snapshot — {now}",
         "",
@@ -135,7 +137,7 @@ def _write_market_snapshot(
 
 
 def _write_recent_activity(recent_scans: list, recent_trades: list) -> None:
-    now = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+    now = display_now().strftime(f"%Y-%m-%d %H:%M {DISPLAY_TZ_LABEL}")
     lines = [f"# Recent Activity — {now}", ""]
 
     lines.append("## Recent Scans (last 15)")
@@ -182,7 +184,7 @@ def _write_macro(web_research: dict) -> None:
         (CONTEXT_DIR / "macro.md").write_text("# Macro Context\n\nUnavailable.\n")
         return
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+    now = display_now().strftime(f"%Y-%m-%d %H:%M {DISPLAY_TZ_LABEL}")
     lines = [f"# Macro Context — {now}", ""]
 
     vix = web_research.get("vix")
@@ -216,5 +218,5 @@ def _write_live_edge(live_edge_block: str) -> None:
             "# Live Edge Stats\n\nNo trade history yet — bot is new.\n"
         )
         return
-    content = f"# Live Edge Stats — {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}\n\n{live_edge_block}\n"
+    content = f"# Live Edge Stats — {display_now().strftime(f'%Y-%m-%d %H:%M {DISPLAY_TZ_LABEL}')}\n\n{live_edge_block}\n"
     (CONTEXT_DIR / "live_edge.md").write_text(content)

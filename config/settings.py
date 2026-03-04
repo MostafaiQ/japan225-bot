@@ -4,6 +4,7 @@ All trading rules, constants, and parameters live here.
 Change settings here, not scattered across files.
 """
 import os
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -182,6 +183,16 @@ BLOCKED_DAYS = {
 }
 # No trading last 2 days of month (month-end rebalancing)
 MONTHEND_BLACKOUT_DAYS = 2
+
+# ============================================
+# DISPLAY TIMEZONE (user-facing times: Telegram, logs, reports)
+# ============================================
+DISPLAY_TZ = timezone(timedelta(hours=3))  # Kuwait = UTC+3
+DISPLAY_TZ_LABEL = "UTC+3"
+
+def display_now() -> datetime:
+    """Current time in display timezone (Kuwait UTC+3)."""
+    return datetime.now(DISPLAY_TZ)
 
 # ============================================
 # LOGGING
