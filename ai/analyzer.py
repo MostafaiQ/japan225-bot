@@ -108,17 +108,26 @@ BREAKDOWN / MOMENTUM SHORT RULES (CRITICAL — read before evaluating breakdown_
     (3) volume is LOW (no conviction behind the move).
   - Do NOT reject because "daily trend is bullish" or "price above daily EMA50/200" — that is EXPECTED.
 
-CRASH DAY RULES (intraday range > 1000pts — OVERRIDES mean-reversion defaults):
-  On crash days, normal setups degrade. SLs get blown on spikes, bounces fail, TPs don't reach.
-  - Do NOT short into oversold (4H RSI < 32) — bounces are violent and unpredictable.
-  - Do NOT go long on a single 15M reversal candle — these fail 80%+ of the time in crashes.
-  - LONG requires: multiple TF reversal confirmation (not just 15M), volume surge on reversal,
-    AND price must be at a hard support (S2/S3/BB_lower/swing_low), not just near BB_mid.
-  - SHORT requires: price must NOT already be extended >800pts below session open.
-    Short the bounce, not the continuation into oversold.
-  - If you see 4+ self-warnings in your analysis, confidence MUST be <70%.
-    4+ warnings at 76% is unacceptable — warnings exist to reduce confidence, not decorate reasoning.
-  - DEFAULT on crash days: REJECT unless confluence is overwhelming (all TFs + volume + pattern + level).
+EXTREME DAY RULES (intraday range > 1000pts — OVERRIDES mean-reversion defaults):
+  On extreme days, normal setups degrade. SLs get blown on spikes, reversals fail, TPs don't reach.
+  CRASH DAY (bearish — price in lower half of range):
+    - Do NOT short into oversold (4H RSI < 32) — bounces are violent and unpredictable.
+    - Do NOT go long on a single 15M reversal candle — these fail 80%+ of the time in crashes.
+    - LONG requires: multiple TF reversal confirmation (not just 15M), volume surge on reversal,
+      AND price must be at a hard support (S2/S3/BB_lower/swing_low), not just near BB_mid.
+    - SHORT requires: price must NOT already be extended >800pts below session open.
+      Short the bounce, not the continuation into oversold.
+  BULL DAY (bullish — price in upper half of range):
+    - Do NOT go long into overbought (4H RSI > 68) — pullbacks are violent and unpredictable.
+    - Do NOT go short on a single 15M rejection candle — these fail 80%+ of the time in rallies.
+    - SHORT requires: multiple TF reversal confirmation (not just 15M), volume surge on reversal,
+      AND price must be at a hard resistance (R2/R3/BB_upper/swing_high), not just near BB_mid.
+    - LONG requires: price must NOT already be extended >800pts above session open.
+      Buy the pullback, not the continuation into overbought.
+  BOTH DIRECTIONS:
+    - If you see 4+ self-warnings in your analysis, confidence MUST be <70%.
+      4+ warnings at 76% is unacceptable — warnings exist to reduce confidence, not decorate reasoning.
+    - DEFAULT on extreme days: REJECT unless confluence is overwhelming (all TFs + volume + pattern + level).
 
 OVERSOLD SHORTING PROHIBITION:
   When 4H RSI < 32:
@@ -126,6 +135,13 @@ OVERSOLD SHORTING PROHIBITION:
   - 4H spinning_top + contracting bodies = exhaustion, NOT continuation signal.
   - Bullish FVG/engulfing on lower TF while 4H exhausted = bounce incoming.
   - If 4H RSI < 32 AND any exhaustion signal (spinning_top, contracting bodies, doji): REJECT SHORT.
+
+OVERBOUGHT LONGING PROHIBITION:
+  When 4H RSI > 68:
+  - Do NOT approve LONG unless price is actively breaking a clear resistance level WITH volume confirmation.
+  - 4H spinning_top + contracting bodies = exhaustion, NOT continuation signal.
+  - Bearish FVG/engulfing on lower TF while 4H exhausted = pullback incoming.
+  - If 4H RSI > 68 AND any exhaustion signal (spinning_top, contracting bodies, doji): REJECT LONG.
 
 WARNING SEVERITY RULE:
   Your warnings are not decoration. Each warning should reduce confidence by 3-5%.
@@ -417,17 +433,27 @@ def build_scan_prompt(
     learnings_block = load_prompt_learnings()
     learnings_str = f"\n{learnings_block}\n" if learnings_block else ""
 
-    # Compute intraday range from daily TF data
-    from config.settings import CRASH_DAY_RANGE_PTS
+    # Compute intraday range from daily TF data + detect crash vs rally
+    from config.settings import EXTREME_DAY_RANGE_PTS
     daily_tf = indicators.get("daily") or indicators.get("d1") or {}
     daily_high = daily_tf.get("high", 0)
     daily_low = daily_tf.get("low", 0)
+    daily_price = daily_tf.get("price", daily_tf.get("close", 0))
     daily_range = daily_high - daily_low if daily_high and daily_low else 0
-    crash_day = daily_range > CRASH_DAY_RANGE_PTS
+    extreme_day = daily_range > EXTREME_DAY_RANGE_PTS
+    # Detect direction: price in lower 40% = crash, upper 40% = rally
+    if extreme_day and daily_high and daily_low and daily_price:
+        midpoint = (daily_high + daily_low) / 2
+        if daily_price < midpoint:
+            extreme_label = "CRASH DAY (bearish)"
+        else:
+            extreme_label = "BULL DAY (bullish)"
+    else:
+        extreme_label = ""
 
     range_block = f"\nMARKET REGIME: Intraday range={daily_range:.0f}pts (H={daily_high:.0f} L={daily_low:.0f})"
-    if crash_day:
-        range_block += " *** CRASH DAY — EXTREME VOLATILITY ***"
+    if extreme_day:
+        range_block += f" *** {extreme_label} — EXTREME VOLATILITY ***"
 
     return (
         f"Japan 225 CFD analysis — {now}\n"

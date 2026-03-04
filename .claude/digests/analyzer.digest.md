@@ -47,8 +47,12 @@ Logs warning if parse fails.
 Compact reference card. ~350 tokens. Includes HA, FVG, Fibonacci, sweep signal guidance.
 VWAP guidance: above=premium (SHORT), below=discount (LONG). PDH/PDL.
 11-criteria confidence breakdown. Quick-reject guidance for junk setups.
-NEW: CRASH DAY RULES section — prohibits shorting into oversold 4H RSI<32, requires multi-TF reversal for LONG.
+NEW: EXTREME DAY RULES section — bidirectional: crash day (bearish) + bull day (bullish).
+  Crash: prohibits shorting into oversold 4H<32, prohibits LONG on single 15M candle.
+  Bull: prohibits LONG into overbought 4H>68, prohibits SHORT on single 15M candle.
+  MARKET REGIME block detects direction (price vs midpoint of range).
 NEW: OVERSOLD SHORTING PROHIBITION — 4H RSI<32 + exhaustion = REJECT SHORT.
+NEW: OVERBOUGHT LONGING PROHIBITION — 4H RSI>68 + exhaustion = REJECT LONG.
 NEW: WARNING SEVERITY RULE — 4+ warnings → <70%, 6+ warnings → <60%.
 NEW: MEAN-REVERSION BOUNCE RULES section:
   - bb_lower_bounce: ±150pts from lower band, RSI 20-40, reversal confirms on wick/HA/candle/sweep.

@@ -14,7 +14,7 @@ validate_trade(direction, lots, entry, stop_loss, take_profit, confidence, balan
   #   1. confidence: LONG>=70%, SHORT>=75%
   #   2. margin: margin_pct = lots*1*entry*0.005/balance <= 0.50
   #   3. risk_reward: effective_rr = (reward-7)/(risk+7) >= 1.5  (spread=7pts each side)
-  #   3B. crash_day: if daily range > 1000pts, requires confidence >= 85%
+  #   3B. extreme_day: if daily range > 1000pts (crash or rally), requires confidence >= 85%
   #   4. max_positions: storage.get_position_state().has_open_position must be False
   #   5. consecutive_losses: >=2 losses + last_loss within 4hrs = cooldown
   #   6. daily_loss: abs(daily_loss_today) < balance*0.10

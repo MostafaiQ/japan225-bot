@@ -38,7 +38,7 @@ from config.settings import (
     MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, BREAKEVEN_BUFFER,
     DAILY_EMA200_CANDLES, PRE_SCREEN_CANDLES, AI_ESCALATION_CANDLES,
     MINUTE_5_CANDLES, DISPLAY_TZ, display_now,
-    CRASH_DAY_RANGE_PTS,
+    EXTREME_DAY_RANGE_PTS,
 )
 from core.ig_client import IGClient, POSITIONS_API_ERROR
 from core.indicators import analyze_timeframe, detect_setup
@@ -623,8 +623,8 @@ class TradingMonitor:
 
         # Crash day detection logging
         daily_range = tf_daily.get("high", 0) - tf_daily.get("low", 0) if tf_daily else 0
-        if daily_range > CRASH_DAY_RANGE_PTS:
-            logger.warning(f"CRASH DAY: intraday range={daily_range:.0f}pts")
+        if daily_range > EXTREME_DAY_RANGE_PTS:
+            logger.warning(f"EXTREME DAY: intraday range={daily_range:.0f}pts")
         if not candles_4h:
             logger.warning("Failed to fetch 4H candles — pre-screen will degrade gracefully.")
 

@@ -76,7 +76,8 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 EPIC = "IX.D.NIKKEI.IFM.IP"   CONTRACT_SIZE = 1 ($1/pt)   MARGIN_FACTOR = 0.005 (0.5%)
 Lot size = margin cap only (50% of balance). AI finds the setup, you go in with conviction.
 MIN_CONFIDENCE = 70            MIN_CONFIDENCE_SHORT = 75 (BOJ risk)
-CRASH_DAY_RANGE_PTS = 1000     CRASH_DAY_MIN_CONFIDENCE = 85   OVERSOLD_SHORT_BLOCK_RSI_4H = 32
+EXTREME_DAY_RANGE_PTS = 1000   EXTREME_DAY_MIN_CONFIDENCE = 85
+OVERSOLD_SHORT_BLOCK_RSI_4H = 32  OVERBOUGHT_LONG_BLOCK_RSI_4H = 68
 DEFAULT_SL_DISTANCE = 150      DEFAULT_TP_DISTANCE = 400      MIN_RR_RATIO = 1.5
 BREAKEVEN_TRIGGER = 150        BREAKEVEN_BUFFER = 10          TRAILING_STOP_DISTANCE = 150
 SCAN_INTERVAL_SECONDS = 300    MONITOR_INTERVAL_SECONDS = 2   OFFHOURS_INTERVAL_SECONDS = 1800
@@ -106,16 +107,17 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 
 ## AI Decision Quality Fixes (2026-03-04)
 - confidence.py: **C1 daily trend: EMA50 primary** (was EMA200). EMA200 at 48,795 vs price 54,000 = always "bullish" = useless. EMA50 (55,205) is responsive to recent price action. On crash day, price below EMA50 → C1 FAILS for LONG → knife-catching LONGs blocked.
-- settings.py: **Crash day constants** — CRASH_DAY_RANGE_PTS=1000, CRASH_DAY_MIN_CONFIDENCE=85, OVERSOLD_SHORT_BLOCK_RSI_4H=32.
-- risk_manager.py: **Crash day gate** — new `indicators_snapshot` param on validate_trade(). If intraday range > 1000pts AND confidence < 85%, trade is blocked. Prevents medium-confidence trades during extreme volatility.
+- settings.py: **Extreme day constants** — EXTREME_DAY_RANGE_PTS=1000, EXTREME_DAY_MIN_CONFIDENCE=85, OVERSOLD_SHORT_BLOCK_RSI_4H=32, OVERBOUGHT_LONG_BLOCK_RSI_4H=68.
+- risk_manager.py: **Extreme day gate** — new `indicators_snapshot` param on validate_trade(). If intraday range > 1000pts AND confidence < 85%, trade is blocked. Works for both crash and rally days.
 - analyzer.py: **5M data in AI prompt** — added to TF_KEYS. Was already in indicators dict, just never formatted.
 - analyzer.py: **Full fibonacci grid** — all 5 levels (236/382/500/618/786) with distances from price. Was single `fib_near` only.
 - analyzer.py: **BB width** — volatility proxy added to each TF line.
 - analyzer.py: **MARKET REGIME block** — intraday range + crash day flag injected into user prompt.
-- analyzer.py: **Crash day rules** in system prompt — prohibits shorting into oversold 4H RSI<32, prohibits LONG on single 15M candle during crash, requires multi-TF reversal for LONG, warns about SL blowouts.
+- analyzer.py: **Extreme day rules** in system prompt — bidirectional: crash day (bearish) + bull day (bullish). Crash: prohibits shorting into oversold 4H RSI<32, prohibits LONG on single 15M candle. Bull: prohibits LONG into overbought 4H RSI>68, prohibits SHORT on single 15M candle. Both require multi-TF reversal + volume.
 - analyzer.py: **Oversold shorting prohibition** — 4H RSI<32 + exhaustion signals = REJECT SHORT.
+- analyzer.py: **Overbought longing prohibition** — 4H RSI>68 + exhaustion signals = REJECT LONG.
 - analyzer.py: **Warning severity rule** — 4+ warnings → <70%, 6+ warnings → <60%. Prevents high confidence with many self-warnings.
-- monitor.py: **Crash day logging** — logs warning when intraday range > 1000pts.
+- monitor.py: **Extreme day logging** — logs warning when intraday range > 1000pts.
 - monitor.py: **indicators_snapshot wired** to both validate_trade() calls (Sonnet pipeline + scalp auto-execute).
 - Tests: 338/338 passing. Test fixtures updated for EMA50-primary C1.
 

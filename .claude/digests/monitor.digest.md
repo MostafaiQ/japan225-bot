@@ -44,7 +44,7 @@ _scanning_cycle() -> int (sleep seconds):
   5. asyncio.gather(15M, 5M, 4H) parallel → then await Daily sequential (avoids 28 req/min burst)
      Cold start: all 4 sequential (rate limit). Warm: 5M+15M+4H parallel, Daily time-gated.
      All use candle caching: full fetch on first call, delta on subsequent (see ig_client.digest.md)
-  5b. Crash day detection: if tf_daily high-low > CRASH_DAY_RANGE_PTS (1000pts) → logs warning.
+  5b. Extreme day detection: if tf_daily high-low > EXTREME_DAY_RANGE_PTS (1000pts) → logs warning.
   6. BIDIRECTIONAL detect_setup(): two calls with exclude_direction="SHORT" and "LONG"
   6b. 5M FALLBACK (per-direction): if 15M no setup → try 5M with _5m_aligns_with_15m() guard
       → LONG: 15M RSI<65 + price within 300pts of 15M BB mid/lower

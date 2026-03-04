@@ -56,9 +56,10 @@ MAX_CONSECUTIVE_LOSSES = 2  # 2 losses = 1-hour cooldown
 COOLDOWN_HOURS = 1
 DAILY_LOSS_LIMIT_PERCENT = 1.0  # Effectively disabled — AI finds the setups, user manages risk
 WEEKLY_LOSS_LIMIT_PERCENT = 0.50  # 50% of balance
-CRASH_DAY_RANGE_PTS = 1000       # Intraday range > this = crash day
-CRASH_DAY_MIN_CONFIDENCE = 85    # Minimum confidence on crash days (both directions)
+EXTREME_DAY_RANGE_PTS = 1000     # Intraday range > this = extreme day (crash or rally)
+EXTREME_DAY_MIN_CONFIDENCE = 85  # Minimum confidence on extreme days (both directions)
 OVERSOLD_SHORT_BLOCK_RSI_4H = 32 # Don't SHORT below this 4H RSI unless breaking support with volume
+OVERBOUGHT_LONG_BLOCK_RSI_4H = 68 # Don't LONG above this 4H RSI unless breaking resistance with volume
 MIN_CONFIDENCE = 70  # Hard floor - no trades below this
 EVENT_BLACKOUT_MINUTES = 60  # No trades within 60 min of high-impact events
 TRADE_EXPIRY_MINUTES = 15  # Unconfirmed alerts expire after 15 min

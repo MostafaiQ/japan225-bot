@@ -14,7 +14,7 @@ from config.settings import (
     BLOCKED_DAYS, MONTHEND_BLACKOUT_DAYS, SPREAD_ESTIMATE,
     CONTRACT_SIZE, MARGIN_FACTOR, MIN_LOT_SIZE,
     FRIDAY_BLACKOUT_START_UTC, FRIDAY_BLACKOUT_END_UTC,
-    CRASH_DAY_RANGE_PTS, CRASH_DAY_MIN_CONFIDENCE,
+    EXTREME_DAY_RANGE_PTS, EXTREME_DAY_MIN_CONFIDENCE,
 )
 
 logger = logging.getLogger(__name__)
@@ -122,21 +122,21 @@ class RiskManager:
         if not checks["risk_reward"]["pass"]:
             rejection = rejection or f"Effective R:R {effective_rr:.2f} below minimum {MIN_RR_RATIO}. Need wider TP or tighter SL."
 
-        # --- CHECK 3B: Crash Day Volatility Gate ---
+        # --- CHECK 3B: Extreme Day Volatility Gate (crash or rally) ---
         daily_tf = (indicators_snapshot or {}).get("daily", {})
         daily_high = daily_tf.get("high", 0)
         daily_low = daily_tf.get("low", 0)
         daily_range = daily_high - daily_low if daily_high and daily_low else 0
-        crash_day = daily_range > CRASH_DAY_RANGE_PTS
-        crash_day_ok = True
-        if crash_day and confidence < CRASH_DAY_MIN_CONFIDENCE:
-            crash_day_ok = False
-        checks["crash_day"] = {
-            "pass": crash_day_ok,
-            "detail": f"Intraday range {daily_range:.0f}pts" + (f" — CRASH DAY requires {CRASH_DAY_MIN_CONFIDENCE}% confidence" if crash_day else ""),
+        extreme_day = daily_range > EXTREME_DAY_RANGE_PTS
+        extreme_day_ok = True
+        if extreme_day and confidence < EXTREME_DAY_MIN_CONFIDENCE:
+            extreme_day_ok = False
+        checks["extreme_day"] = {
+            "pass": extreme_day_ok,
+            "detail": f"Intraday range {daily_range:.0f}pts" + (f" — EXTREME DAY requires {EXTREME_DAY_MIN_CONFIDENCE}% confidence" if extreme_day else ""),
         }
-        if not crash_day_ok:
-            rejection = rejection or f"Crash day (range {daily_range:.0f}pts). Need {CRASH_DAY_MIN_CONFIDENCE}% confidence, got {confidence}%."
+        if not extreme_day_ok:
+            rejection = rejection or f"Extreme day (range {daily_range:.0f}pts). Need {EXTREME_DAY_MIN_CONFIDENCE}% confidence, got {confidence}%."
 
         # --- CHECK 4: Max Positions ---
         state = self.storage.get_position_state()
