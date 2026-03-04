@@ -1587,11 +1587,14 @@ function _addThinkingBubble(startMs, tier) {
   d.className = 'chat-row assistant';
   const tierLabel = _tierLabels[tier] || '';
   const tierColor = _tierColors[tier] || '#6366f1';
-  const tierHtml = tier ? `<span class="tier-badge" style="display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;color:#fff;background:${tierColor};margin-left:6px;">${tierLabel}</span>` : '<span class="tier-badge" style="display:none;"></span>';
+  const tierBadgeHtml = tier
+    ? `<div style="padding:0 6px;margin-top:2px;"><span class="tier-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;color:#fff;background:${tierColor};font-weight:600;letter-spacing:0.3px;">${tierLabel}</span></div>`
+    : `<div style="padding:0 6px;margin-top:2px;"><span class="tier-badge" style="display:none;"></span></div>`;
   d.innerHTML = `<div class="chat-avatar claude">✦</div>
     <div class="chat-body">
       <div class="bubble"><div class="think-dots"><span></span><span></span><span></span></div></div>
-      <div class="think-status">Thinking… <span class="think-elapsed" style="color:var(--text-muted);font-size:11px;">0s</span>${tierHtml}</div>
+      <div class="think-status">Thinking… <span class="think-elapsed" style="color:var(--text-muted);font-size:11px;">0s</span></div>
+      ${tierBadgeHtml}
     </div>`;
   box.appendChild(d);
   box.scrollTop = box.scrollHeight;
