@@ -1451,6 +1451,21 @@ class TradingMonitor:
             f"SL_dist={sl_distance} TP_dist={tp_distance}, lots={lots}, spread={live_spread:.1f}"
         )
 
+        # --- Risk validation (same as Sonnet pipeline) ---
+        validation = self.risk.validate_trade(
+            direction=direction,
+            lots=lots,
+            entry=live_price,
+            stop_loss=sl,
+            take_profit=tp,
+            confidence=scalp_result.get("confidence", final_confidence),
+            balance=balance,
+            upcoming_events=[],
+        )
+        if not validation["approved"]:
+            logger.info(f"Scalp risk validation failed: {validation['rejection_reason']}")
+            return
+
         # Build alert data in the same format _on_trade_confirm expects
         scalp_alert = {
             "direction": direction,
@@ -1469,6 +1484,11 @@ class TradingMonitor:
             "scalp_tp_distance": tp_distance,
             "scalp_sl_distance": sl_distance,
             "effective_rr": scalp_result.get("effective_rr"),
+            "ai_analysis": (
+                f"[OPUS SCALP] direction={direction}, conf={scalp_result.get('confidence', 0)}%, "
+                f"SL={sl_distance}pts, TP={tp_distance}pts, R:R={effective_rr:.2f}. "
+                f"{scalp_result.get('reasoning', '')}"
+            ),
         }
 
         # Notify user THEN execute (no confirmation needed)
