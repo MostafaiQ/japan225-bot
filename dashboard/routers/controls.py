@@ -1,10 +1,12 @@
 """
-POST /api/controls/force-scan  — write trigger file; monitor picks it up
+POST /api/controls/force-scan  — write trigger file + SIGUSR1; monitor wakes immediately
 POST /api/controls/restart     — sudo systemctl restart japan225-bot
 POST /api/controls/stop        — sudo systemctl stop japan225-bot
 POST /api/apply-fix            — apply unified diff, commit, push
 """
 import json
+import os
+import signal
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +21,20 @@ TRIGGER_PATH         = Path(__file__).parent.parent.parent / "storage" / "data" 
 CLEAR_CD_PATH        = Path(__file__).parent.parent.parent / "storage" / "data" / "clear_cooldown.trigger"
 FORCE_OPEN_PENDING   = Path(__file__).parent.parent.parent / "storage" / "data" / "force_open_pending.json"
 FORCE_OPEN_TRIGGER   = Path(__file__).parent.parent.parent / "storage" / "data" / "force_open.trigger"
+
+
+def _signal_monitor():
+    """Send SIGUSR1 to the monitor process to wake main loop immediately."""
+    try:
+        r = subprocess.run(
+            ["systemctl", "show", "japan225-bot", "-p", "MainPID", "--value"],
+            capture_output=True, text=True, timeout=5,
+        )
+        pid = int(r.stdout.strip())
+        if pid > 0:
+            os.kill(pid, signal.SIGUSR1)
+    except Exception:
+        pass  # Fallback: poll task picks up trigger file within 2s
 
 
 def _systemctl(action: str) -> tuple[bool, str]:
@@ -36,7 +52,8 @@ def _systemctl(action: str) -> tuple[bool, str]:
 async def force_scan():
     TRIGGER_PATH.parent.mkdir(parents=True, exist_ok=True)
     TRIGGER_PATH.touch()
-    return {"ok": True, "message": "Scan trigger written. Bot will scan at next cycle check."}
+    _signal_monitor()
+    return {"ok": True, "message": "Force scan triggered."}
 
 
 @router.post("/api/controls/clear-cooldown")
@@ -45,6 +62,7 @@ async def clear_cooldown():
     CLEAR_CD_PATH.parent.mkdir(parents=True, exist_ok=True)
     CLEAR_CD_PATH.touch()
     TRIGGER_PATH.touch()   # also force-scan so it takes effect immediately
+    _signal_monitor()
     return {"ok": True, "message": "Cooldown cleared. Escalating to AI on next scan."}
 
 

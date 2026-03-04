@@ -1582,7 +1582,8 @@ class TradingMonitor:
         while self.running:
             try:
                 if self._trigger_path.exists():
-                    self._trigger_path.unlink(missing_ok=True)
+                    # Don't delete — let _check_force_scan_trigger() consume it
+                    # so force_scan=True overrides off-hours/pause checks.
                     logger.info("Dashboard force-scan trigger detected (poll). Waking main loop.")
                     self._force_scan_event.set()
                 if self._force_open_trigger_path.exists():
@@ -1631,8 +1632,13 @@ def main():
         # Wake up any sleeping await (scan interval, force_scan_event, etc.)
         loop.call_soon_threadsafe(monitor._force_scan_event.set)
 
+    def force_scan_handler(sig, frame):
+        logger.info("SIGUSR1 received — dashboard force scan. Waking main loop.")
+        loop.call_soon_threadsafe(monitor._force_scan_event.set)
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGUSR1, force_scan_handler)
 
     try:
         loop.run_until_complete(monitor.start())
