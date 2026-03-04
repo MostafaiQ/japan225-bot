@@ -38,7 +38,7 @@ from config.settings import (
     MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, BREAKEVEN_BUFFER,
     DAILY_EMA200_CANDLES, PRE_SCREEN_CANDLES, AI_ESCALATION_CANDLES,
     MINUTE_5_CANDLES, DISPLAY_TZ, display_now,
-    EXTREME_DAY_RANGE_PTS,
+    EXTREME_DAY_RANGE_PTS, MOMENTUM_SCAN_BYPASS_SIGNALS,
 )
 from core.ig_client import IGClient, POSITIONS_API_ERROR
 from core.indicators import analyze_timeframe, detect_setup
@@ -659,6 +659,79 @@ class TradingMonitor:
 
         # Neither direction found a setup
         if not setup_long["found"] and not setup_short["found"]:
+            # --- Momentum scan bypass: if indicators overwhelmingly bullish, skip to Opus ---
+            # 5 signals: above EMA50, above VWAP, HA streak >= 2, RSI 45-72, 4H above EMA50
+            _mom_signals = 0
+            if tf_15m.get("above_ema50"):
+                _mom_signals += 1
+            if tf_15m.get("above_vwap"):
+                _mom_signals += 1
+            _ha_st = tf_15m.get("ha_streak")
+            if _ha_st is not None and _ha_st >= 2:
+                _mom_signals += 1
+            _rsi_15 = tf_15m.get("rsi")
+            if _rsi_15 is not None and 45 <= _rsi_15 <= 72:
+                _mom_signals += 1
+            if tf_4h.get("above_ema50"):
+                _mom_signals += 1
+
+            if _mom_signals >= MOMENTUM_SCAN_BYPASS_SIGNALS:
+                logger.info(
+                    f"MOMENTUM BYPASS: {_mom_signals}/5 bullish signals, no formal setup. "
+                    f"Sending to Opus for evaluation."
+                )
+                indicators = {"m15": tf_15m, "h4": tf_4h, "daily": tf_daily}
+                if tf_5m:
+                    indicators["m5"] = tf_5m
+                try:
+                    _mom_opus_result = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: self.analyzer.evaluate_scalp(
+                            indicators=indicators,
+                            primary_direction="LONG",
+                            setup_type="momentum_bypass",
+                            local_confidence=65,
+                            ai_confidence=0,
+                            ai_reasoning=(
+                                f"MOMENTUM BYPASS: No formal setup fired, but {_mom_signals}/5 bullish signals active. "
+                                f"RSI={_rsi_15}, HA streak={_ha_st}, above EMA50+VWAP. "
+                                f"Market is strongly trending — evaluate for trend-following LONG entry."
+                            ),
+                        ),
+                    )
+                    if _mom_opus_result.get("scalp_viable"):
+                        _mom_conf = _mom_opus_result.get("confidence", 0)
+                        if _mom_conf >= 60:
+                            logger.info(
+                                f"Momentum bypass: Opus approved LONG scalp, conf={_mom_conf}%"
+                            )
+                            self._last_scan_detail = {
+                                "outcome": "momentum_bypass",
+                                "direction": "LONG",
+                                "confidence": _mom_conf,
+                                "price": current_price,
+                            }
+                            # Build minimal local_conf for _execute_scalp
+                            _mom_local_conf = {"score": 65, "criteria": {}, "reasons": {}}
+                            await self._execute_scalp(
+                                scalp_result=_mom_opus_result,
+                                direction=_mom_opus_result.get("direction", "LONG"),
+                                setup={"type": "momentum_bypass", "direction": "LONG",
+                                       "reasoning": f"Momentum bypass ({_mom_signals}/5 signals)"},
+                                session=session,
+                                current_price=current_price,
+                                local_conf=_mom_local_conf,
+                                final_confidence=_mom_conf,
+                                indicators_snapshot=indicators,
+                            )
+                            return 0
+                        else:
+                            logger.info(f"Momentum bypass: Opus conf {_mom_conf}% < 60%, skipping")
+                    else:
+                        logger.info(f"Momentum bypass: Opus rejected — {_mom_opus_result.get('reasoning', '')[:100]}")
+                except Exception as e:
+                    logger.warning(f"Momentum bypass Opus eval failed: {e}")
+
             reasoning = setup_long.get("reasoning", "") or setup_short.get("reasoning", "")
             logger.info(f"Pre-screen: no setup (both dirs). {reasoning[:80]}")
             self._last_scan_detail = {"outcome": "no_setup", "price": current_price, "details": reasoning[:80]}
@@ -959,7 +1032,6 @@ class TradingMonitor:
                         local_confidence=local_score,
                         ai_confidence=final_confidence,
                         ai_reasoning=opus_context[:700],
-                        parallel_mode=False,
                         recent_opus_decision=recent_opus,
                     ),
                 )
@@ -990,6 +1062,8 @@ class TradingMonitor:
                     _bounce_setups = {
                         "bollinger_lower_bounce", "bollinger_mid_bounce", "ema50_bounce",
                         "oversold_reversal", "extreme_oversold_reversal",
+                        "momentum_continuation_long", "breakout_long",
+                        "vwap_bounce_long", "ema9_pullback_long", "momentum_bypass",
                     }
                     _breakdown_setups = {
                         "bear_flag_breakdown", "breakdown_continuation", "multi_tf_bearish",
@@ -997,6 +1071,7 @@ class TradingMonitor:
                         "high_volume_distribution", "lower_lows_bearish",
                         "bollinger_upper_rejection", "ema50_rejection", "bb_mid_rejection",
                         "overbought_reversal", "ema200_rejection", "pivot_r1_rejection",
+                        "momentum_continuation_short", "vwap_rejection_short_momentum",
                     }
                     if setup_type in _bounce_setups and opus_direction == "SHORT":
                         logger.info(

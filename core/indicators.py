@@ -12,6 +12,13 @@ from typing import Optional
 from config.settings import (
     RSI_ENTRY_HIGH_BOUNCE, ENABLE_EMA50_BOUNCE_SETUP,
     DEFAULT_SL_DISTANCE, DEFAULT_TP_DISTANCE,
+    MOMENTUM_RSI_LOW, MOMENTUM_RSI_HIGH,
+    BREAKOUT_RSI_LOW, BREAKOUT_RSI_HIGH, BREAKOUT_VOL_RATIO_MIN,
+    VWAP_BOUNCE_RSI_LOW, VWAP_BOUNCE_RSI_HIGH,
+    EMA9_PULLBACK_RSI_LOW, EMA9_PULLBACK_RSI_HIGH,
+    BB_UPPER_PROXIMITY_PTS, SWING_HIGH_PROXIMITY_PTS,
+    VWAP_PROXIMITY_PTS, EMA9_PROXIMITY_PTS,
+    MOMENTUM_HA_STREAK_MIN,
 )
 
 logger = logging.getLogger(__name__)
@@ -674,10 +681,34 @@ def _build_confluence(tf_15m: dict, direction: str, pivots: dict = None) -> tupl
     counter = []
     is_long = direction == "LONG"
 
-    # Fibonacci: near a key fib level
+    # Fibonacci: near a key fib level (support/resistance context)
     fib_near = tf_15m.get("fib_near")
+    fibonacci = tf_15m.get("fibonacci", {})
+    price = tf_15m.get("price")
     if fib_near:
         conf.append(f"Fib {fib_near}")
+    elif fibonacci and price:
+        # Check for fib levels acting as S/R (within 100pts)
+        for fib_name in ("fib_618", "fib_500", "fib_382", "fib_236", "fib_786"):
+            fib_val = fibonacci.get(fib_name)
+            if fib_val is None:
+                continue
+            dist = price - fib_val
+            if abs(dist) <= 100:
+                pct_label = fib_name.split("_")[1]
+                if is_long and dist >= 0:
+                    # Price just above fib level = support held
+                    conf.append(f"Fib {pct_label} support ({fib_val:.0f}, +{dist:.0f}pts)")
+                elif not is_long and dist <= 0:
+                    # Price just below fib level = resistance holding
+                    conf.append(f"Fib {pct_label} resistance ({fib_val:.0f}, {dist:.0f}pts)")
+                elif is_long and dist < 0:
+                    # Price below fib = resistance overhead
+                    counter.append(f"Fib {pct_label} overhead ({fib_val:.0f}, {dist:.0f}pts)")
+                elif not is_long and dist > 0:
+                    # Price above fib = support below
+                    counter.append(f"Fib {pct_label} support below ({fib_val:.0f}, +{dist:.0f}pts)")
+                break  # Only report nearest fib level
 
     # Liquidity sweep
     swept_low = tf_15m.get("swept_low", False)
@@ -874,6 +905,7 @@ def detect_setup(
         "ha_bullish": tf_15m.get("ha_bullish"),
         "ha_streak": tf_15m.get("ha_streak"),
         "fib_near": tf_15m.get("fib_near"),
+        "fibonacci": tf_15m.get("fibonacci", {}),
         "fvg_bullish": tf_15m.get("fvg_bullish"),
         "fvg_bearish": tf_15m.get("fvg_bearish"),
         "fvg_level": tf_15m.get("fvg_level"),
@@ -894,6 +926,10 @@ def detect_setup(
         "pullback_depth": tf_15m.get("pullback_depth"),
         "avg_candle_range": tf_15m.get("avg_candle_range"),
         "bb_width": tf_15m.get("bb_width"),
+        # Momentum setup context
+        "ema9_15m": tf_15m.get("ema9"),
+        "above_ema9": tf_15m.get("above_ema9"),
+        "above_ema200": tf_15m.get("above_ema200"),
     }
 
     if not price:
@@ -1163,6 +1199,180 @@ def detect_setup(
                     "reasoning": reasoning,
                 })
                 return result
+
+    # ============================================================
+    # MOMENTUM / TREND-FOLLOWING LONG SETUPS
+    # These fire when the market is trending strongly upward and mean-reversion
+    # setups (above) don't apply because price is NOT near BB lower/mid.
+    # Ordered: most specific (breakout) → most general (momentum continuation).
+    # ============================================================
+    ema9_15m = tf_15m.get("ema9")
+    above_ema9 = tf_15m.get("above_ema9")
+    above_ema50 = tf_15m.get("above_ema50")
+    above_ema200_15m = tf_15m.get("above_ema200")
+    above_vwap = tf_15m.get("above_vwap")
+    vwap_15m = tf_15m.get("vwap")
+    ha_bullish = tf_15m.get("ha_bullish")
+    ha_streak = tf_15m.get("ha_streak")
+    vol_signal = tf_15m.get("volume_signal", "NORMAL")
+    vol_ratio = tf_15m.get("volume_ratio", 1.0) or 1.0
+    above_ema50_4h = tf_4h.get("above_ema50")
+
+    # --- LONG Setup 6: Breakout Long ---
+    # Price near/above BB upper or swing high with volume conviction.
+    # Catches breakout moves with institutional participation.
+    if not _skip_long and bb_upper and rsi_15m and ema50_15m and above_ema50:
+        near_bb_upper = abs(price - bb_upper) <= BB_UPPER_PROXIMITY_PTS
+        swing_high = tf_15m.get("swing_high_20")
+        near_swing_high = swing_high is not None and abs(price - swing_high) <= SWING_HIGH_PROXIMITY_PTS
+        rsi_ok_breakout = BREAKOUT_RSI_LOW <= rsi_15m <= BREAKOUT_RSI_HIGH
+        vol_ok_breakout = vol_ratio >= BREAKOUT_VOL_RATIO_MIN
+        ha_ok_breakout = ha_bullish is True
+
+        if (near_bb_upper or near_swing_high) and rsi_ok_breakout and vol_ok_breakout and ha_ok_breakout:
+            entry = price
+            sl = entry - DEFAULT_SL_DISTANCE
+            tp = entry + DEFAULT_TP_DISTANCE
+            conf_list, counter_list = _build_confluence(tf_15m, "LONG", pivots=pivots)
+            level_str = []
+            if near_bb_upper:
+                level_str.append(f"BB upper ({bb_upper:.0f}, {abs(price - bb_upper):.0f}pts)")
+            if near_swing_high:
+                level_str.append(f"swing high ({swing_high:.0f}, {abs(price - swing_high):.0f}pts)")
+            reasoning = (
+                f"LONG: Breakout on 15M. "
+                f"Near {', '.join(level_str)}. "
+                f"RSI {rsi_15m:.1f}, vol {vol_ratio:.1f}x, HA bullish. "
+                f"Above EMA50. {daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "breakout_long",
+                "direction": "LONG",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
+
+    # --- LONG Setup 7: VWAP Bounce Long ---
+    # Price pulled back to VWAP in an uptrend and bouncing — intraday fair value re-entry.
+    if not _skip_long and vwap_15m and rsi_15m and ema50_15m and above_ema50:
+        near_vwap = abs(price - vwap_15m) <= VWAP_PROXIMITY_PTS
+        rsi_ok_vwap = VWAP_BOUNCE_RSI_LOW <= rsi_15m <= VWAP_BOUNCE_RSI_HIGH
+        # Bounce confirmation: HA bullish/turning, or candle pattern, or lower wick
+        candle_open_vb = tf_15m.get("open")
+        candle_low_vb = tf_15m.get("low")
+        lower_wick_vb = (min(candle_open_vb, price) - candle_low_vb) if (candle_open_vb is not None and candle_low_vb is not None) else 0
+        candle_patterns_vb = tf_15m.get("candlestick_patterns", [])
+        bullish_pattern_vb = any(p.get("direction") == "bullish" for p in candle_patterns_vb) if candle_patterns_vb else False
+        bounce_confirm_vb = ha_bullish is True or lower_wick_vb >= 15 or bullish_pattern_vb
+
+        if near_vwap and rsi_ok_vwap and bounce_confirm_vb:
+            entry = price
+            sl = entry - DEFAULT_SL_DISTANCE
+            tp = entry + DEFAULT_TP_DISTANCE
+            conf_list, counter_list = _build_confluence(tf_15m, "LONG", pivots=pivots)
+            confirm_str_vb = []
+            if ha_bullish:
+                confirm_str_vb.append("HA bullish")
+            if lower_wick_vb >= 15:
+                confirm_str_vb.append(f"wick {lower_wick_vb:.0f}pts")
+            if bullish_pattern_vb:
+                confirm_str_vb.append("bullish candle")
+            reasoning = (
+                f"LONG: VWAP bounce on 15M. "
+                f"Price {abs(price - vwap_15m):.0f}pts from VWAP ({vwap_15m:.0f}). "
+                f"RSI {rsi_15m:.1f}. Bounce: {', '.join(confirm_str_vb)}. "
+                f"Above EMA50. {daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "vwap_bounce_long",
+                "direction": "LONG",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
+
+    # --- LONG Setup 8: EMA9 Pullback Long ---
+    # Price pulled back to fast EMA9 in a strong uptrend — shallow dip re-entry.
+    if not _skip_long and ema9_15m and rsi_15m and ema50_15m and above_ema50:
+        near_ema9 = abs(price - ema9_15m) <= EMA9_PROXIMITY_PTS
+        rsi_ok_ema9 = EMA9_PULLBACK_RSI_LOW <= rsi_15m <= EMA9_PULLBACK_RSI_HIGH
+        ha_ok_ema9 = ha_bullish is True or (ha_streak is not None and ha_streak >= -1)
+
+        if near_ema9 and rsi_ok_ema9 and ha_ok_ema9:
+            entry = price
+            sl = entry - DEFAULT_SL_DISTANCE
+            tp = entry + DEFAULT_TP_DISTANCE
+            conf_list, counter_list = _build_confluence(tf_15m, "LONG", pivots=pivots)
+            reasoning = (
+                f"LONG: EMA9 pullback on 15M. "
+                f"Price {abs(price - ema9_15m):.0f}pts from EMA9 ({ema9_15m:.0f}). "
+                f"RSI {rsi_15m:.1f}. HA {'bullish' if ha_bullish else f'streak {ha_streak}'}. "
+                f"Above EMA50. {daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "ema9_pullback_long",
+                "direction": "LONG",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
+
+    # --- LONG Setup 9: Momentum Continuation Long ---
+    # Broadest catch-all for trending markets. Above EMA50 + VWAP + HA bullish streak.
+    # This is what catches "today's scenario" — RSI 60-70, strongly trending, no pullback.
+    if not _skip_long and ema50_15m and rsi_15m and above_ema50:
+        rsi_ok_mom = MOMENTUM_RSI_LOW <= rsi_15m <= MOMENTUM_RSI_HIGH
+        above_vwap_ok = above_vwap is True
+        ha_streak_ok = ha_streak is not None and ha_streak >= MOMENTUM_HA_STREAK_MIN
+        vol_ok_mom = vol_signal != "LOW"
+
+        if rsi_ok_mom and above_vwap_ok and ha_streak_ok and vol_ok_mom:
+            entry = price
+            sl = entry - DEFAULT_SL_DISTANCE
+            tp = entry + DEFAULT_TP_DISTANCE
+            conf_list, counter_list = _build_confluence(tf_15m, "LONG", pivots=pivots)
+            reasoning = (
+                f"LONG: Momentum continuation on 15M. "
+                f"RSI {rsi_15m:.1f}, HA streak +{ha_streak}, above VWAP+EMA50. "
+                f"Vol={vol_signal}. {daily_str}. "
+                f"Trend-following — RSI 45-70 is healthy, not overbought."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "momentum_continuation_long",
+                "direction": "LONG",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
 
     # ============================================================
     # SHORT SETUPS (bidirectional — no daily gate, C1 in confidence penalizes counter-trend)
@@ -1770,6 +1980,96 @@ def detect_setup(
                     "reasoning": reasoning,
                 })
                 return result
+
+    # ============================================================
+    # MOMENTUM / TREND-FOLLOWING SHORT SETUPS
+    # Mirror of LONG momentum setups. Catch strong downtrend continuation.
+    # ============================================================
+
+    # --- SHORT Momentum: Momentum Continuation Short ---
+    # Broadest catch-all for trending SHORT markets. Below EMA50 + below VWAP + HA bearish streak.
+    below_ema50_s = not tf_15m.get("above_ema50")
+    below_vwap_s = tf_15m.get("above_vwap") is False
+    ha_bearish_s = tf_15m.get("ha_bullish") is False
+    ha_streak_s = tf_15m.get("ha_streak")
+    vol_signal_s = tf_15m.get("volume_signal", "NORMAL")
+
+    if not _skip_short and ema50_15m and rsi_15m and below_ema50_s:
+        rsi_ok_mom_s = 30 <= rsi_15m <= 55
+        ha_streak_ok_s = ha_streak_s is not None and ha_streak_s <= -MOMENTUM_HA_STREAK_MIN
+        vol_ok_mom_s = vol_signal_s != "LOW"
+
+        if rsi_ok_mom_s and below_vwap_s and ha_streak_ok_s and vol_ok_mom_s:
+            entry = price
+            sl = entry + DEFAULT_SL_DISTANCE
+            tp = entry - DEFAULT_TP_DISTANCE
+            conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+            reasoning = (
+                f"SHORT: Momentum continuation on 15M. "
+                f"RSI {rsi_15m:.1f}, HA streak {ha_streak_s}, below VWAP+EMA50. "
+                f"Vol={vol_signal_s}. {short_daily_str}. "
+                f"Trend-following — RSI 30-55 is healthy bearish, not oversold."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "momentum_continuation_short",
+                "direction": "SHORT",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
+
+    # --- SHORT Momentum: VWAP Rejection Short ---
+    # Price rallied to VWAP from below in a downtrend and got rejected.
+    if not _skip_short and vwap_15m and rsi_15m and ema50_15m and below_ema50_s:
+        near_vwap_s = abs(price - vwap_15m) <= VWAP_PROXIMITY_PTS
+        rsi_ok_vwap_s = 35 <= rsi_15m <= 60
+        # Rejection confirmation: HA bearish/turning, or bearish candle pattern, or upper wick
+        candle_open_vs = tf_15m.get("open")
+        candle_high_vs = tf_15m.get("high")
+        upper_wick_vs = (candle_high_vs - max(candle_open_vs, price)) if (candle_open_vs is not None and candle_high_vs is not None) else 0
+        candle_patterns_vs = tf_15m.get("candlestick_patterns", [])
+        bearish_pattern_vs = any(p.get("direction") == "bearish" for p in candle_patterns_vs) if candle_patterns_vs else False
+        reject_confirm_vs = ha_bearish_s or upper_wick_vs >= 15 or bearish_pattern_vs
+
+        if near_vwap_s and rsi_ok_vwap_s and reject_confirm_vs:
+            entry = price
+            sl = entry + DEFAULT_SL_DISTANCE
+            tp = entry - DEFAULT_TP_DISTANCE
+            conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+            confirm_str_vs = []
+            if ha_bearish_s:
+                confirm_str_vs.append("HA bearish")
+            if upper_wick_vs >= 15:
+                confirm_str_vs.append(f"wick {upper_wick_vs:.0f}pts")
+            if bearish_pattern_vs:
+                confirm_str_vs.append("bearish candle")
+            reasoning = (
+                f"SHORT: VWAP rejection on 15M. "
+                f"Price {abs(price - vwap_15m):.0f}pts from VWAP ({vwap_15m:.0f}). "
+                f"RSI {rsi_15m:.1f}. Rejection: {', '.join(confirm_str_vs)}. "
+                f"Below EMA50. {short_daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "vwap_rejection_short_momentum",
+                "direction": "SHORT",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
 
     diag_parts = []
     if bb_mid is not None:

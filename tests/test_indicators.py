@@ -754,5 +754,127 @@ class TestDetectSetupConfluence:
         assert "prev_candle_high" in snap
 
 
+class TestMomentumLongSetups:
+    """Test 4 new momentum/trend-following LONG setups."""
+
+    def _base_tf_daily(self):
+        return {
+            "price": 55000, "above_ema200_fallback": True, "above_ema200": True, "rsi": 55,
+            "above_ema50": True,
+            "prev_candle_high": 55200, "prev_candle_low": 54500, "prev_close": 55000,
+        }
+
+    def _base_tf_4h(self):
+        return {"price": 55000, "rsi": 60, "above_ema50": True}
+
+    def _momentum_tf_15m(self, **overrides):
+        """15M data for a strongly trending market (today's scenario: RSI ~68, above everything).
+        EMA9 set far from price (>100pts) so momentum_continuation fires, not ema9_pullback."""
+        tf = {
+            "price": 55500, "open": 55400, "high": 55600, "low": 55350,
+            "prev_close": 55300,
+            "bollinger_mid": 54800, "bollinger_upper": 56200, "bollinger_lower": 54000,
+            "rsi": 65, "ema50": 54500, "ema9": 55200, "ema200": 53000,
+            "above_ema50": True, "above_ema9": True, "above_ema200": True,
+            "above_vwap": True, "vwap": 55100,
+            "ha_bullish": True, "ha_streak": 3,
+            "volume_signal": "NORMAL", "volume_ratio": 1.1,
+            "swing_high_20": 55850, "swing_low_20": 54200,
+            "dist_to_swing_high": 350, "dist_to_swing_low": 1300,
+            "fib_near": None, "fvg_bullish": False, "fvg_bearish": False,
+            "swept_low": False, "swept_high": False,
+            "candlestick_pattern": None, "candlestick_direction": None,
+            "candlestick_strength": None, "candlestick_patterns": [],
+            "body_trend": "expanding", "consecutive_direction": 3,
+            "avg_body_size": 80, "wick_ratio": 0.5,
+            "pullback_depth": 200, "avg_candle_range": 100, "bb_width": 1600,
+        }
+        tf.update(overrides)
+        return tf
+
+    # --- Momentum Continuation Long ---
+    def test_momentum_continuation_fires(self):
+        tf_15m = self._momentum_tf_15m()
+        result = detect_setup(self._base_tf_daily(), self._base_tf_4h(), tf_15m)
+        assert result["found"]
+        assert result["type"] == "momentum_continuation_long"
+        assert result["direction"] == "LONG"
+        assert "Momentum continuation" in result["reasoning"]
+
+    def test_momentum_continuation_requires_above_vwap(self):
+        tf_15m = self._momentum_tf_15m(above_vwap=False)
+        result = detect_setup(self._base_tf_daily(), self._base_tf_4h(), tf_15m, exclude_direction="SHORT")
+        # Should not fire momentum_continuation (may fall through to other setups)
+        if result["found"]:
+            assert result["type"] != "momentum_continuation_long"
+
+    def test_momentum_continuation_requires_ha_streak(self):
+        tf_15m = self._momentum_tf_15m(ha_streak=1)
+        result = detect_setup(self._base_tf_daily(), self._base_tf_4h(), tf_15m, exclude_direction="SHORT")
+        if result["found"]:
+            assert result["type"] != "momentum_continuation_long"
+
+    def test_momentum_continuation_blocked_by_low_volume(self):
+        tf_15m = self._momentum_tf_15m(volume_signal="LOW")
+        result = detect_setup(self._base_tf_daily(), self._base_tf_4h(), tf_15m, exclude_direction="SHORT")
+        if result["found"]:
+            assert result["type"] != "momentum_continuation_long"
+
+    # --- Breakout Long ---
+    def test_breakout_long_fires(self):
+        tf_15m = self._momentum_tf_15m(
+            rsi=60, volume_ratio=1.5, ha_bullish=True,
+            bollinger_upper=55650,  # price 55500, within 200pts
+        )
+        result = detect_setup(self._base_tf_daily(), self._base_tf_4h(), tf_15m)
+        assert result["found"]
+        assert result["type"] == "breakout_long"
+        assert "Breakout" in result["reasoning"]
+
+    def test_breakout_long_requires_volume(self):
+        tf_15m = self._momentum_tf_15m(
+            rsi=60, volume_ratio=0.8, ha_bullish=True,
+            bollinger_upper=55650,
+        )
+        result = detect_setup(self._base_tf_daily(), self._base_tf_4h(), tf_15m, exclude_direction="SHORT")
+        if result["found"]:
+            assert result["type"] != "breakout_long"
+
+    # --- VWAP Bounce Long ---
+    def test_vwap_bounce_long_fires(self):
+        tf_15m = self._momentum_tf_15m(
+            price=55150, rsi=50, vwap=55100, above_vwap=True,
+            ha_bullish=True, ha_streak=1,  # no momentum_continuation (streak < 2)
+            bollinger_upper=55800,  # far from BB upper (no breakout)
+        )
+        result = detect_setup(self._base_tf_daily(), self._base_tf_4h(), tf_15m, exclude_direction="SHORT")
+        assert result["found"]
+        assert result["type"] == "vwap_bounce_long"
+        assert "VWAP bounce" in result["reasoning"]
+
+    # --- EMA9 Pullback Long ---
+    def test_ema9_pullback_long_fires(self):
+        tf_15m = self._momentum_tf_15m(
+            price=55380, rsi=50, ema9=55400,
+            above_vwap=False, vwap=54800,  # far from VWAP (no vwap_bounce)
+            ha_bullish=True, ha_streak=1,  # no momentum_continuation (streak < 2)
+            bollinger_upper=55900,  # far from BB upper (no breakout)
+            volume_ratio=1.0,  # not enough for breakout
+        )
+        result = detect_setup(self._base_tf_daily(), self._base_tf_4h(), tf_15m, exclude_direction="SHORT")
+        assert result["found"]
+        assert result["type"] == "ema9_pullback_long"
+        assert "EMA9 pullback" in result["reasoning"]
+
+    # --- Snapshot keys ---
+    def test_momentum_snapshot_has_ema9_keys(self):
+        tf_15m = self._momentum_tf_15m()
+        result = detect_setup(self._base_tf_daily(), self._base_tf_4h(), tf_15m)
+        snap = result["indicators_snapshot"]
+        assert "ema9_15m" in snap
+        assert "above_ema9" in snap
+        assert "above_ema200" in snap
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

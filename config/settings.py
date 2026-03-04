@@ -88,6 +88,23 @@ TRAILING_STOP_INCREMENT = 5  # Step size for trailing stop
 # RSI gate for BB mid bounce entry
 RSI_ENTRY_HIGH_BOUNCE = 55    # Backtest: RSI 55-65 LONG WR=38%, cut off
 
+# --- Momentum / Trend-Following LONG Setups ---
+MOMENTUM_RSI_LOW = 45         # RSI floor for momentum continuation
+MOMENTUM_RSI_HIGH = 70        # RSI ceiling (60-70 is healthy trend, not overbought)
+BREAKOUT_RSI_LOW = 55         # RSI floor for breakout
+BREAKOUT_RSI_HIGH = 75        # RSI ceiling for breakout
+VWAP_BOUNCE_RSI_LOW = 40      # RSI floor for VWAP bounce
+VWAP_BOUNCE_RSI_HIGH = 65     # RSI ceiling for VWAP bounce
+EMA9_PULLBACK_RSI_LOW = 40    # RSI floor for EMA9 pullback
+EMA9_PULLBACK_RSI_HIGH = 65   # RSI ceiling for EMA9 pullback
+BREAKOUT_VOL_RATIO_MIN = 1.3  # Minimum volume ratio for breakout setup
+BB_UPPER_PROXIMITY_PTS = 200  # Points from BB upper for breakout detection
+SWING_HIGH_PROXIMITY_PTS = 100  # Points from swing high for breakout detection
+VWAP_PROXIMITY_PTS = 120      # Points from VWAP for VWAP bounce detection
+EMA9_PROXIMITY_PTS = 100      # Points from EMA9 for pullback detection
+MOMENTUM_HA_STREAK_MIN = 2    # Minimum HA bullish streak for momentum continuation
+MOMENTUM_SCAN_BYPASS_SIGNALS = 4  # Min signals (of 5) to bypass no_setup to Opus
+
 # ============================================
 # SESSION HOURS (UTC) — backtest + monitor
 # ============================================

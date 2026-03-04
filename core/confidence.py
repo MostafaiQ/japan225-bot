@@ -96,11 +96,17 @@ def compute_confidence(
     rsi_4h = tf_4h.get("rsi")
     rsi_daily = tf_daily.get("rsi")
 
-    # Setup-type-aware flags — used by C1, C5, C10, C11, C12
+    # Setup-type-aware flags — used by C1, C2, C3, C4, C5, C10, C11, C12
     _oversold_setup = setup_type in ("bollinger_lower_bounce", "oversold_reversal", "extreme_oversold_reversal")
     _overbought_setup = setup_type in ("overbought_reversal",)
     _breakdown_setup = setup_type in (
         "breakdown_continuation", "bear_flag_breakdown", "multi_tf_bearish"
+    )
+    _momentum_setup = setup_type in (
+        "momentum_continuation_long", "breakout_long", "vwap_bounce_long", "ema9_pullback_long"
+    )
+    _momentum_short_setup = setup_type in (
+        "momentum_continuation_short", "vwap_rejection_short_momentum"
     )
     # ---- Criterion 1: Daily Trend Aligned (oversold-exempt) ----
     # Uses EMA50 as PRIMARY (more responsive to recent trend changes).
@@ -113,6 +119,11 @@ def compute_confidence(
             if not c1 and _oversold_setup:
                 c1 = True
                 reasons["daily_trend"] = f"Daily EMA50: below (oversold exempt — counter-trend bounce)"
+            elif not c1 and _momentum_setup:
+                # Momentum setups fire on 15M EMA50 which recovers faster than daily.
+                # After a crash, 15M trends up while daily EMA50 still lags below.
+                c1 = True
+                reasons["daily_trend"] = f"Daily EMA50: below (momentum exempt — 15M trend recovers faster)"
             else:
                 reasons["daily_trend"] = f"Daily EMA50: {'above' if c1 else 'below'} (price={price:.0f})"
         elif above_ema200_daily is not None:
@@ -120,6 +131,9 @@ def compute_confidence(
             if not c1 and _oversold_setup:
                 c1 = True
                 reasons["daily_trend"] = f"Daily EMA200: below (oversold exempt — counter-trend bounce)"
+            elif not c1 and _momentum_setup:
+                c1 = True
+                reasons["daily_trend"] = f"Daily EMA200: below (momentum exempt — 15M trend recovers faster)"
             else:
                 reasons["daily_trend"] = f"Daily EMA50 N/A, using EMA200: {'above' if c1 else 'below'}"
         else:
@@ -131,11 +145,11 @@ def compute_confidence(
             if not c1 and _overbought_setup:
                 c1 = True
                 reasons["daily_trend"] = f"Daily EMA50: above (overbought exempt — counter-trend reversal)"
-            elif not c1 and _breakdown_setup:
+            elif not c1 and (_breakdown_setup or _momentum_short_setup):
                 # Breakdown/momentum shorts: daily bullish is EXPECTED during transition.
                 # 4H/15M already turned bearish but daily EMA lags on big selloff days.
                 c1 = True
-                reasons["daily_trend"] = f"Daily EMA50: above (breakdown exempt — daily lags in transition)"
+                reasons["daily_trend"] = f"Daily EMA50: above (breakdown/momentum exempt — daily lags in transition)"
             else:
                 reasons["daily_trend"] = f"Daily EMA50: {'below (bearish)' if c1 else 'above (not bearish)'}"
         elif above_ema200_daily is not None:
@@ -143,9 +157,9 @@ def compute_confidence(
             if not c1 and _overbought_setup:
                 c1 = True
                 reasons["daily_trend"] = f"Daily EMA200: above (overbought exempt — counter-trend reversal)"
-            elif not c1 and _breakdown_setup:
+            elif not c1 and (_breakdown_setup or _momentum_short_setup):
                 c1 = True
-                reasons["daily_trend"] = f"Daily EMA200: above (breakdown exempt — daily lags in transition)"
+                reasons["daily_trend"] = f"Daily EMA200: above (breakdown/momentum exempt — daily lags in transition)"
             else:
                 reasons["daily_trend"] = f"Daily EMA50 N/A, using EMA200: {'below (bearish)' if c1 else 'above (not bearish)'}"
         else:
@@ -156,6 +170,7 @@ def compute_confidence(
     # ---- Criterion 2: Entry at Technical Level ----
     vwap_15m = tf_15m.get("vwap")
     above_vwap_15m = tf_15m.get("above_vwap")
+    ema9_15m = tf_15m.get("ema9")
     if direction == "LONG":
         # Near BB midband OR near EMA50 OR near BB lower band (deeply oversold bounce)
         near_bb_mid = (
@@ -173,7 +188,17 @@ def compute_confidence(
             and above_vwap_15m is False
             and abs(price - vwap_15m) <= BB_MID_THRESHOLD_PTS
         )
-        c2 = near_bb_mid or near_ema50 or near_bb_lower or near_vwap_long
+        # Momentum entries: near BB upper (breakout), above VWAP (trend), near EMA9 (pullback)
+        near_bb_upper_mom = (
+            _momentum_setup and bb_upper is not None and abs(price - bb_upper) <= 200
+        )
+        above_vwap_mom = (
+            _momentum_setup and above_vwap_15m is True
+        )
+        near_ema9_mom = (
+            _momentum_setup and ema9_15m is not None and abs(price - ema9_15m) <= 100
+        )
+        c2 = near_bb_mid or near_ema50 or near_bb_lower or near_vwap_long or near_bb_upper_mom or above_vwap_mom or near_ema9_mom
         if near_bb_lower:
             reasons["entry_level"] = f"Price {abs(price - bb_lower):.0f}pts from BB lower ({bb_lower:.0f})"
         elif near_bb_mid:
@@ -182,6 +207,12 @@ def compute_confidence(
             reasons["entry_level"] = f"Price {abs(price - ema50_15m):.0f}pts from EMA50 ({ema50_15m:.0f})"
         elif near_vwap_long:
             reasons["entry_level"] = f"Price {abs(price - vwap_15m):.0f}pts below VWAP ({vwap_15m:.0f}, discount)"
+        elif near_bb_upper_mom:
+            reasons["entry_level"] = f"Momentum: near BB upper ({bb_upper:.0f}, breakout zone)"
+        elif above_vwap_mom:
+            reasons["entry_level"] = f"Momentum: above VWAP ({vwap_15m:.0f}, trend continuation)"
+        elif near_ema9_mom:
+            reasons["entry_level"] = f"Momentum: near EMA9 ({ema9_15m:.0f}, pullback entry)"
         else:
             reasons["entry_level"] = (
                 f"Not at tech level. BB mid dist: {abs(price - bb_mid):.0f}pts, "
@@ -229,6 +260,10 @@ def compute_confidence(
             if at_bb_lower:
                 c3 = 20 <= rsi_15m <= 40
                 reasons["rsi_15m"] = f"RSI 15M: {rsi_15m:.1f} (BB lower zone 20-40)"
+            elif _momentum_setup:
+                # Momentum: RSI 45-70 is healthy trending, not overbought
+                c3 = 40 <= rsi_15m <= 70
+                reasons["rsi_15m"] = f"RSI 15M: {rsi_15m:.1f} (momentum zone 40-70)"
             else:
                 c3 = LONG_RSI_LOW <= rsi_15m <= LONG_RSI_HIGH
                 reasons["rsi_15m"] = f"RSI 15M: {rsi_15m:.1f} (zone {LONG_RSI_LOW}-{LONG_RSI_HIGH})"
@@ -245,15 +280,20 @@ def compute_confidence(
     #   not entering while price is still falling toward the mid from above.
     # For SHORT: price must be at or above BB mid — price has rallied to mid before rejection.
     if direction == "LONG":
-        c4 = bb_mid is not None and price <= bb_mid
-        reasons["tp_viable"] = (
-            f"Price {'at/below' if c4 else 'above'} BB mid ({bb_mid:.0f})" if bb_mid else "BB mid unavailable"
-        )
-    else:
-        if _breakdown_setup:
-            # Breakdown continuation: price below BB mid is EXPECTED (that's the setup trigger)
+        if _momentum_setup:
+            # Momentum: price above BB mid is EXPECTED (trending up, TP = new highs / BB upper)
             c4 = True
-            reasons["tp_viable"] = f"Breakdown: price below BB mid (expected — targeting BB lower/beyond)"
+            reasons["tp_viable"] = f"Momentum: price above BB mid expected (targeting BB upper / new highs)"
+        else:
+            c4 = bb_mid is not None and price <= bb_mid
+            reasons["tp_viable"] = (
+                f"Price {'at/below' if c4 else 'above'} BB mid ({bb_mid:.0f})" if bb_mid else "BB mid unavailable"
+            )
+    else:
+        if _breakdown_setup or _momentum_short_setup:
+            # Breakdown/momentum continuation: price below BB mid is EXPECTED
+            c4 = True
+            reasons["tp_viable"] = f"Breakdown/momentum: price below BB mid (expected — targeting BB lower/beyond)"
         else:
             c4 = bb_mid is not None and price >= bb_mid
             reasons["tp_viable"] = (
@@ -433,10 +473,18 @@ def compute_confidence(
     if avg_range >= HIGH_VOL_THRESHOLD:
         c12 = True
         reasons["entry_quality"] = f"High vol ({avg_range:.0f}pts avg range) — moves decisive"
+    elif direction == "LONG" and _momentum_setup:
+        # Momentum: positive pullback_depth = trending up = EXPECTED (not chasing)
+        c12 = True
+        reasons["entry_quality"] = f"Momentum: trend {pullback:+.0f}pts (trending up is expected), vol={avg_range:.0f}pts"
     elif direction == "LONG":
         # Require pullback: price should have fallen before LONG entry (buying the dip)
         c12 = pullback < 0
         reasons["entry_quality"] = f"Pullback {pullback:+.0f}pts ({'dip' if c12 else 'chase — no pullback'}), vol={avg_range:.0f}pts"
+    elif _momentum_short_setup:
+        # Momentum SHORT: negative pullback_depth = trending down = EXPECTED
+        c12 = True
+        reasons["entry_quality"] = f"Momentum SHORT: trend {pullback:+.0f}pts (trending down is expected), vol={avg_range:.0f}pts"
     else:
         # Require rally: price should have risen before SHORT entry (selling the top)
         c12 = pullback > 0

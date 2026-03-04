@@ -1,60 +1,37 @@
 # core/confidence.py — DIGEST
 # Purpose: Local 12-criteria confidence scorer. Gates AI escalation (score must be >=60%).
 # Bidirectional: LONG and SHORT criteria differ.
-# Updated 2026-03-02: 12-criteria (C12 entry_quality); C1 oversold-exempt; RSI gate 65→55.
+# Updated 2026-03-04: _momentum_setup + _momentum_short_setup flags for trend-following setups.
 
 ## Constants
 BASE_SCORE=30  MAX_SCORE=100
 MIN_CONFIDENCE_LONG=70  MIN_CONFIDENCE_SHORT=75
-BB_MID_THRESHOLD_PTS=150   # calibrated for Nikkei ~55k
-EMA50_THRESHOLD_PTS=150    # calibrated for Nikkei ~55k
-LONG_RSI_LOW/HIGH = 30 / RSI_ENTRY_HIGH_BOUNCE (imported from settings, currently 55)
+BB_MID_THRESHOLD_PTS=150   EMA50_THRESHOLD_PTS=150
+LONG_RSI_LOW/HIGH = 30 / RSI_ENTRY_HIGH_BOUNCE (55)
 SHORT_RSI_LOW/HIGH=55/75
 
 ## compute_confidence(direction, tf_daily, tf_4h, tf_15m, upcoming_events=None, web_research=None, setup_type=None) -> dict
-# Returns: {score, passed_criteria, total_criteria, criteria, reasons, direction,
-#           meets_threshold, min_threshold}
 # score = min(30 + int(passed * 70 / total_criteria), 100)
-# setup_type: optional parameter to enable setup-aware criteria (e.g., "oversold_reversal")
-# 12/12=100%, 11/12=94%, 10/12=88%, 9/12=82%, 8/12=76%, 7/12=70%,
-# 6/12=65% (fails 70 gate), 5/12=59% (below 60% gate)
-
 # 12 criteria:
-# 1. daily_trend:        EMA50 PRIMARY (not EMA200). EMA200 = fallback only.
-#                        LONG=above EMA50 daily.  SHORT=below EMA50 daily.
-#                        EMA200 lags thousands of pts in crashes — always reads "bullish" = useless.
-#                        OVERSOLD EXEMPT: bb_lower_bounce/oversold_reversal pass C1 even when daily bearish.
-#                        BREAKDOWN EXEMPT: breakdown_continuation/bear_flag_breakdown/multi_tf_bearish pass C1
-#                        even when daily bullish. Daily EMA lags on big selloff days (transition phase).
-# 2. entry_level:        LONG=near BB_mid (±150pts) OR EMA50 (±150pts) OR BB_lower (±150pts) OR VWAP below (±150pts).
-#                        SHORT=near BB_upper or BB_mid or EMA50_from_below (price<=ema50) OR VWAP above (±150pts).
-# 3. rsi_15m:            LONG standard=RSI 30-55 (was 30-65, tightened — RSI 55-65 WR=38%).
-#                        LONG at BB lower=RSI 20-40 (deeply oversold).
-#                        SHORT=RSI 55-75.
-# 4. tp_viable:          LONG=price<=bb_mid.  SHORT=price>=bb_mid.
-# 5. structure:          LONG=price above EMA50_15m OR reversal signals for oversold setups.
-#                        SHORT=price below EMA50_15m.
-# 6. macro:              LONG=4H RSI 35-75.  SHORT=4H RSI 30-60.
-# 7. no_event_1hr:       No HIGH-impact event within 60min.
-# 8. no_friday_monthend: Calls session.is_friday_blackout() + is_month_end_blackout().
-# 9. volume:             tf_15m volume_signal != "LOW".
-# 10. trend_4h:          LONG=4H above EMA50 OR oversold with RSI_4H<45/daily bullish.
-#                        SHORT=4H below EMA50.
-# 11. ha_aligned:        LONG=tf_15m ha_bullish OR oversold with streak>=-2/bullish candle/RSI<30.
-#                        SHORT=ha_bullish is False.
-# 12. entry_quality:     Pullback depth + volatility regime (data-backed).
-#                        LONG: requires pullback_depth < 0 (price fell before entry = buying the dip).
-#                        SHORT: requires pullback_depth > 0 (price rose before entry = selling the top).
-#                        HIGH VOL OVERRIDE: avg_candle_range >= 120pts passes regardless (moves decisive).
-#                        Backtest: pullback LONGs 43% WR vs chase 36%. High vol 49% vs med vol 37%.
+# 1. daily_trend:   EMA50 PRIMARY. Oversold exempt. Momentum LONG exempt. Breakdown/momentum SHORT exempt.
+# 2. entry_level:   Near BB mid/EMA50/BB lower/VWAP. MOMENTUM: accepts above VWAP, near BB upper, near EMA9.
+# 3. rsi_15m:       LONG 30-55. BB lower 20-40. MOMENTUM LONG 40-70. SHORT 55-75.
+# 4. tp_viable:     LONG: price<=bb_mid. MOMENTUM: always pass. SHORT breakdown/momentum: always pass.
+# 5. structure:     LONG: above EMA50. SHORT: below EMA50. Oversold/overbought: reversal signals.
+# 6. macro:         4H RSI range. LONG 35-75. SHORT 30-60.
+# 7. no_event_1hr:  No HIGH-impact event within 60min.
+# 8. no_friday_monthend: Calendar clear.
+# 9. volume:        15M volume signal != LOW.
+# 10. trend_4h:     4H EMA50 alignment. Oversold/overbought: lenient.
+# 11. ha_aligned:   HA direction. Oversold/overbought: reversal signals accepted.
+# 12. entry_quality: LONG: pullback<0. MOMENTUM LONG: always pass. SHORT: pullback>0. MOMENTUM SHORT: always pass. High vol override.
 
-## Thresholds & Setup-Type Rules
-# HAIKU_MIN_SCORE=60 → requires 6/12 criteria (6/12=65≥60).
-# MIN_CONFIDENCE_LONG=70 → requires 7/12 (7/12=70≥70).
-# MIN_CONFIDENCE_SHORT=75 → requires 8/12 (8/12=76≥75).
-# Oversold setups (bb_lower_bounce, oversold_reversal, extreme_oversold_reversal): C1/C5/C10/C11 have relaxed gates.
-# Breakdown setups (breakdown_continuation, bear_flag_breakdown, multi_tf_bearish): C1 exempt (daily lags in transition).
-# C4 (tp_viable) always passes for breakdown setups (price below BB mid is the trigger).
+## Setup-Type Flags
+# _oversold_setup: bb_lower_bounce, oversold_reversal, extreme_oversold_reversal → C1/C5/C10/C11 lenient
+# _overbought_setup: overbought_reversal → C1/C5/C10/C11 lenient
+# _breakdown_setup: breakdown_continuation, bear_flag_breakdown, multi_tf_bearish → C1/C4 exempt
+# _momentum_setup: momentum_continuation_long, breakout_long, vwap_bounce_long, ema9_pullback_long → C1/C2/C3/C4/C12 adjusted
+# _momentum_short_setup: momentum_continuation_short, vwap_rejection_short_momentum → C1/C4/C12 adjusted
 
 ## format_confidence_breakdown(result: dict) -> str
-# Human-readable string for Telegram/logging. Shows ✓/✗ per criterion.
+# Human-readable string for Telegram/logging.

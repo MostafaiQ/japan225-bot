@@ -663,3 +663,93 @@ class TestEntryQualityC12:
         tf_15m["pullback_depth"] = 50
         result_fail = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         assert result_pass["score"] > result_fail["score"]
+
+
+# ── Momentum Setup Scoring ──────────────────────────────────────────────────
+
+class TestMomentumSetupScoring:
+    """Test that momentum LONG setups get appropriate confidence treatment."""
+
+    def _momentum_setup_data(self):
+        """Build tf data for a momentum_continuation_long scenario (RSI ~65, above everything)."""
+        tf_15m = make_tf(
+            price=55500, rsi=65,
+            bb_mid=54800, bb_upper=55600, bb_lower=54000,
+            ema50=54500, above_ema50=True, above_ema200=True,
+            pullback_depth=200,  # positive = trending up
+            avg_candle_range=100,
+        )
+        tf_15m["vwap"] = 55100
+        tf_15m["above_vwap"] = True
+        tf_15m["ha_bullish"] = True
+        tf_15m["ha_streak"] = 3
+        tf_15m["ema9"] = 55400
+        tf_4h = make_tf(rsi=60, above_ema50=True)
+        tf_daily = make_tf(rsi=60, above_ema50=True, above_ema200=True)
+        return tf_daily, tf_4h, tf_15m
+
+    def test_momentum_c1_daily_exempt(self):
+        """Momentum setups should pass C1 even when daily EMA50 is below."""
+        tf_daily, tf_4h, tf_15m = self._momentum_setup_data()
+        tf_daily["above_ema50"] = False  # Daily still bearish (lagging)
+        result = compute_confidence(
+            "LONG", tf_daily, tf_4h, tf_15m,
+            setup_type="momentum_continuation_long"
+        )
+        assert result["criteria"]["daily_trend"] is True
+        assert "momentum exempt" in result["reasons"]["daily_trend"]
+
+    def test_momentum_c3_rsi_widened(self):
+        """Momentum setups should accept RSI 45-70 (not capped at 55)."""
+        tf_daily, tf_4h, tf_15m = self._momentum_setup_data()
+        tf_15m["rsi"] = 65  # Above normal LONG cap of 55
+        result = compute_confidence(
+            "LONG", tf_daily, tf_4h, tf_15m,
+            setup_type="momentum_continuation_long"
+        )
+        assert result["criteria"]["rsi_15m"] is True
+        assert "momentum zone" in result["reasons"]["rsi_15m"]
+
+    def test_momentum_c4_above_bb_mid_passes(self):
+        """Momentum setups should pass C4 even when price is above BB mid."""
+        tf_daily, tf_4h, tf_15m = self._momentum_setup_data()
+        # price=55500 is above bb_mid=54800 → normally fails C4 for LONG
+        result = compute_confidence(
+            "LONG", tf_daily, tf_4h, tf_15m,
+            setup_type="momentum_continuation_long"
+        )
+        assert result["criteria"]["tp_viable"] is True
+
+    def test_momentum_c12_positive_pullback_passes(self):
+        """Momentum setups should pass C12 even with positive pullback (trending up)."""
+        tf_daily, tf_4h, tf_15m = self._momentum_setup_data()
+        tf_15m["pullback_depth"] = 150  # Positive = price rising
+        result = compute_confidence(
+            "LONG", tf_daily, tf_4h, tf_15m,
+            setup_type="breakout_long"
+        )
+        assert result["criteria"]["entry_quality"] is True
+
+    def test_momentum_c2_above_vwap_passes(self):
+        """Momentum setups should pass C2 when above VWAP (trend continuation)."""
+        tf_daily, tf_4h, tf_15m = self._momentum_setup_data()
+        # price=55500 is far from BB mid (54800), far from EMA50 (54500) → normally fails C2
+        tf_15m["bollinger_mid"] = 54000  # Make BB mid far away
+        tf_15m["ema50"] = 53500  # Make EMA50 far away
+        tf_15m["bollinger_lower"] = 52500  # Far from BB lower
+        result = compute_confidence(
+            "LONG", tf_daily, tf_4h, tf_15m,
+            setup_type="momentum_continuation_long"
+        )
+        assert result["criteria"]["entry_level"] is True
+        assert "Momentum" in result["reasons"]["entry_level"]
+
+    def test_momentum_high_score(self):
+        """A perfect momentum setup should score >= 70% (meets LONG threshold)."""
+        tf_daily, tf_4h, tf_15m = self._momentum_setup_data()
+        result = compute_confidence(
+            "LONG", tf_daily, tf_4h, tf_15m,
+            setup_type="momentum_continuation_long"
+        )
+        assert result["score"] >= 70
+        assert result["meets_threshold"] is True

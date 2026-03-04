@@ -119,7 +119,7 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 - analyzer.py: **Warning severity rule** — 4+ warnings → <70%, 6+ warnings → <60%. Prevents high confidence with many self-warnings.
 - monitor.py: **Extreme day logging** — logs warning when intraday range > 1000pts.
 - monitor.py: **indicators_snapshot wired** to both validate_trade() calls (Sonnet pipeline + scalp auto-execute).
-- Tests: 338/338 passing. Test fixtures updated for EMA50-primary C1.
+- Tests: 353/353 passing. Test fixtures updated for EMA50-primary C1.
 
 ## Critical Fixes Applied (2026-03-04)
 - monitor.py: **SL/TP verification after order placement** — verifies IG returned stopLevel/limitLevel in deal confirmation. If missing, immediately calls modify_position() to add SL/TP + sends CRITICAL Telegram alert. Root cause of Trade #3 losing 224pts past 102pt SL.
@@ -231,20 +231,38 @@ Live trading active 2026-03-01. Historical backtest (bad): 613 trades, 0.8% WR �
 
 ---
 
-## Setup Types (detect_setup — updated 2026-03-03)
-| Type | Direction | Trigger | RSI | Gate |
-|------|-----------|---------|-----|------|
-| bollinger_mid_bounce | LONG | price ±150pts from BB mid | 30-65 | bounce_starting OR (RSI<40 + wick/HA/candle pattern) |
-| bollinger_lower_bounce | LONG | price ±150pts from BB lower | 20-40 | lower_wick ≥15pts (no EMA50 gate) |
-| extreme_oversold_reversal | LONG | RSI <22 + 4H near BB lower(300pts) or 4H RSI<35 | <22 | wick≥10 OR HA bullish OR candle pattern OR sweep. No daily req. |
-| oversold_reversal | LONG | RSI <30 + daily bullish | <30 | wick≥10 OR HA bullish OR candle pattern OR sweep |
-| bollinger_upper_rejection | SHORT | price ±150pts from BB upper | 55-75 | below_ema50 |
-| ema50_rejection | SHORT | price ≤ema50+2, dist ≤150 | 50-70 | daily bearish |
+## Setup Types (detect_setup — updated 2026-03-04)
+### Mean-Reversion LONG
+| Type | Trigger | RSI | Gate |
+|------|---------|-----|------|
+| bollinger_mid_bounce | price ±150pts from BB mid | 30-65 | bounce_starting OR (RSI<40 + wick/HA/candle pattern) |
+| bollinger_lower_bounce | price ±150pts from BB lower | 20-40 | lower_wick ≥15pts (no EMA50 gate) |
+| extreme_oversold_reversal | RSI <22 + 4H near BB lower(300pts) or 4H RSI<35 | <22 | wick≥10 OR HA bullish OR candle pattern OR sweep |
+| oversold_reversal | RSI <30 + daily bullish | <30 | wick≥10 OR HA bullish OR candle pattern OR sweep |
+### Momentum/Trend-Following LONG (NEW 2026-03-04)
+| Type | Trigger | RSI | Gate |
+|------|---------|-----|------|
+| breakout_long | near BB upper(200pts) or swing_high(100pts) | 55-75 | vol≥1.3x + HA bullish + above EMA50 |
+| vwap_bounce_long | near VWAP(120pts) + above EMA50 | 40-65 | bounce confirm (HA/candle/wick) |
+| ema9_pullback_long | near EMA9(100pts) + above EMA50 | 40-65 | HA bullish or turning |
+| momentum_continuation_long | above EMA50 + above VWAP | 45-70 | HA streak≥2 + vol not LOW |
+### SHORT (13 mean-reversion + 2 momentum)
+bb_upper_rejection, ema50_rejection, bb_mid_rejection, overbought_reversal, breakdown_continuation,
+dead_cat_bounce_short, bear_flag_breakdown, vwap_rejection_short, high_volume_distribution,
+multi_tf_bearish, ema200_rejection, lower_lows_bearish_momentum, pivot_r1_rejection,
+**momentum_continuation_short** (below EMA50+VWAP, HA≤-2, RSI 30-55),
+**vwap_rejection_short_momentum** (near VWAP from below, below EMA50, rejection confirm, RSI 35-60)
+### Monitor: Momentum Scan Bypass
+When detect_setup() returns no_setup but 4+/5 bullish signals active (above EMA50, above VWAP, HA≥2, RSI 45-72, 4H above EMA50), bypasses directly to Opus evaluate_scalp().
+### Confidence: Momentum-Aware Scoring
+_momentum_setup flag: C1 exempt (daily EMA lags), C2 accepts above VWAP/BB upper/EMA9, C3 widens to 40-70, C4 passes (above BB mid expected), C12 passes (trending up expected).
+_momentum_short_setup flag: C1 exempt, C4 passes, C12 passes.
+### General
 SL=150 (WFO-validated), TP=400 for all types.
-Note: above_ema50 gate REMOVED from bollinger_mid_bounce. EMA50 status shown in reasoning string for Sonnet/Opus to evaluate.
-5M fallback: all types can fire on 5M candles with `_5m` suffix (e.g. `bollinger_mid_bounce_5m`).
-  5M alignment guard: LONG needs 15M RSI<65 + price within 300pts of 15M BB mid/lower. SHORT needs 15M RSI>35 + price within 300pts of 15M BB upper.
-  No-setup reasoning: diagnostic string with BB_mid dist, RSI status, bounce status, daily trend.
+5M fallback: all types can fire on 5M candles with `_5m` suffix.
+No-setup reasoning: diagnostic string with BB_mid dist, RSI status, bounce status, daily trend.
+### Fibonacci S/R
+Full fibonacci dict (fib_236/382/500/618/786) now in indicators_snapshot. _build_confluence uses fib levels as S/R (within 100pts): support for LONG, resistance for SHORT.
 
 ## Backtest Status (2026-03-02, NKD=F, ~875 days combined, all sessions)
 Data: NKD=F 1H (730d, 2023-10 to 2025-12) + 15M (60d, 2025-12 to 2026-03) + ^N225 daily.
