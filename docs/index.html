@@ -1685,12 +1685,13 @@ function addMsg(role, text, time, tier) {
   // Store raw text for reply-to (use data-attr + event handler for XSS safety)
   const replyBtn = `<button class="reply-btn" title="Reply">↩</button>`;
   const tierBadge = (role === 'assistant' && tier)
-    ? `<span style="font-size:10px;padding:1px 6px;border-radius:8px;color:#fff;background:${_tierColors[tier]||'#6366f1'};margin-left:4px;">${_tierLabels[tier]||tier}</span>`
+    ? `<span style="font-size:10px;padding:2px 8px;border-radius:10px;color:#fff;background:${_tierColors[tier]||'#6366f1'};font-weight:600;letter-spacing:0.3px;">${_tierLabels[tier]||tier}</span>`
     : '';
   d.innerHTML = `<div class="chat-avatar ${avatarClass}">${avatarLabel}</div>
     <div class="chat-body">
       <div class="bubble${role === 'assistant' ? ' md' : ''}">${content}</div>
-      <div class="chat-time">${t}${tierBadge} ${replyBtn}</div>
+      <div class="chat-time">${t} ${replyBtn}</div>
+      ${tierBadge ? `<div style="padding:0 6px;margin-top:2px;">${tierBadge}</div>` : ''}
     </div>`;
   box.appendChild(d);
   // Wire reply button safely (no inline onclick with user content)
