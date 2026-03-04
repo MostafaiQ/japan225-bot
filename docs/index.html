@@ -1512,7 +1512,7 @@ async function sendChat() {
   if (_attachments.length) cancelAttach();
 
   // Show thinking bubble — button stays enabled for more messages
-  const thinkEl = _addThinkingBubble();
+  const thinkEl = _addThinkingBubble(Date.now(), 'sonnet');
   // Fire POST in background — does NOT block further sends
   _postAndPoll(msg || '[files attached]', thinkEl, attachList);
 }
