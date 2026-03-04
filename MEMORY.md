@@ -189,6 +189,13 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 - monitor.py: **time.time() fix** — `time` module not imported → use `datetime.now().timestamp()`.
 - monitor.py: **Position closed TypeError fix** — `abs(last_price - sl)` when sl=None → added None guard.
 - monitor.py: Dead `_auto_execute_after_timeout` method removed (replaced by immediate auto-execute).
+- monitor.py: **Instant shutdown** — `os._exit(0)` in SIGTERM handler. Restart: 30s → 2s. TimeoutStopSec=5.
+- monitor.py: **Learning loop wired up** — `post_trade_analysis()` called after every trade close. Updates `prompt_learnings.json` + `brier_scores.json`.
+- analyzer.py: **Prompt learnings injected** — `load_prompt_learnings()` output included in Sonnet scan prompt. AI sees last 5 insights from closed trades.
+- analyzer.py: System prompt fixed "11 criteria" → "12 criteria" (C12 = entry_quality).
+- settings.py: **DISPLAY_TZ = UTC+3 (Kuwait)**. `display_now()` helper. All user-facing timestamps (Telegram, logs, reports, AI prompts) show Kuwait time. DB/API storage stays UTC.
+- Dead code removed: _ai_reject_until, PRICING, CRITERIA_WEIGHT, _multi_tf_short, parallel_mode branch, unused imports (get_scan_interval, TIER_NONE, format_confidence_breakdown, ADVERSE_SEVERE_PTS, Optional in confidence/risk_manager).
+- Deleted orphan `opus_position_eval.py` (hardcoded standalone script, not used by bot).
 - telegram_bot.py: `send_scalp_executed()` replaces old 3-button `send_near_miss_alert()`. Notification-only (no buttons). Near-miss callback handlers removed.
 - monitor.py + telegram_bot.py: Force Open feature. When local confidence == 100% (12/12) but AI rejects, Telegram alert with Force Open / Skip buttons. 15min TTL. No auto-execute — requires explicit user confirmation. Uses same `pending_alert` + `on_trade_confirm` flow as regular trades. Callback data: `force_open` / `reject_force`.
 
