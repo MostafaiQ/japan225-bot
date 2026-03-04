@@ -450,20 +450,27 @@ class AIAnalyzer:
             })
             cmd.extend(["--agents", agents_json])
 
+        # Write stdout to a temp file so the result survives bot restart.
+        # With KillMode=process + start_new_session, the Claude subprocess
+        # continues after bot is killed and finishes writing to this file.
+        pending_file = PROJECT_ROOT / "storage" / "data" / "ai_pending_result.txt"
         start = time.time()
         try:
-            result = subprocess.run(
-                cmd,
-                input=full_prompt,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=env,
-                cwd=str(PROJECT_ROOT),
-                start_new_session=True,
-            )
+            with open(pending_file, "w") as stdout_f:
+                result = subprocess.run(
+                    cmd,
+                    input=full_prompt,
+                    stdout=stdout_f,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=timeout,
+                    env=env,
+                    cwd=str(PROJECT_ROOT),
+                    start_new_session=True,
+                )
             elapsed = time.time() - start
-            output = (result.stdout or "").strip()
+            output = pending_file.read_text().strip() if pending_file.exists() else ""
+            pending_file.unlink(missing_ok=True)
             est_output_tokens = len(output) // 4
             total_tokens = est_input_tokens + est_output_tokens
             if result.returncode != 0:

@@ -152,6 +152,9 @@ class TradingMonitor:
         # Startup sync — reconcile DB state with IG reality
         await self.startup_sync()
 
+        # Check for AI result that survived a bot restart
+        await self._recover_pending_ai()
+
         self.running = True
         self._trigger_poll_task = asyncio.create_task(self._poll_trigger_file())
 
@@ -163,6 +166,32 @@ class TradingMonitor:
         finally:
             self._trigger_poll_task.cancel()
             await self._shutdown()
+
+    # ============================================================
+    # PENDING AI RECOVERY (after bot restart during analysis)
+    # ============================================================
+
+    async def _recover_pending_ai(self):
+        """Check if an AI analysis survived the previous bot restart."""
+        pending = Path(__file__).parent / "storage" / "data" / "ai_pending_result.txt"
+        try:
+            if not pending.exists():
+                return
+            age = time.time() - pending.stat().st_mtime
+            if age > 300:  # older than 5 minutes — stale
+                pending.unlink(missing_ok=True)
+                return
+            content = pending.read_text().strip()
+            pending.unlink(missing_ok=True)
+            if not content:
+                return
+            logger.info(f"Recovered pending AI result ({age:.0f}s old, {len(content)} chars)")
+            preview = content[:600] + ("..." if len(content) > 600 else "")
+            await self.telegram.send_alert(
+                f"📋 Recovered AI analysis from before restart:\n\n{preview}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to recover pending AI result: {e}")
 
     # ============================================================
     # STARTUP SYNC (crash recovery)
