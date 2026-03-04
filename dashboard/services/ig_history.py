@@ -209,6 +209,78 @@ def _channel_label(channel):
     return "Manual"
 
 
+_SETUP_DESCRIPTIONS = {
+    "bear_flag_breakdown": "price was in a downtrend, consolidated in a flag, bot shorted the breakdown",
+    "bull_flag_breakout":  "price was in an uptrend, consolidated in a flag, bot longed the breakout",
+    "bb_lower_bounce":     "price hit the lower Bollinger Band (oversold extreme), bot longed expecting a bounce back toward the mean",
+    "bb_upper_bounce":     "price hit the upper Bollinger Band (overbought extreme), bot shorted expecting a pullback",
+    "bb_mid_bounce":       "price pulled back to the BB midline (20 EMA support/resistance), bot traded the continuation",
+}
+
+
+def _close_outcome(result, phase, close_ch, pnl, dur):
+    """Return a plain-English sentence describing how the trade closed."""
+    if result == "TP_HIT":
+        return f"Hit take-profit after {dur}" + (" (trailing stop locked in profit)" if phase == "trailing" else "")
+    if result == "SL_HIT":
+        return f"Stop loss hit after {dur}" + (" (stop was at breakeven)" if phase == "breakeven" else "")
+    if result == "MANUAL_CLOSE":
+        return f"Manually closed after {dur}"
+    if result == "BREAKEVEN":
+        return f"Closed at breakeven after {dur}"
+    if result == "TIMEOUT":
+        return f"Exited on time limit after {dur}"
+    # CLOSED_UNKNOWN — infer from channel and phase
+    if close_ch == "SYSTEM":
+        if phase == "breakeven":
+            return f"SL/TP triggered at breakeven level after {dur}"
+        if phase == "trailing":
+            return f"Trailing stop triggered after {dur}"
+        outcome = "profit" if pnl > 0 else "a loss"
+        return f"System closed in {outcome} after {dur} (SL or TP hit)"
+    if close_ch in ("WEB", "MOBILE", "PUBLIC_FIX_API"):
+        outcome = "in profit" if pnl > 0 else "at a loss"
+        return f"Manually closed {outcome} after {dur}"
+    outcome = "in profit" if pnl > 0 else "at a loss"
+    return f"Closed {outcome} after {dur}"
+
+
+def _build_trade_note(db_match, close_ch, pnl, direction, dur):
+    """Build a meaningful, human-readable note for a bot trade."""
+    setup = db_match.get("setup_type", "")
+    result = db_match.get("result", "")
+    phase = db_match.get("exit_phase") or ""
+    confidence = db_match.get("confidence") or 0
+    session_raw = (db_match.get("session") or "").lower()
+    session_map = {"tokyo": "Tokyo", "london": "London", "new_york": "NY", "unknown": ""}
+    session = session_map.get(session_raw, session_raw.title())
+
+    if setup == "recovered":
+        close_note = _close_outcome(result, phase, close_ch, pnl, dur)
+        return f"Position was already open when bot restarted — not a new signal. {close_note}."
+
+    desc = _SETUP_DESCRIPTIONS.get(setup, setup.replace("_", " ").title() if setup else "")
+    dir_label = "SHORT" if direction == "SHORT" else "LONG"
+    session_part = f" ({session} session)" if session else ""
+    close_note = _close_outcome(result, phase, close_ch, pnl, dur)
+    conf_part = f" Conf: {confidence}%." if confidence else ""
+    return f"{dir_label}{session_part} — {desc}. {close_note}.{conf_part}"
+
+
+def _build_manual_note(direction, close_ch, pnl, instrument, dur):
+    """Build a note for a manually placed trade (no DB match)."""
+    dir_label = "Long" if direction == "LONG" else "Short"
+    outcome = "in profit" if pnl > 0 else "at a loss"
+    if close_ch == "SYSTEM":
+        close_note = f"SL/TP triggered {outcome}"
+    elif close_ch in ("WEB", "MOBILE", "PUBLIC_FIX_API"):
+        close_note = f"Manually closed {outcome}"
+    else:
+        close_note = f"Closed {outcome}"
+    instr = "" if "Japan 225" in instrument else f" on {instrument.split('(')[0].strip()}"
+    return f"Manual {dir_label.lower()}{instr}. {close_note} after {dur}."
+
+
 def fetch_full_journal(days=30):
     """
     Fetch all trades from IG and merge with local DB data.
@@ -318,73 +390,6 @@ def _fetch_journal_locked(days):
         opened_by = _channel_label(open_ch) if open_ch else "Manual"
         closed_by = _channel_label(close_ch) if close_ch else "Manual"
 
-        # Build concise notes
-        RESULT_LABELS = {
-            "TP_HIT": "TP hit",
-            "SL_HIT": "SL hit",
-            "MANUAL_CLOSE": "manually closed",
-            "CLOSED_UNKNOWN": None,   # will use channel info instead
-            "BREAKEVEN": "breakeven close",
-            "TIMEOUT": "time-based exit",
-        }
-        SETUP_LABELS = {
-            "bear_flag_breakdown": "Bear Flag Breakdown",
-            "bull_flag_breakout": "Bull Flag Breakout",
-            "bb_lower_bounce": "BB Lower Bounce",
-            "bb_upper_bounce": "BB Upper Bounce",
-            "bb_mid_bounce": "BB Mid Bounce",
-            "recovered": None,  # startup recovery — not a real setup signal
-        }
-
-        notes_parts = []
-        if db_match:
-            setup = db_match.get("setup_type", "")
-            result_str = db_match.get("result", "")
-            phase = db_match.get("exit_phase", "")  # db_reader renames phase_at_close → exit_phase
-
-            if setup == "recovered":
-                # Position was open when bot started — not a bot-generated signal
-                result_label = RESULT_LABELS.get(result_str, result_str.replace("_", " ").lower() if result_str else "")
-                notes_parts.append(f"Bot startup recovery")
-                if result_label:
-                    notes_parts.append(result_label)
-            else:
-                setup_label = SETUP_LABELS.get(setup, setup.replace("_", " ").title() if setup else "")
-                if setup_label:
-                    notes_parts.append(setup_label)
-
-                result_label = RESULT_LABELS.get(result_str)
-                if result_label:
-                    notes_parts.append(result_label)
-                else:
-                    # CLOSED_UNKNOWN — infer from channel
-                    if close_ch == "SYSTEM":
-                        notes_parts.append("SL/TP hit")
-                    elif close_ch in ("WEB", "MOBILE", "PUBLIC_FIX_API"):
-                        notes_parts.append("manually closed")
-                    elif pnl > 0:
-                        notes_parts.append("closed in profit")
-                    elif pnl < 0:
-                        notes_parts.append("closed at loss")
-
-                if phase and phase not in ("initial",):
-                    notes_parts.append(f"phase: {phase}")
-        else:
-            # Manual trade — build meaningful note from available data
-            dir_label = "Long" if direction == "LONG" else "Short"
-            result_label = "win" if pnl > 0 else ("loss" if pnl < 0 else "breakeven")
-            if close_ch == "SYSTEM":
-                close_label = "SL/TP hit"
-            elif close_ch in ("WEB", "MOBILE", "PUBLIC_FIX_API"):
-                close_label = "manually closed"
-            else:
-                close_label = "closed"
-            instrument_short = instrument.split("(")[0].strip()
-            if "Japan 225" in instrument:
-                notes_parts.append(f"Manual {dir_label.lower()} | {close_label} | {result_label}")
-            else:
-                notes_parts.append(f"Manual {dir_label.lower()} on {instrument_short} | {close_label} | {result_label}")
-
         entry = float(txn.get("openLevel", 0))
         exit_p = float(txn.get("closeLevel", 0))
         sl = db_match.get("stop_loss") if db_match else None
@@ -397,6 +402,24 @@ def _fetch_journal_locked(days):
             reward = abs(tp - entry)
             if risk > 0:
                 rr = round(reward / risk, 1)
+
+        # Compute duration string
+        dur_str = db_match.get("duration") if db_match else None
+        if not dur_str:
+            try:
+                t_open = datetime.fromisoformat(txn.get("openDateUtc", ""))
+                t_close = datetime.fromisoformat(txn.get("dateUtc", ""))
+                mins = int((t_close - t_open).total_seconds() / 60)
+                h, m = divmod(mins, 60)
+                dur_str = f"{h}h {m}m" if h else f"{m}m"
+            except Exception:
+                dur_str = "?"
+
+        # Build human-readable notes
+        if db_match:
+            notes = _build_trade_note(db_match, close_ch, pnl, direction, dur_str)
+        else:
+            notes = _build_manual_note(direction, close_ch, pnl, instrument, dur_str)
 
         trade = {
             "opened_at": txn.get("openDateUtc", ""),
@@ -411,25 +434,14 @@ def _fetch_journal_locked(days):
             "pnl": pnl,
             "opened_by": opened_by,
             "closed_by": closed_by,
-            "notes": " | ".join(notes_parts) if notes_parts else "",
+            "notes": notes,
             "reference": ref,
             "confidence": db_match.get("confidence") if db_match else None,
             "session": db_match.get("session") if db_match else None,
             "result": db_match.get("result") if db_match else ("WIN" if pnl > 0 else "LOSS" if pnl < 0 else "BE"),
-            "duration": db_match.get("duration") if db_match else None,
+            "duration": dur_str,
             "rr": rr,
         }
-
-        # Compute duration if not from DB
-        if not trade["duration"]:
-            try:
-                t_open = datetime.fromisoformat(trade["opened_at"])
-                t_close = datetime.fromisoformat(trade["closed_at"])
-                mins = int((t_close - t_open).total_seconds() / 60)
-                h, m = divmod(mins, 60)
-                trade["duration"] = f"{h}h {m}m" if h else f"{m}m"
-            except Exception:
-                trade["duration"] = "—"
 
         trades.append(trade)
 
