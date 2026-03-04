@@ -35,7 +35,6 @@ import os
 import argparse
 import json
 import logging
-import subprocess
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 from pathlib import Path
@@ -69,7 +68,6 @@ MIN_CANDLES_DAILY = 250      # need 200+ for EMA200 on daily (matches DAILY_EMA2
 MIN_CANDLES_4H    = 55       # need 50+ for EMA50 on 4H
 
 AI_COST_PER_SIGNAL_USD = 0.015   # ~$0.015 per Sonnet+Opus call
-CLAUDE_BIN = "/home/ubuntu/.local/bin/claude"
 AI_CACHE_PATH = Path(__file__).parent / "storage" / "data" / "backtest_ai_cache.json"
 
 # Candle duration in minutes by timeframe
@@ -231,7 +229,7 @@ class SetupRecord:
     """A qualifying setup ready for trade simulation."""
     __slots__ = ("idx", "entry_time", "direction", "setup_type", "entry_price",
                  "confidence_score", "session", "future_candles", "timeframe",
-                 "indicator_summary")
+                 "indicator_summary", "indicators")
     def __init__(self, **kw):
         for k, v in kw.items():
             setattr(self, k, v)
@@ -361,6 +359,8 @@ def find_setups(df_15m: pd.DataFrame, df_4h: pd.DataFrame,
             future_candles   = future_candles,
             timeframe        = "15M",
             indicator_summary = _build_indicator_summary(tf_15m, tf_daily, tf_4h),
+            indicators       = {"m15": tf_15m, "h4": tf_4h, "daily": tf_daily,
+                                "pivots": setup.get("indicators_snapshot", {}).get("pivots", {})},
         ))
 
         # Progress
@@ -479,6 +479,8 @@ def find_setups_1h(df_1h: pd.DataFrame, df_4h: pd.DataFrame,
             future_candles   = future_candles,
             timeframe        = "1H",
             indicator_summary = _build_indicator_summary(tf_1h, tf_daily, tf_4h),
+            indicators       = {"m15": tf_1h, "h4": tf_4h, "daily": tf_daily,
+                                "pivots": setup.get("indicators_snapshot", {}).get("pivots", {})},
         ))
 
         # Progress
@@ -932,56 +934,62 @@ def _parse_ai_json(text: str) -> dict:
     return {}
 
 
+def _get_anthropic_client():
+    """Lazy-init Anthropic client with API key from .env."""
+    if not hasattr(_get_anthropic_client, "_client"):
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).parent / ".env")
+        import anthropic
+        _get_anthropic_client._client = anthropic.Anthropic()
+    return _get_anthropic_client._client
+
+
 def _batch_sonnet_eval(day_setups: list[SetupRecord], date_str: str) -> list[dict]:
     """
-    Send 1 Sonnet call per day: review all qualifying setups from that day.
-    Returns list of verdict dicts aligned with day_setups.
+    1 Sonnet call per batch with the REAL system prompt + full indicators per setup.
+    Uses Anthropic API directly (no subprocess overhead).
     """
     from config.settings import SONNET_MODEL
+    from ai.analyzer import build_system_prompt, _fmt_indicators
 
+    system_prompt = build_system_prompt()
+
+    # Build per-setup indicator blocks using the real formatter
     setup_lines = []
     for i, s in enumerate(day_setups, 1):
-        ind = getattr(s, "indicator_summary", {})
+        indicators = getattr(s, "indicators", {})
+        ind_block = _fmt_indicators(indicators) if indicators else "(no indicator data)"
         setup_lines.append(
-            f"Setup {i}: {s.direction} {s.setup_type}\n"
-            f"  Entry: {s.entry_price:.0f}, RSI: {ind.get('rsi', '?')}, "
-            f"BB: [{ind.get('bb_lower', '?')}/{ind.get('bb_mid', '?')}/{ind.get('bb_upper', '?')}]\n"
-            f"  EMA50: {ind.get('ema50', '?')}, Daily: {'bullish' if ind.get('daily_bullish') else 'bearish'}, "
-            f"4H RSI: {ind.get('h4_rsi', '?')}, HA: {'bull' if ind.get('ha_bullish') else 'bear'}\n"
-            f"  Local confidence: {s.confidence_score}%"
+            f"Setup {i}: {s.direction} {s.setup_type} | session={s.session} | "
+            f"local_conf={s.confidence_score}%\n"
+            f"  Entry: {s.entry_price:.0f} | TF: {s.timeframe}\n"
+            f"  {ind_block}"
         )
 
-    prompt = (
-        "<system>\n"
-        "You are a Japan 225 (Nikkei) trading setup reviewer. You review setups and give verdicts.\n"
-        "For each setup: APPROVE (take trade), REJECT (skip), or BORDERLINE (uncertain).\n"
-        "Consider: trend alignment, RSI levels, BB position, momentum confirmation.\n"
-        "Mean-reversion setups (bb_lower_bounce, oversold_reversal) expect to be below EMA50.\n"
-        "</system>\n\n"
-        "<task>\n"
-        f"Review these {len(day_setups)} setups from {date_str}.\n\n"
+    user_msg = (
+        f"Review these {len(day_setups)} setups from {date_str}.\n"
+        f"For EACH setup: evaluate using the rules above. Give verdict and confidence.\n\n"
         + "\n---\n".join(setup_lines) +
         "\n\nRespond with JSON only:\n"
         '{"setups": [{"id": 1, "verdict": "APPROVE|REJECT|BORDERLINE", '
-        '"confidence": 70, "reason": "short reason"}, ...]}\n'
-        "</task>"
+        '"confidence": 70, "direction": "LONG", "reason": "short reason"}, ...]}'
     )
 
-    env = {**os.environ}
-    env.pop("ANTHROPIC_API_KEY", None)
-
     try:
-        result = subprocess.run(
-            [CLAUDE_BIN, "--model", SONNET_MODEL, "--print", "--dangerously-skip-permissions"],
-            input=prompt, capture_output=True, text=True, env=env, timeout=120
+        client = _get_anthropic_client()
+        response = client.messages.create(
+            model=SONNET_MODEL,
+            max_tokens=4096,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_msg}],
         )
-        parsed = _parse_ai_json(result.stdout)
+        text = response.content[0].text
+        parsed = _parse_ai_json(text)
         verdicts = parsed.get("setups", [])
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+    except Exception as e:
         print(f"    Sonnet call failed: {e}")
         verdicts = []
 
-    # Align results with input setups
     results = []
     for i in range(len(day_setups)):
         if i < len(verdicts):
@@ -989,6 +997,7 @@ def _batch_sonnet_eval(day_setups: list[SetupRecord], date_str: str) -> list[dic
             results.append({
                 "verdict": v.get("verdict", "REJECT"),
                 "ai_confidence": v.get("confidence", 0),
+                "ai_direction": v.get("direction", day_setups[i].direction),
                 "reason": v.get("reason", ""),
             })
         else:
@@ -996,69 +1005,80 @@ def _batch_sonnet_eval(day_setups: list[SetupRecord], date_str: str) -> list[dic
     return results
 
 
-def _batch_opus_review(borderline_setups: list[tuple[SetupRecord, dict]]) -> list[dict]:
+def _opus_scalp_eval(setup: SetupRecord, sonnet_result: dict) -> dict:
     """
-    Send 1 Opus call for all borderline/high-conf-reject setups.
-    Returns list of verdict dicts aligned with borderline_setups.
+    Per-setup Opus scalp evaluation — matches the live pipeline's evaluate_scalp().
+    Uses Anthropic API directly (no subprocess overhead).
     """
-    from config.settings import OPUS_MODEL
+    from config.settings import OPUS_MODEL, SPREAD_ESTIMATE
+    from ai.analyzer import _fmt_indicators
 
-    setup_lines = []
-    for i, (s, sonnet_r) in enumerate(borderline_setups, 1):
-        ind = getattr(s, "indicator_summary", {})
-        setup_lines.append(
-            f"Setup {i}: {s.direction} {s.setup_type} @ {s.entry_price:.0f}\n"
-            f"  RSI: {ind.get('rsi', '?')}, BB: [{ind.get('bb_lower', '?')}/{ind.get('bb_mid', '?')}/{ind.get('bb_upper', '?')}]\n"
-            f"  EMA50: {ind.get('ema50', '?')}, Daily: {'bullish' if ind.get('daily_bullish') else 'bearish'}\n"
-            f"  Local conf: {s.confidence_score}%, Sonnet verdict: {sonnet_r.get('verdict', '?')}\n"
-            f"  Sonnet reason: {sonnet_r.get('reason', '?')}"
-        )
+    indicators = getattr(setup, "indicators", {})
+    ind_block = _fmt_indicators(indicators) if indicators else "(no indicator data)"
+    opposite = "LONG" if setup.direction == "SHORT" else "SHORT"
+    sonnet_reason = sonnet_result.get("reason", "")
+    sonnet_conf = sonnet_result.get("ai_confidence", 0)
 
-    prompt = (
-        "<system>\n"
-        "You are a senior Japan 225 (Nikkei) trade reviewer. Sonnet flagged these setups as uncertain.\n"
-        "Give final verdict for each: APPROVE or REJECT.\n"
-        "Also flag if a setup is a scalp candidate (quick in/out, tight SL 60-120pts, TP 150-300pts).\n"
-        "Mean-reversion setups expect below-EMA50 positions.\n"
-        "</system>\n\n"
-        "<task>\n"
-        f"Review these {len(borderline_setups)} setups Sonnet flagged as borderline.\n\n"
-        + "\n---\n".join(setup_lines) +
-        "\n\nRespond with JSON only:\n"
-        '{"setups": [{"id": 1, "verdict": "APPROVE|REJECT", "scalp_candidate": true, '
-        '"confidence": 75, "reason": "short reason"}, ...]}\n'
-        "</task>"
+    system_prompt = (
+        "You are a scalp-trade evaluator for Japan 225 Cash CFD ($1/pt, spread ~7pts).\n"
+        "Sonnet reviewed this setup and rejected/flagged it. Your job: evaluate BOTH directions for a quick scalp.\n\n"
+        "CRITICAL INSIGHT: Sonnet's rejection reasoning often contains the opposite thesis.\n"
+        "If Sonnet rejected SHORT because 'too oversold, bounce likely' — that IS the LONG case.\n\n"
+        "SL PLACEMENT: Nearest support (LONG) / resistance (SHORT). Use BB, pivots, fibs, PDL/PDH. BOUNDS: 60-120pts.\n"
+        "TP PLACEMENT: Nearest obstacle. Use BB mid/upper, EMA50, pivots, VWAP. BOUNDS: 150-300pts.\n"
+        "R:R REQUIREMENT: (TP - 7) / (SL + 7) >= 1.5\n\n"
+        "RULES:\n"
+        "- Oversold RSI<30 + daily bullish = bounce to BB mid is high-probability LONG scalp.\n"
+        "- Deeply oversold 4H RSI<25 = snap-back bounce even in bear market.\n"
+        "- Be decisive. Pick the direction with better R:R and clearer structure.\n"
     )
 
-    env = {**os.environ}
-    env.pop("ANTHROPIC_API_KEY", None)
+    user_prompt = (
+        f"SETUP: {setup.direction} {setup.setup_type} | local_conf={setup.confidence_score}%\n"
+        f"SONNET CONFIDENCE: {sonnet_conf}% | VERDICT: {sonnet_result.get('verdict', '?')}\n"
+        f"SONNET REASONING: {sonnet_reason[:300]}\n\n"
+        f"INDICATORS:\n{ind_block}\n\n"
+        f"Evaluate BOTH {setup.direction} and {opposite}. Pick the best scalp.\n"
+        f"Output ONLY valid JSON:\n"
+        f'{{"scalp_viable": true, "direction": "LONG", "sl_distance": 85, "tp_distance": 200, '
+        f'"reasoning": "reason", "confidence": 65}}\n'
+        f"or\n"
+        f'{{"scalp_viable": false, "reasoning": "Neither direction offers good R:R"}}'
+    )
 
     try:
-        result = subprocess.run(
-            [CLAUDE_BIN, "--model", OPUS_MODEL, "--print", "--dangerously-skip-permissions"],
-            input=prompt, capture_output=True, text=True, env=env, timeout=180
+        client = _get_anthropic_client()
+        response = client.messages.create(
+            model=OPUS_MODEL,
+            max_tokens=1024,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
         )
-        parsed = _parse_ai_json(result.stdout)
-        verdicts = parsed.get("setups", [])
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
-        print(f"    Opus call failed: {e}")
-        verdicts = []
+        text = response.content[0].text
+        parsed = _parse_ai_json(text)
+    except Exception as e:
+        return {"scalp_viable": False, "reasoning": f"Opus call failed: {e}"}
 
-    results = []
-    for i in range(len(borderline_setups)):
-        if i < len(verdicts):
-            v = verdicts[i]
-            results.append({
-                "verdict": v.get("verdict", "REJECT"),
-                "scalp_candidate": v.get("scalp_candidate", False),
-                "ai_confidence": v.get("confidence", 0),
-                "reason": v.get("reason", ""),
-                "opus_reviewed": True,
-            })
+    if not parsed:
+        return {"scalp_viable": False, "reasoning": "Opus returned unparseable output"}
+
+    # Enforce bounds and R:R
+    if parsed.get("scalp_viable"):
+        sl = parsed.get("sl_distance", 0)
+        tp = parsed.get("tp_distance", 0)
+        sl = max(60, min(120, sl)) if sl else 100
+        tp = max(150, min(300, tp)) if tp else 200
+        effective_rr = (tp - SPREAD_ESTIMATE) / (sl + SPREAD_ESTIMATE)
+        if effective_rr < 1.5:
+            parsed["scalp_viable"] = False
+            parsed["reasoning"] = f"R:R too low: {effective_rr:.2f} < 1.5"
         else:
-            results.append({"verdict": "REJECT", "scalp_candidate": False,
-                            "ai_confidence": 0, "reason": "no Opus response", "opus_reviewed": True})
-    return results
+            parsed["sl_distance"] = sl
+            parsed["tp_distance"] = tp
+            parsed["effective_rr"] = round(effective_rr, 2)
+
+    parsed["opus_reviewed"] = True
+    return parsed
 
 
 def run_ai_evaluation(all_setups: list[SetupRecord], trades: list[TradeResult]):
@@ -1066,8 +1086,10 @@ def run_ai_evaluation(all_setups: list[SetupRecord], trades: list[TradeResult]):
     AI evaluation on last 10 trading days. Mirrors live bot pipeline.
     Sonnet reviews per day, Opus reviews borderlines.
     """
-    if not os.path.exists(CLAUDE_BIN):
-        print(f"\n  AI evaluation skipped — claude binary not found at {CLAUDE_BIN}")
+    try:
+        _get_anthropic_client()
+    except Exception as e:
+        print(f"\n  AI evaluation skipped — Anthropic API init failed: {e}")
         return
 
     # Find last 10 unique trading dates
@@ -1111,39 +1133,63 @@ def run_ai_evaluation(all_setups: list[SetupRecord], trades: list[TradeResult]):
             all_results[_setup_key(s)] = cache[_setup_key(s)]
 
         if uncached:
-            print(f"  {date_str}: {len(uncached)} setups -> Sonnet...", end=" ", flush=True)
-            day_results = _batch_sonnet_eval(uncached, date_str)
-            sonnet_calls += 1
+            # Sub-batch: max 20 setups per Sonnet call (API is faster than CLI)
+            BATCH_SIZE = 20
+            day_results = []
+            for batch_start in range(0, len(uncached), BATCH_SIZE):
+                batch = uncached[batch_start:batch_start + BATCH_SIZE]
+                batch_n = batch_start // BATCH_SIZE + 1
+                total_batches = (len(uncached) + BATCH_SIZE - 1) // BATCH_SIZE
+                suffix = f" (batch {batch_n}/{total_batches})" if total_batches > 1 else ""
+                print(f"  {date_str}: {len(batch)} setups -> Sonnet{suffix}...", end=" ", flush=True)
+                batch_results = _batch_sonnet_eval(batch, date_str)
+                sonnet_calls += 1
+                day_results.extend(batch_results)
+                approved_batch = sum(1 for r in batch_results if r["verdict"] == "APPROVE")
+                print(f"{approved_batch}/{len(batch)} approved")
             for s, r in zip(uncached, day_results):
                 key = _setup_key(s)
                 cache[key] = r
                 all_results[key] = r
-            approved = sum(1 for r in day_results if r["verdict"] == "APPROVE")
-            print(f"{approved}/{len(day_results)} approved")
 
-        # Collect borderlines for Opus
+        # Collect non-approved setups for Opus scalp eval
+        # Live pipeline: Opus runs on ALL Sonnet rejects. For backtest efficiency:
+        # only send BORDERLINE + rejects with Sonnet conf > 0 (skip quick-rejects)
         for s in day_setups:
             key = _setup_key(s)
             r = all_results.get(key, {})
-            if not r.get("opus_reviewed"):
-                if r.get("verdict") == "BORDERLINE":
-                    borderlines.append((s, r))
-                elif r.get("verdict") == "REJECT" and s.confidence_score >= 80:
+            if not r.get("opus_reviewed") and r.get("verdict") != "APPROVE":
+                if r.get("verdict") == "BORDERLINE" or r.get("ai_confidence", 0) > 0:
                     borderlines.append((s, r))
 
-    # Opus review for borderlines
+    # Opus scalp eval for borderlines — per-setup calls (matches live pipeline)
     opus_calls = 0
     if borderlines:
-        print(f"\n  {len(borderlines)} borderline setups -> Opus...", end=" ", flush=True)
-        opus_results = _batch_opus_review(borderlines)
-        opus_calls += 1
-        for (s, _), opus_r in zip(borderlines, opus_results):
+        print(f"\n  {len(borderlines)} setups -> Opus scalp eval (per-setup)...", flush=True)
+        for i, (s, sonnet_r) in enumerate(borderlines):
             key = _setup_key(s)
-            all_results[key].update(opus_r)
-            cache[key] = all_results[key]
-        opus_approved = sum(1 for r in opus_results if r["verdict"] == "APPROVE")
-        scalp_flagged = sum(1 for r in opus_results if r.get("scalp_candidate"))
-        print(f"{opus_approved}/{len(borderlines)} approved, {scalp_flagged} scalp candidates")
+            # Check cache
+            if cache.get(key, {}).get("opus_reviewed"):
+                opus_r = cache[key]
+            else:
+                opus_r = _opus_scalp_eval(s, sonnet_r)
+                opus_calls += 1
+                all_results[key].update(opus_r)
+                cache[key] = all_results[key]
+            # Map scalp eval result to verdict format
+            if opus_r.get("scalp_viable"):
+                all_results[key]["verdict"] = "APPROVE"
+                all_results[key]["scalp_candidate"] = True
+                all_results[key]["scalp_direction"] = opus_r.get("direction", s.direction)
+                all_results[key]["scalp_sl"] = opus_r.get("sl_distance", 80)
+                all_results[key]["scalp_tp"] = opus_r.get("tp_distance", 200)
+            if (i + 1) % 10 == 0:
+                print(f"    ... {i+1}/{len(borderlines)} evaluated", flush=True)
+        opus_approved = sum(1 for (s, _) in borderlines
+                           if all_results.get(_setup_key(s), {}).get("scalp_viable"))
+        scalp_flagged = sum(1 for (s, _) in borderlines
+                            if all_results.get(_setup_key(s), {}).get("scalp_candidate"))
+        print(f"  Opus: {opus_approved} scalp viable, {scalp_flagged} scalp candidates ({opus_calls} calls)")
 
     _save_ai_cache(cache)
     print(f"\n  AI calls: {sonnet_calls} Sonnet + {opus_calls} Opus = {sonnet_calls + opus_calls} total")
@@ -1158,10 +1204,28 @@ def run_ai_evaluation(all_setups: list[SetupRecord], trades: list[TradeResult]):
                        if all_results.get(_setup_key(s), {}).get("verdict") == "APPROVE"]
     ai_trades_filtered = simulate_all_trades(approved_setups)
 
-    # Scalp candidates → simulate with reduced TP
-    scalp_setups = [s for s in ai_setups
-                    if all_results.get(_setup_key(s), {}).get("scalp_candidate")]
-    scalp_trades = simulate_all_trades(scalp_setups, sl_dist=80, tp_dist=200, be_trigger=80, trail_dist=80) if scalp_setups else []
+    # Scalp candidates → simulate with Opus-picked SL/TP per setup
+    scalp_setups = []
+    for s in ai_setups:
+        r = all_results.get(_setup_key(s), {})
+        if r.get("scalp_candidate"):
+            # Override direction if Opus picked opposite
+            opus_dir = r.get("scalp_direction", s.direction)
+            if opus_dir != s.direction:
+                # Flip the setup's direction for simulation
+                s_copy = SetupRecord(**{k: getattr(s, k) for k in s.__slots__})
+                s_copy.direction = opus_dir
+                scalp_setups.append((s_copy, r))
+            else:
+                scalp_setups.append((s, r))
+
+    # Simulate each scalp with its own SL/TP
+    scalp_trades = []
+    for s, r in scalp_setups:
+        sl = r.get("scalp_sl", 80)
+        tp = r.get("scalp_tp", 200)
+        t = simulate_all_trades([s], sl_dist=sl, tp_dist=tp, be_trigger=sl, trail_dist=sl)
+        scalp_trades.extend(t)
 
     print(f"\n  {'':>2}WHAT AI ADDS (last 10 trading days)")
     print("  " + "-"*60)

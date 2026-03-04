@@ -16,7 +16,7 @@ Oracle VM: monitor.py (24/7, systemd: japan225-bot)
     → NO cooldown ($0/call subscription) → compute_confidence() for BOTH directions
     → Primary = highest confidence. Secondary context passed to AI.
     → if score >= 60%: Sonnet 4.6 scan (with Opus sub-agent for borderline 72-86%)
-    → Parallel: if score >= min_conf, Opus scalp eval launches simultaneously with Sonnet
+    → Sequential: Sonnet runs first → if rejected, Opus scalp eval with Sonnet's full analysis
     → Single subprocess: Sonnet analyzes, delegates to Opus sub-agent internally when needed
     → if AI confirms & risk passes: Telegram CONFIRM/REJECT alert (15min TTL)
   MONITORING (position open): every 60s
@@ -103,6 +103,28 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 - monitor.py: _handle_position_closed uses last monitored price, not actual IG fill price (MEDIUM)
 - exit_manager.py: Runner phase trailing stop can exceed IG rate limit (30 non-trading/min) (MEDIUM)
 
+## Critical Fixes Applied (2026-03-04)
+- monitor.py: **SL/TP verification after order placement** — verifies IG returned stopLevel/limitLevel in deal confirmation. If missing, immediately calls modify_position() to add SL/TP + sends CRITICAL Telegram alert. Root cause of Trade #3 losing 224pts past 102pt SL.
+- monitor.py: **Sequential Opus pipeline** (was parallel). Sonnet runs first → Opus runs AFTER with Sonnet's full analysis as context. Opus gets: Sonnet reasoning, Sonnet confidence, Sonnet decision, local pre-screen, secondary setup. Clear chain of command.
+- monitor.py: **Opus confidence gate** — Sonnet rejects with confidence < 35% skip Opus entirely. Saves API cost on clear rejects.
+- analyzer.py: **Opus directional consistency** — `_last_opus_decision` tracks direction/reasoning/timestamp. Passed to evaluate_scalp() with actual elapsed time. Consistency rule: only flip direction on clear structural shift, not noise.
+- monitor.py: `_last_opus_decision: dict | None` state var tracks most recent Opus scalp eval result.
+- backtest.py: **Direct Anthropic API** — backtest AI evaluation now uses `anthropic` SDK instead of Claude CLI subprocess. No timeouts, ~5x faster. Sub-batching at 20 setups/call.
+- ig_history.py: Reuse cached IG session (1hr TTL), removed _logout(). Threading lock prevents concurrent fetches. Cache TTL 60→300s.
+- ig_client.py: _check_auth_error catches empty error strings (was causing 401 loop). get_market_info retries with fresh session on auth error.
+- ig_client.py: close_position missing args fixed (epic, expiry, level, quote_id).
+- monitor.py: SIGUSR1 handler for instant dashboard force scan (was polling every 2s).
+- monitor.py: `_dashboard_force_scan` flag + poll task deletes file but sets flag (was spamming logs).
+- monitor.py: return 0 after _execute_scalp() for immediate monitoring (was sleeping 5min).
+- systemd: KillSignal=SIGTERM, KillMode=process, TimeoutStopSec=30 (was SIGKILL/1s).
+- analyzer.py: AI subprocess stdout to unique temp file (uuid). Survives bot restart.
+- claude_client.py: Chat subprocess timeouts increased (haiku 120s, sonnet/opus 600s).
+
+## Backtest Results (2026-03-04, last 10 trading days Feb 16-Mar 02)
+- Raw: Scalp SL=60/TP=300 is only profitable combo (PF=1.25, +$13k) vs Swing SL=150/TP=600 (PF=0.88, -$7.6k)
+- AI filtered (305 setups): Sonnet approved 49 (16%). Opus found 163 scalp candidates from 211 borderlines.
+- AI improves: PF 0.54 → 0.72, saves ~$1,646 in losses over 10 days.
+
 ## Execution Safety Fixes Applied (2026-03-03)
 - monitor.py: `_trade_execution_lock` (asyncio.Lock) wraps `_on_trade_confirm()`. Prevents race between auto-execute timer, user click, scalp, and force-open. Position-open re-check under lock.
 - monitor.py: `_on_trade_confirm_inner()` now validates: position-open check, consecutive loss cooldown, daily loss limit, system paused. All execution paths (normal, scalp, force-open) go through this.
@@ -147,11 +169,11 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 - analyzer.py: `evaluate_scalp()` — BIDIRECTIONAL single Opus call. Receives Sonnet's rejection reasoning + secondary setup context + all indicators. Evaluates BOTH directions. Opus picks the best play (direction may differ from pre-screen). SL 60-120pts (structure-based), TP 150-300pts. Enforces R:R >= 1.5 after spread.
 - analyzer.py: `build_scan_prompt()` now includes SECONDARY SETUP block when bidirectional scan finds both directions.
 - monitor.py: Near-miss → Opus bidirectional scalp auto-execute. Opus picks direction. Mechanical bidirectional retry REMOVED (Opus handles both in single call). No user confirmation for scalps. `_execute_scalp()` uses Opus-picked direction. AI confidence gate REMOVED (was >= 40%, now any non-quick-reject goes to Opus).
-- monitor.py: **Parallel Sonnet + Opus** — Opus scalp eval launches simultaneously with Sonnet via `run_in_executor`. Both run as concurrent subprocesses. If Sonnet approves → Opus discarded. If near-miss → Opus result already available (~1s wait instead of ~10s). Total: ~10s vs ~19s sequential. Opus launch uses MIN_CONFIDENCE (70) not direction-specific threshold — Opus is bidirectional, can flip SHORT pre-screen to LONG scalp.
+- monitor.py: **Sequential Sonnet → Opus** — Sonnet runs first. If Sonnet rejects, Opus scalp eval runs with Sonnet's full analysis (reasoning, confidence, decision) as context. Opus evaluates both directions. ~20s total (Sonnet ~10s + Opus ~10s). Opus gets directional consistency context from previous calls.
 - analyzer.py: Parse error retry uses `effort="normal"` (not low) — `--effort low` can produce incomplete JSON. First attempt still uses low for speed.
 - ig_client.py: **Deal confirmation fix** — `trading_ig` library returns full confirmation dict (not string) from `create_open_position()`/`close_open_position()`. Code now detects dict with `dealId` and uses directly instead of re-confirming (was causing 400 errors on `/confirms/{...dict...}`).
 - ig_client.py: **Disk-backed candle cache** (`storage/data/candle_cache.json`). Survives restarts. 4hr max age. Delta fetches instead of full fetches after restart.
-- systemd: **Instant restart** — KillSignal=SIGKILL, TimeoutStopSec=1, RestartSec=1. Signal handler wakes event loop.
+- systemd: KillSignal=SIGTERM, KillMode=process, TimeoutStopSec=30. AI subprocesses survive restart.
 - settings.py: DAILY_LOSS_LIMIT_PERCENT = 1.0 (effectively disabled — user manages risk).
 - ig_client.py: CRITICAL — `trailing_stop_distance` kwarg removed from `create_open_position()`. Not supported by trading_ig library. This caused ALL trade executions to fail silently. Root cause of 0 trades.
 - telegram_bot.py: HTML parse fallback — if HTML alert fails, retry as plain text. Prevents silent alert failures.

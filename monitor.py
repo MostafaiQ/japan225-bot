@@ -906,9 +906,14 @@ class TradingMonitor:
             self._last_scan_detail = {"outcome": "ai_rejected", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
 
             # --- Sequential Opus scalp eval (Sonnet rejected → Opus gets full context) ---
-            # Opus ALWAYS runs after Sonnet rejection. Sonnet's confidence is directional —
-            # e.g., 0% for LONG says nothing about SHORT. Opus evaluates both directions
-            # with Sonnet's full reasoning as context.
+            # Gate: skip Opus for quick-rejects (Sonnet conf < 35%). These are clearly
+            # bad setups — no point wasting an Opus call. Saves API cost.
+            if final_confidence < 35:
+                logger.info(
+                    f"Sonnet quick-reject (conf {final_confidence}% < 35%). "
+                    f"Skipping Opus — setup too weak."
+                )
+                return
             logger.info(
                 f"Sonnet rejected (conf {final_confidence}%). "
                 f"Launching Opus scalp eval with Sonnet's full analysis..."
