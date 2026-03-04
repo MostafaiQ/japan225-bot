@@ -1,10 +1,10 @@
 # ai/analyzer.py — DIGEST (updated 2026-03-03)
 # Single-subprocess pipeline: Sonnet 4.6 primary, Opus 4.6 sub-agent for borderline/oversold setups.
-# --fast + --max-tokens 1024 on ALL CLI calls. Same model, faster output, $0 extra cost.
+# --effort low on ALL CLI calls (disables adaptive thinking: 105s→9s, quality unchanged for JSON).
 # Haiku pre-gate REMOVED. Separate Opus subprocess REMOVED. All in one `claude` invocation with --agents flag.
 # AUTH: Claude Code CLI subprocess (OAuth/subscription). No ANTHROPIC_API_KEY used.
 # JSON output via prompt schema + regex parser. No tool use schemas.
-# Context files written to storage/context/ by ai/context_writer.py before each call.
+# Context data inlined into prompt (recent trades, Fear & Greed). context_writer.py no longer called.
 
 ## Models (subscription billing = $0/call)
 SONNET_MODEL = "claude-sonnet-4-6"  (adaptive thinking on by default)
@@ -14,14 +14,15 @@ _cost always 0.0. _tokens always zeros. Kept for interface compat with save_scan
 ## class AIAnalyzer
 __init__(): total_cost=0.0 (subscription, always zero)
 
-_run_claude(model, system_prompt, user_prompt, use_opus_agent=False, timeout=180) -> str
+_run_claude(model, system_prompt, user_prompt, use_opus_agent=False, timeout=180) -> (str, dict)
   # subprocess.run([CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions",
-  #   "--no-session-persistence", "--fast", "--max-tokens", "1024", ...agents_json...])
-  # --fast + --max-tokens 1024 on ALL calls. Caps output at 1024 tokens (avg ~800).
+  #   "--no-session-persistence", "--effort", "low", "--tools", "", ...agents_json...])
+  # --effort low: disables adaptive thinking. --tools "": no file access, pure prompt analysis.
+  # NOTE: --fast and --max-tokens DO NOT EXIST as CLI flags (tested v2.1.63).
   # If use_opus_agent=True: agents_json defines "opus_reviewer" sub-agent (model=OPUS_MODEL)
   # If use_opus_agent=False: no --agents flag, standard Sonnet run only
   # Strips ANTHROPIC_API_KEY from env to force OAuth.
-  # Returns stdout string. Returns "" on timeout or binary not found.
+  # Returns (stdout_string, token_estimates). Returns ("", zeros) on timeout or binary not found.
 
 scan_with_sonnet(indicators, recent_scans, market_context, web_research,
                  prescreen_direction=None, local_confidence=None, live_edge_block=None,
@@ -69,12 +70,14 @@ Key formatters:
   _fmt_recent_scans(scans)      → 1-line per scan summary
   _fmt_web_research(web)        → 3 lines, HIGH-impact calendar only
 
-## evaluate_scalp(indicators, primary_direction, setup_type, local_confidence, ai_confidence, ai_reasoning) -> dict
+## evaluate_scalp(indicators, primary_direction, setup_type, local_confidence, ai_confidence, ai_reasoning, parallel_mode=False) -> dict
   # BIDIRECTIONAL Opus scalp evaluation. Evaluates BOTH directions in single call.
-  # Called when Sonnet rejected but local conf passed and AI conf >= 40%.
+  # Two modes:
+  #   parallel_mode=True:  launched simultaneously with Sonnet. ai_reasoning = local pre-screen context.
+  #   parallel_mode=False: launched after Sonnet rejection. ai_reasoning = Sonnet's rejection reasoning.
   # Key insight: Sonnet's rejection reasoning contains the opposite thesis
   #   (e.g. "too oversold, bounce likely" → LONG case; "overbought, distribution" → SHORT case).
-  # Opus receives full context: primary setup, Sonnet's reasoning, all indicators.
+  # Opus receives full context: primary setup, reasoning (Sonnet or pre-screen), all indicators.
   # Opus picks the BEST direction (may differ from primary_direction) or rejects both.
   # Uses OPUS_MODEL directly (no sub-agent), timeout=90s.
   # SL (60-120pts, structure-based: swing lows, BB, pivots, fib) and TP (150-300pts, nearest target).

@@ -417,7 +417,7 @@ class AIAnalyzer:
         self.total_cost = 0.0  # Always $0 (subscription); kept for interface compat
 
     def _run_claude(self, model: str, system_prompt: str, user_prompt: str,
-                    timeout: int = 180, use_opus_agent: bool = False) -> tuple[str, dict]:
+                    timeout: int = 180, use_opus_agent: bool = False, **kwargs) -> tuple[str, dict]:
         """
         Invoke Claude Code CLI with OAuth credentials (no API key).
         Combines system + user prompt so Claude has full context in --print mode.
@@ -437,8 +437,9 @@ class AIAnalyzer:
         # Build CLI command — only include Opus sub-agent when borderline confidence
         # --tools "" disables all tools → Sonnet responds directly from prompt data (no file reads/commands)
         # This cuts response time from 60-180s to 10-30s by eliminating CLAUDE.md loading + tool calls.
+        effort = kwargs.get("effort", "low")
         cmd = [CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions",
-               "--no-session-persistence", "--effort", "low", "--tools", ""]
+               "--no-session-persistence", "--effort", effort, "--tools", ""]
         if use_opus_agent:
             from config.settings import OPUS_MODEL
             agents_json = json.dumps({
@@ -568,11 +569,12 @@ class AIAnalyzer:
         }
         result = _parse_json(raw, default)
 
-        # Retry once on parse error (empty output or no reasoning)
+        # Retry once on parse error — use normal effort (low effort can produce incomplete JSON)
         if not raw.strip() or (result.get("reasoning", "").startswith("Parse error") and not result.get("setup_found")):
-            logger.warning("AI returned empty/unparseable output — retrying once")
+            logger.warning("AI returned empty/unparseable output — retrying with normal effort")
             raw2, tokens2 = self._run_claude(model, system_prompt, user_prompt,
-                                             timeout=180, use_opus_agent=False)
+                                             timeout=180, use_opus_agent=False,
+                                             effort="normal")
             if raw2.strip():
                 result = _parse_json(raw2, default)
                 tokens = tokens2
@@ -590,6 +592,7 @@ class AIAnalyzer:
         local_confidence: int,
         ai_confidence: int,
         ai_reasoning: str,
+        parallel_mode: bool = False,
     ) -> dict:
         """
         Opus evaluates BOTH directions for a quick scalp opportunity.
@@ -603,10 +606,21 @@ class AIAnalyzer:
         indicator_block = _fmt_indicators(indicators)
         opposite_direction = "LONG" if primary_direction == "SHORT" else "SHORT"
 
+        if parallel_mode:
+            sonnet_context = (
+                "A setup was detected and passed local confidence scoring. You are running\n"
+                "in parallel with Sonnet — evaluate independently from raw indicators.\n"
+            )
+        else:
+            sonnet_context = (
+                "A setup was detected and passed local confidence scoring, but the primary AI\n"
+                "(Sonnet) rejected it.\n"
+            )
+
         system_prompt = (
             "You are a scalp-trade evaluator for Japan 225 Cash CFD ($1/pt, spread ~7pts).\n"
-            "A setup was detected and passed local confidence scoring, but the primary AI\n"
-            "(Sonnet) rejected it. Your job: evaluate BOTH directions for a quick scalp.\n\n"
+            f"{sonnet_context}"
+            "Your job: evaluate BOTH directions for a quick scalp.\n\n"
             "CRITICAL INSIGHT: Sonnet's rejection reasoning often contains the opposite thesis.\n"
             "If Sonnet rejected SHORT because 'too oversold, bounce likely' — that IS the LONG case.\n"
             "If Sonnet rejected LONG because 'overbought, distribution' — that IS the SHORT case.\n"
@@ -632,11 +646,18 @@ class AIAnalyzer:
             "- Explain WHERE SL/TP are placed and WHY."
         )
 
+        if parallel_mode:
+            context_block = f"PRE-SCREEN CONTEXT: {ai_reasoning}\n\n"
+        else:
+            context_block = (
+                f"SONNET CONFIDENCE: {ai_confidence}% (rejected)\n"
+                f"SONNET REASONING: {ai_reasoning}\n\n"
+            )
+
         user_prompt = (
             f"PRIMARY SETUP: {primary_direction} {setup_type}\n"
             f"LOCAL CONFIDENCE: {local_confidence}% (passed threshold)\n"
-            f"SONNET CONFIDENCE: {ai_confidence}% (rejected)\n"
-            f"SONNET REASONING: {ai_reasoning}\n\n"
+            f"{context_block}"
             f"INDICATORS:\n{indicator_block}\n\n"
             f"Evaluate BOTH {primary_direction} and {opposite_direction}. Pick the best scalp.\n"
             f"Output ONLY valid JSON:\n"

@@ -55,12 +55,17 @@ _scanning_cycle() -> int (sleep seconds):
      → If only one direction found: that's primary, no secondary.
   8b. HARD BLOCKS: C7(no_event_1hr) + C8(no_friday_monthend) fail → skip immediately
   8c. if score < HAIKU_MIN_SCORE (60%) → skip (true technical junk)
-  8d. write_context() — generates storage/context/*.md for Claude CLI to read
-  8e. market_context["prescreen_setup"] + market_context["secondary_setup"] — injected before Sonnet
-  9. scan_with_sonnet(failed_criteria=...) — single subprocess, Sonnet 4.6 + Opus sub-agent
-      Sonnet sees SECONDARY SETUP block in prompt (other direction's type/conf/reasoning)
-      Sonnet handles everything: analysis + Opus delegation for borderline 72-86% (internally)
-      → logs: AI reasoning (first 200 chars)
+  8d. market_context["prescreen_setup"] + market_context["secondary_setup"] — injected before Sonnet
+  9. PARALLEL AI LAUNCH (via run_in_executor):
+      9a. Sonnet scan always launches (single subprocess, Sonnet 4.6 + Opus sub-agent)
+      9b. If local_score >= min_conf: Opus scalp eval launches SIMULTANEOUSLY (parallel_mode=True)
+          → Opus gets local pre-screen context (not Sonnet reasoning, since Sonnet hasn't finished)
+          → Both run as concurrent subprocesses. ~10s total vs ~19s sequential.
+      9c. await Sonnet result first
+      9d. If Sonnet approves → discard Opus result, proceed to risk validation
+      9e. If Sonnet rejects (near-miss, not QUICK REJECT) → await Opus result (already done/nearly done)
+          → If scalp_viable → auto-execute via _execute_scalp()
+      9f. If not near-miss → Opus result discarded ($0 cost, no waste)
   12. save_scan(), action_taken = pending_* (if confirmed) or ai_rejected_* (if not)
   13. risk.validate_trade(), set_pending_alert(), telegram.send_trade_alert()
 

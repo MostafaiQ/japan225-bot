@@ -795,8 +795,9 @@ class TradingMonitor:
 
         # --- Determine if Opus should run speculatively in parallel ---
         local_score = local_conf.get("score", 0)
-        pre_min_conf = MIN_CONFIDENCE_SHORT if prescreen_direction == "SHORT" else MIN_CONFIDENCE
-        should_run_opus_parallel = local_score >= pre_min_conf
+        # Use MIN_CONFIDENCE (70) not direction-specific threshold — Opus is bidirectional
+        # and may flip SHORT pre-screen to LONG scalp (or vice versa)
+        should_run_opus_parallel = local_score >= MIN_CONFIDENCE
 
         # --- Direct to Sonnet (+ optional Opus in parallel) ---
         logger.info(
@@ -908,7 +909,7 @@ class TradingMonitor:
             ai_reasoning = final_result.get("reasoning", "")
             is_quick_reject = "QUICK REJECT" in ai_reasoning.upper()
 
-            if local_score >= min_conf and not is_quick_reject and opus_future:
+            if local_score >= MIN_CONFIDENCE and not is_quick_reject and opus_future:
                 logger.info(
                     f"Near-miss: local {local_score}% >= {min_conf}%, "
                     f"AI {final_confidence}%. Checking parallel Opus result..."
@@ -1473,6 +1474,7 @@ class TradingMonitor:
             )
             logger.warning(f"Trade aborted: price drift {price_drift:.0f}pts")
             self.storage.clear_pending_alert()
+            self._force_scan_event.set()
             return
 
         # --- C4+H2 fix: Use distance-based SL/TP relative to fill ---

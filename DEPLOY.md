@@ -1,105 +1,91 @@
-# Deployment Guide - Oracle Cloud Free Tier
+# Deployment Guide
 
-Step-by-step guide to deploy the Japan 225 Trading Bot on Oracle Cloud's Always Free Tier.
+Step-by-step guide to deploy the Japan 225 Trading Bot on Oracle Cloud's Always Free Tier. The entire system runs on a single VM -- no additional infrastructure needed.
 
-The entire bot runs as a **single process** (`monitor.py`) on the VM. There is no GitHub Actions scan job — all scanning, monitoring, and Telegram handling happens on the VM.
+## Architecture
+
+```
+Oracle Cloud VM (Always Free, ARM, 1 OCPU, 6GB RAM)
+├── japan225-bot.service         # monitor.py -- scanning + monitoring + Telegram
+├── japan225-dashboard.service   # FastAPI on 127.0.0.1:8080 (optional)
+└── japan225-ngrok.service       # ngrok tunnel for remote dashboard access (optional)
+```
+
+The bot (`monitor.py`) is the only required service. The dashboard and ngrok are optional for remote monitoring.
 
 ---
 
-## Prerequisites
+## 1. Create the VM
 
-- Oracle Cloud account (free signup at cloud.oracle.com)
-- GitHub repository with the bot code pushed
-- Credentials tested locally with `./setup.sh`
-
----
-
-## Step 1: Create an Always Free VM
-
-1. Log into Oracle Cloud Console
+1. Sign up at [cloud.oracle.com](https://cloud.oracle.com) (free, no credit card required for Always Free resources)
 2. Go to **Compute > Instances > Create Instance**
-3. Settings:
-   - **Name:** `japan225-bot`
+3. Configure:
    - **Image:** Ubuntu 22.04 or 24.04
-   - **Shape:** VM.Standard.A1.Flex (ARM) - 1 OCPU, 6 GB RAM
-   - **This is Always Free eligible**
-4. Under **Add SSH keys:** upload your public key or generate one
-5. Click **Create**
-6. Note the **Public IP Address** once it's running
+   - **Shape:** VM.Standard.A1.Flex (ARM) -- 1 OCPU, 6 GB RAM
+   - **Boot volume:** 47 GB (default)
+   - **SSH key:** Upload your public key or generate one
+4. Click **Create** and note the **Public IP** once running
 
 ---
 
-## Step 2: Connect and Set Up the Server
+## 2. Server Setup
 
 ```bash
-# SSH into your VM
 ssh ubuntu@YOUR_PUBLIC_IP
 
-# Update system
+# System updates
 sudo apt update && sudo apt upgrade -y
-
-# Install Python 3.10+ and pip
 sudo apt install -y python3 python3-pip python3-venv git
 
-# Clone your repo
-git clone https://github.com/YOUR_USERNAME/japan225-bot.git
+# Clone the repo
+git clone https://github.com/mostafaiq/japan225-bot.git
 cd japan225-bot
 
-# Create virtual environment
+# Python environment
 python3 -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
+
+# Configure credentials
+cp .env.example .env
+nano .env   # Fill in all values (see README.md for details)
 ```
 
----
-
-## Step 3: Configure Credentials
+### Required `.env` values
 
 ```bash
-# Copy and edit the environment file
-cp .env.example .env
-nano .env
-```
-
-Fill in all values:
-```
 IG_API_KEY=your_key
 IG_USERNAME=your_username
 IG_PASSWORD=your_password
 IG_ACC_NUMBER=your_account
-IG_ENV=live
-ANTHROPIC_API_KEY=sk-ant-...   # Optional — Claude Code CLI uses OAuth subscription
+IG_ENV=demo                      # Start with demo, switch to live when ready
 TELEGRAM_BOT_TOKEN=your_token
 TELEGRAM_CHAT_ID=your_chat_id
 TRADING_MODE=live
-DASHBOARD_TOKEN=choose_a_long_random_secret
 DEBUG=false
+
+# Optional: for web dashboard
+DASHBOARD_TOKEN=your_long_random_secret
 ```
 
----
-
-## Step 4: Verify Setup
+### Verify
 
 ```bash
 source venv/bin/activate
 ./setup.sh
 ```
 
-All checks should pass. If any fail, fix the credentials and retry.
+All checks should pass. Fix any credential issues and retry.
 
 ---
 
-## Step 5: Create a Systemd Service
+## 3. Bot Service (Required)
 
-This ensures the monitor auto-starts on boot and restarts on crash.
+Create the systemd service:
 
 ```bash
 sudo nano /etc/systemd/system/japan225-bot.service
 ```
-
-Paste this content:
 
 ```ini
 [Unit]
@@ -113,13 +99,17 @@ WorkingDirectory=/home/ubuntu/japan225-bot
 Environment=PATH=/home/ubuntu/japan225-bot/venv/bin:/usr/bin
 ExecStart=/home/ubuntu/japan225-bot/venv/bin/python monitor.py
 Restart=always
-RestartSec=30
+RestartSec=1
+KillSignal=SIGKILL
+TimeoutStopSec=1
 StandardOutput=journal
 StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+> **Note:** `KillSignal=SIGKILL` and `TimeoutStopSec=1` ensure instant restarts. The bot's positions are protected by broker-side stop losses, the SQLite DB uses WAL mode (crash-safe), and candle data is cached to disk.
 
 Enable and start:
 
@@ -129,47 +119,53 @@ sudo systemctl enable japan225-bot
 sudo systemctl start japan225-bot
 ```
 
----
-
-## Step 6: Verify It's Running
+Verify:
 
 ```bash
-# Check service status
 sudo systemctl status japan225-bot
-
-# View live logs
-sudo journalctl -u japan225-bot -f
-
-# Test via Telegram
-# Send /status to your bot — it should respond
+sudo journalctl -u japan225-bot -f   # Live logs
 ```
+
+Send `/status` to your Telegram bot -- it should respond.
 
 ---
 
-## Step 7: Set Up the Web Dashboard
+## 4. Dashboard Setup (Optional)
 
-The dashboard is a FastAPI app served via an ngrok tunnel, with a static frontend on GitHub Pages.
+The web dashboard provides remote monitoring, config changes, and a Claude AI chat interface -- no SSH required.
 
-### 7a — Install Claude Code CLI (required for dashboard chat)
+### 4a. Install Claude Code CLI
+
+Required for the dashboard chat feature:
 
 ```bash
+# Install Node.js if not present
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Install Claude Code CLI
 npm install -g @anthropic-ai/claude-code
+
+# Verify
+claude --version
 ```
 
-Verify: `claude --version`
-
-### 7b — Install ngrok
+### 4b. Install ngrok
 
 ```bash
-curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
+  | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+echo "deb https://ngrok-agent.s3.amazonaws.com buster main" \
+  | sudo tee /etc/apt/sources.list.d/ngrok.list
 sudo apt update && sudo apt install ngrok
+
+# Authenticate
 ngrok config add-authtoken YOUR_NGROK_AUTHTOKEN
 ```
 
-Get a free static domain at `dashboard.ngrok.com → Domains → New Domain`.
+Get a free static domain at [dashboard.ngrok.com](https://dashboard.ngrok.com) > Domains > New Domain.
 
-### 7c — Create dashboard systemd service
+### 4c. Dashboard systemd service
 
 ```bash
 sudo nano /etc/systemd/system/japan225-dashboard.service
@@ -196,7 +192,7 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
-### 7d — Create ngrok systemd service
+### 4d. ngrok systemd service
 
 ```bash
 sudo nano /etc/systemd/system/japan225-ngrok.service
@@ -210,7 +206,7 @@ After=network.target
 [Service]
 Type=simple
 User=ubuntu
-ExecStart=/usr/local/bin/ngrok http --domain=YOUR_STATIC_DOMAIN.ngrok-free.app 8080
+ExecStart=/usr/local/bin/ngrok http --domain=YOUR_DOMAIN.ngrok-free.app 8080
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -220,9 +216,9 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
-Replace `YOUR_STATIC_DOMAIN` with your actual ngrok domain.
+Replace `YOUR_DOMAIN` with your actual ngrok static domain.
 
-### 7e — Enable and start
+### 4e. Start dashboard services
 
 ```bash
 sudo systemctl daemon-reload
@@ -230,15 +226,17 @@ sudo systemctl enable japan225-dashboard japan225-ngrok
 sudo systemctl start japan225-dashboard japan225-ngrok
 ```
 
-### 7f — Connect the frontend
+### 4f. Connect the frontend
 
-1. Open `https://mostafaiq.github.io/japan225-bot/`
-2. Click ⚙ (top-right)
-3. Enter your ngrok URL (`https://YOUR_STATIC_DOMAIN.ngrok-free.app`)
-4. Enter your `DASHBOARD_TOKEN`
+The frontend is a single-page app hosted on GitHub Pages. To use it:
+
+1. Fork the repo and enable GitHub Pages on the `docs/` folder
+2. Open your GitHub Pages URL
+3. Click the settings icon (top-right)
+4. Enter your ngrok URL and `DASHBOARD_TOKEN`
 5. Click **Save & Connect**
 
-### 7g — Verify all three services
+### 4g. Verify all services
 
 ```bash
 sudo systemctl status japan225-bot japan225-dashboard japan225-ngrok
@@ -246,90 +244,115 @@ sudo systemctl status japan225-bot japan225-dashboard japan225-ngrok
 
 ---
 
-## Maintenance Commands
+## 5. Firewall
+
+The bot only needs **outbound** internet access. No inbound ports required.
+
+If Oracle Cloud's default security list blocks outbound traffic:
+1. Go to **Networking > Virtual Cloud Networks > Your VCN > Security Lists**
+2. Ensure there's an egress rule allowing all traffic (0.0.0.0/0, all protocols)
+
+---
+
+## 6. Maintenance
+
+### Common commands
 
 ```bash
-# View logs
+# Live logs
 sudo journalctl -u japan225-bot -f
 sudo journalctl -u japan225-bot --since "1 hour ago"
 
-# Restart the service
+# Restart
 sudo systemctl restart japan225-bot
 
-# Stop the service
+# Stop
 sudo systemctl stop japan225-bot
 
-# Update the bot code
+# Update code
 cd ~/japan225-bot
 git pull
 sudo systemctl restart japan225-bot
 
-# Check disk usage (free tier has 47GB)
+# Check disk usage
 df -h
+
+# Database backup (from your local machine)
+scp ubuntu@YOUR_IP:~/japan225-bot/storage/data/trading.db ./backup.db
 ```
 
----
-
-## Database Architecture
-
-The SQLite database lives **exclusively on the Oracle Cloud VM** at `storage/data/trading.db`. It is written only by `monitor.py`.
-
-- No sync needed — one process, one DB, one VM.
-- DB is never touched by any external job.
-
-To back up the database from the VM:
+### Health check
 
 ```bash
-# On your local machine
-scp ubuntu@YOUR_IP:/home/ubuntu/japan225-bot/storage/data/trading.db ./trading_backup.db
+source ~/japan225-bot/venv/bin/activate
+cd ~/japan225-bot
+python3 healthcheck.py
 ```
 
----
-
-## Firewall Rules
-
-The bot only needs **outbound** internet access. No inbound ports need to be opened.
-
-If Oracle Cloud's default security list blocks outbound traffic:
-1. Go to **Networking > Virtual Cloud Networks > Your VCN > Security Lists**
-2. Ensure there's an **Egress Rule** allowing all traffic (0.0.0.0/0, all protocols)
+Checks services, test suite, git status, trades, config, and recent errors.
 
 ---
 
-## Going Live Checklist
+## 7. Going Live Checklist
 
-- [ ] All Telegram commands respond correctly (`/status`, `/balance`, `/close`, `/kill`)
-- [ ] Scanning runs on schedule (check logs — should see 5-min scan attempts during sessions)
-- [ ] Exit strategy phases trigger correctly (breakeven at +150pts, runner at 75% TP in <2hrs)
-- [ ] Alert expiry works (unconfirmed alerts auto-expire after 15 min)
-- [ ] System pause/resume works via `/stop` and `/resume`
-- [ ] Inline Close/Hold buttons work on position alerts
-- [ ] `python3 healthcheck.py` shows all green (264 tests passing, all services active)
-- [ ] `IG_ENV=live` set in `.env`
-- [ ] Start with minimum lot sizes (0.01–0.02)
+- [ ] All tests pass: `python3 -m pytest tests/ -v`
+- [ ] `/status` responds in Telegram
+- [ ] Scans run every 5 min during active sessions (check logs)
+- [ ] Set `IG_ENV=live` in `.env`
+- [ ] Start with minimum lots (0.01-0.02)
+- [ ] Confirm exit phases work: breakeven at +150pts, runner at 75% TP
+- [ ] Test `/close` and `/kill` commands
+- [ ] Test alert auto-expiry (15 min timeout)
+
+---
+
+## 8. Adapting for Your Own Use
+
+### Different instrument
+
+1. Find the IG epic for your instrument at [IG Labs](https://labs.ig.com)
+2. Update `config/settings.py`:
+   ```python
+   EPIC = "your.epic.here"
+   CONTRACT_SIZE = 1           # Check IG's contract spec
+   MARGIN_FACTOR = 0.005       # Check IG's margin requirement for your instrument
+   ```
+3. Adjust `DEFAULT_SL_DISTANCE`, `DEFAULT_TP_DISTANCE`, and `BREAKEVEN_TRIGGER` for your instrument's volatility
+4. Update `SESSION_HOURS_UTC` for your instrument's active hours
+5. Update the AI system prompt in `ai/analyzer.py` to reference your instrument
+
+### Different broker
+
+The bot uses the [trading-ig](https://github.com/ig-python/ig-markets-api-python-library) library. To use a different broker:
+1. Replace `core/ig_client.py` with your broker's API wrapper
+2. Implement the same interface: `connect()`, `get_prices()`, `open_position()`, `modify_position()`, `close_position()`, `get_open_positions()`, `get_market_info()`, `get_account_info()`
+3. The rest of the bot (indicators, AI, risk management, Telegram) works unchanged
+
+### Different AI provider
+
+The bot calls Claude via the Claude Code CLI subprocess. To use a different AI:
+1. Replace the `_run_claude()` method in `ai/analyzer.py`
+2. Keep the same JSON output schema (the rest of the bot parses this)
+3. The system prompt and scan prompt can be reused with any LLM
 
 ---
 
 ## Troubleshooting
 
-**Monitor crashes and restarts:**
-Systemd auto-restarts after 30 seconds. Check logs: `journalctl -u japan225-bot --since "10 min ago"`.
+**Bot crashes and restarts:**
+Systemd auto-restarts in 1 second. Check logs: `journalctl -u japan225-bot --since "10 min ago"`.
 
-**IG API returns 503 (weekend maintenance / outage):**
-The bot stays alive. Telegram is started before the IG connection attempt, so it remains fully responsive. The bot sends you a Telegram alert and retries IG every 1 minute. Dashboard shows "IG OFFLINE" phase. No action needed — it self-recovers when IG comes back up.
+**IG API returns 503:**
+Normal during weekends and maintenance. The bot stays alive, sends a Telegram alert, and retries every minute. Dashboard shows "IG OFFLINE". It self-recovers.
 
-**IG API connection fails (persistent):**
-Tokens expire after ~6 hours. The bot auto-reauthenticates. If it keeps failing outside of known maintenance windows, check your `.env` credentials with `./setup.sh`.
+**IG tokens expire:**
+Tokens expire after ~6 hours. The bot auto-reauthenticates via `ensure_connected()`.
 
-**Telegram bot not responding:**
-The bot only stops responding to Telegram if the `japan225-bot` process has died entirely. Check: `sudo systemctl status japan225-bot`. If it's stopped, start it: `sudo systemctl start japan225-bot`. Also ensure only ONE instance is running: `ps aux | grep monitor.py`.
+**Telegram not responding:**
+Check if the bot process is running: `sudo systemctl status japan225-bot`. Telegram is initialized first and stays available even when IG is down.
 
-**Scans not firing every 5 minutes:**
-Check that the VM clock is correct (`date`) and that the current time is within an active session (Tokyo/London/NY in Kuwait time UTC+3). Off-hours = 30-min heartbeat only.
+**Rate limit errors on candle fetches:**
+The bot caches candles to disk (`storage/data/candle_cache.json`). After restart, it loads the cache and uses delta fetches. If you hit the weekly 10,000-point IG data allowance, the bot backs off for 1 hour and uses cached data.
 
-**Database locked errors:**
-Only one instance of `monitor.py` should be running. Check: `ps aux | grep monitor.py`. Kill duplicates.
-
----
-
-*Deploy once, run forever (or until Oracle changes their free tier).*
+**Database locked:**
+Only one instance of `monitor.py` should run. Check: `ps aux | grep monitor.py`. Kill duplicates.

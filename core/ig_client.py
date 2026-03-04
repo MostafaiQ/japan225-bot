@@ -390,9 +390,18 @@ class IGClient:
                 trailing_stop=trailing_stop,
                 trailing_stop_increment=trailing_stop_increment,
             )
-            
-            # Must confirm the deal
-            confirmation = self._confirm_deal(deal_ref)
+
+            # trading_ig may return the full confirmation dict or just a deal reference string
+            if isinstance(deal_ref, dict) and "dealId" in deal_ref:
+                # Already confirmed by the library — use directly
+                logger.info(f"Deal already confirmed by library: {deal_ref.get('dealId')}")
+                confirmation = deal_ref
+            elif isinstance(deal_ref, dict) and "dealReference" in deal_ref:
+                # Dict but needs confirmation via dealReference
+                confirmation = self._confirm_deal(deal_ref["dealReference"])
+            else:
+                # String deal reference — confirm as before
+                confirmation = self._confirm_deal(deal_ref)
             if not confirmation:
                 return None
             
@@ -477,8 +486,14 @@ class IGClient:
                 size=size,
                 order_type="MARKET",
             )
-            
-            confirmation = self._confirm_deal(deal_ref)
+
+            # trading_ig may return full confirmation dict or just a deal reference string
+            if isinstance(deal_ref, dict) and "dealStatus" in deal_ref:
+                confirmation = deal_ref
+            elif isinstance(deal_ref, dict) and "dealReference" in deal_ref:
+                confirmation = self._confirm_deal(deal_ref["dealReference"])
+            else:
+                confirmation = self._confirm_deal(deal_ref)
             if confirmation and confirmation.get("dealStatus") == "ACCEPTED":
                 logger.info(f"Position {deal_id} CLOSED")
                 return confirmation

@@ -73,10 +73,13 @@ async def status():
     if position and state.get("current_price"):
         cp = float(state["current_price"])
         ep = float(position.get("entry_price") or 0)
+        lots = float(position.get("size") or 0)
         direction = position.get("direction", "LONG")
-        pnl = (cp - ep) if direction == "LONG" else (ep - cp)
+        pnl_pts = (cp - ep) if direction == "LONG" else (ep - cp)
+        pnl_dollars = pnl_pts * lots  # CONTRACT_SIZE = $1/pt
         position["current_price"]    = cp
-        position["unrealised_pnl"]   = round(pnl, 1)
+        position["unrealised_pnl"]   = round(pnl_dollars, 2)
+        position["unrealised_pnl_pts"] = round(pnl_pts, 1)
 
     scans = db_reader.get_recent_scans(50)
 

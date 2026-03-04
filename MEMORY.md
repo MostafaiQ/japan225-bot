@@ -16,6 +16,7 @@ Oracle VM: monitor.py (24/7, systemd: japan225-bot)
     → NO cooldown ($0/call subscription) → compute_confidence() for BOTH directions
     → Primary = highest confidence. Secondary context passed to AI.
     → if score >= 60%: Sonnet 4.6 scan (with Opus sub-agent for borderline 72-86%)
+    → Parallel: if score >= min_conf, Opus scalp eval launches simultaneously with Sonnet
     → Single subprocess: Sonnet analyzes, delegates to Opus sub-agent internally when needed
     → if AI confirms & risk passes: Telegram CONFIRM/REJECT alert (15min TTL)
   MONITORING (position open): every 60s
@@ -146,6 +147,12 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 - analyzer.py: `evaluate_scalp()` — BIDIRECTIONAL single Opus call. Receives Sonnet's rejection reasoning + secondary setup context + all indicators. Evaluates BOTH directions. Opus picks the best play (direction may differ from pre-screen). SL 60-120pts (structure-based), TP 150-300pts. Enforces R:R >= 1.5 after spread.
 - analyzer.py: `build_scan_prompt()` now includes SECONDARY SETUP block when bidirectional scan finds both directions.
 - monitor.py: Near-miss → Opus bidirectional scalp auto-execute. Opus picks direction. Mechanical bidirectional retry REMOVED (Opus handles both in single call). No user confirmation for scalps. `_execute_scalp()` uses Opus-picked direction. AI confidence gate REMOVED (was >= 40%, now any non-quick-reject goes to Opus).
+- monitor.py: **Parallel Sonnet + Opus** — Opus scalp eval launches simultaneously with Sonnet via `run_in_executor`. Both run as concurrent subprocesses. If Sonnet approves → Opus discarded. If near-miss → Opus result already available (~1s wait instead of ~10s). Total: ~10s vs ~19s sequential. Opus launch uses MIN_CONFIDENCE (70) not direction-specific threshold — Opus is bidirectional, can flip SHORT pre-screen to LONG scalp.
+- analyzer.py: Parse error retry uses `effort="normal"` (not low) — `--effort low` can produce incomplete JSON. First attempt still uses low for speed.
+- ig_client.py: **Deal confirmation fix** — `trading_ig` library returns full confirmation dict (not string) from `create_open_position()`/`close_open_position()`. Code now detects dict with `dealId` and uses directly instead of re-confirming (was causing 400 errors on `/confirms/{...dict...}`).
+- ig_client.py: **Disk-backed candle cache** (`storage/data/candle_cache.json`). Survives restarts. 4hr max age. Delta fetches instead of full fetches after restart.
+- systemd: **Instant restart** — KillSignal=SIGKILL, TimeoutStopSec=1, RestartSec=1. Signal handler wakes event loop.
+- settings.py: DAILY_LOSS_LIMIT_PERCENT = 1.0 (effectively disabled — user manages risk).
 - ig_client.py: CRITICAL — `trailing_stop_distance` kwarg removed from `create_open_position()`. Not supported by trading_ig library. This caused ALL trade executions to fail silently. Root cause of 0 trades.
 - telegram_bot.py: HTML parse fallback — if HTML alert fails, retry as plain text. Prevents silent alert failures.
 - monitor.py: Normal trade alerts auto-execute after 2 min if user doesn't respond. `_auto_execute_after_timeout()` asyncio background task.
@@ -197,11 +204,11 @@ PF<1 is expected without AI — Sonnet/Opus are the quality gate.
 
 ## AI Pipeline (updated 2026-03-03) — Single subprocess: Sonnet 4.6 + Opus sub-agent
 - **Auth: Claude Code CLI (OAuth/subscription) — no ANTHROPIC_API_KEY used in analyzer.**
-  Single `claude --model sonnet-4-6 --print --fast --max-tokens 1024 --agents {...}` subprocess per scan.
-  `--fast` + `--max-tokens 1024` on ALL CLI calls (Sonnet + Opus). Same model, faster output, $0 extra cost.
-  `--max-tokens 1024` caps output (avg ~800 tokens), prevents runaway responses.
-  Dead context_note removed from prompt — was telling AI about files it can't access (tools disabled).
+  Single `claude --model sonnet-4-6 --print --effort low --tools "" --agents {...}` subprocess per scan.
+  `--effort low` on ALL CLI calls — disables adaptive thinking (105s → 9s), quality unchanged for structured JSON.
+  `--tools ""` disables file access — pure analysis from prompt data. Dead context_note removed.
   ANTHROPIC_API_KEY is stripped from env before each call to force OAuth.
+  NOTE: `--fast` and `--max-tokens` DO NOT EXIST as CLI flags (tested v2.1.63). Only `/fast` in interactive mode.
 - Opus sub-agent: defined via `--agents` flag. Sonnet delegates to it for borderline 72-86% calls.
   Both models run within the same subprocess — no extra Node.js startup overhead.
 - Context data inlined directly into prompt (recent trades, Fear & Greed, scans).

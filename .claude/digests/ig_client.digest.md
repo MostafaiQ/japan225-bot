@@ -1,6 +1,7 @@
-# core/ig_client.py — DIGEST (updated 2026-03-02)
+# core/ig_client.py — DIGEST (updated 2026-03-03)
 # Purpose: IG Markets REST API wrapper. Auth, price data, order management.
-# CANDLE CACHING: delta fetches after first full fetch. Saves ~99% of data allowance.
+# CANDLE CACHING: delta fetches after first full fetch. Disk-backed cache survives restarts.
+# DEAL CONFIRMATION: trading_ig may return full dict or string from open/close. Handles both.
 
 ## Sentinel
 POSITIONS_API_ERROR = object()  # NOT None, NOT []. Check with `is POSITIONS_API_ERROR`.
@@ -8,8 +9,9 @@ POSITIONS_API_ERROR = object()  # NOT None, NOT []. Check with `is POSITIONS_API
 
 ## class IGClient
 __init__(): reads IG_API_KEY/USERNAME/PASSWORD/ACC_NUMBER/IG_ENV from settings.
-            _candle_cache: dict[str, list] — resolution -> cached candles
+            _candle_cache: dict[str, list] — resolution -> cached candles (disk-backed: candle_cache.json)
             _cache_full_fetch_done: dict[str, bool] — tracks which resolutions have been fully fetched
+            Disk cache: _load_disk_cache() on init, _save_disk_cache() after each fetch. 4hr max age.
 
 connect() -> bool
   # POST /session, sets CST + X-SECURITY-TOKEN. Returns True on success.
@@ -53,11 +55,16 @@ get_all_timeframes() -> dict
   # Returns {daily, h4, m15, m5}
 
 open_position(direction, size, stop_level, limit_level) -> Optional[dict]
-  # direction = "BUY" or "SELL". Paper mode: _paper_open() — no API call.
+  # direction = "BUY" or "SELL". level=None, quote_id=None for MARKET orders.
+  # DEAL CONFIRMATION: trading_ig may return full confirmation dict (with dealId) or string deal ref.
+  #   If dict with dealId → already confirmed, use directly.
+  #   If dict with dealReference → extract string, call _confirm_deal().
+  #   If string → call _confirm_deal() as before.
 
 modify_position(deal_id, stop_level, limit_level, trailing_stop, ...) -> bool
 
 close_position(deal_id, direction, size) -> Optional[dict]
+  # Same deal confirmation logic as open_position (handles dict or string return).
 
 get_open_positions() -> list[dict] | POSITIONS_API_ERROR
 

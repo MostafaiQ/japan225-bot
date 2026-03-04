@@ -11,8 +11,10 @@ Features:
 """
 import asyncio
 import html as _html
+import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Callable
 
 from telegram import (
@@ -180,6 +182,16 @@ class TelegramBot:
 
     # ── Internal helpers ───────────────────────────────────────────────────
 
+    @staticmethod
+    def _get_current_price() -> float:
+        """Read current price from bot_state.json."""
+        try:
+            p = Path(__file__).parent.parent / "storage" / "data" / "bot_state.json"
+            with open(p) as f:
+                return json.load(f).get("current_price", 0) or 0
+        except Exception:
+            return 0
+
     def _status_text(self) -> str:
         pos = self.storage.get_position_state()
         acc = self.storage.get_account_state()
@@ -187,19 +199,29 @@ class TelegramBot:
         cd_info = self.storage.get_ai_cooldown()
         lines = ["🤖 <b>Japan 225 Bot</b>", DIV]
         if pos.get("has_open"):
-            pnl = pos.get("unrealised_pnl", 0) or 0
+            entry = float(pos.get("entry_price") or 0)
+            current = self._get_current_price()
+            direction = (pos.get("direction") or "").upper()
+            # Compute live P&L in points
+            if current and entry:
+                pnl_pts = (current - entry) if direction == "LONG" else (entry - current)
+            else:
+                pnl_pts = 0
             tp_raw = pos.get("limit_level")
             tp_str = _price(tp_raw) + " 🟢" if tp_raw else "<i>trailing</i>"
             lines += [
                 "📌 <b>Open Position</b>",
-                f"Direction: {_dir(pos.get('direction', '?'))}",
-                f"Entry:  {_price(pos.get('entry_price', 0))}",
+                f"Direction: {_dir(direction)}",
+                f"Entry:  {_price(entry)}",
+                f"Now:    {_price(current)}" if current else "",
                 f"SL:     {_price(pos.get('stop_level', 0))} 🔴",
                 f"TP:     {tp_str}",
                 f"Phase:  <b>{pos.get('phase', '?')}</b>",
-                f"P&amp;L:    {_pnl(pnl)}",
+                f"P&amp;L:    {_pnl(pnl_pts)}",
                 DIV,
             ]
+            # Remove empty lines
+            lines = [l for l in lines if l]
         else:
             lines += ["💤 <i>No open position</i>", DIV]
         # Scanning state
@@ -219,25 +241,32 @@ class TelegramBot:
             DIV,
             "💰 <b>Account</b>",
             f"Balance:  <b>${acc.get('balance', 0):.2f}</b>",
-            f"Losses:   {acc.get('consecutive_losses', 0)} consecutive",
+            f"P&amp;L:      {'🟢 +' if (acc.get('total_pnl', 0) or 0) >= 0 else '🔴 '}${abs(acc.get('total_pnl', 0) or 0):.2f}",
         ]
         return "\n".join(lines)
 
     def _balance_text(self) -> str:
         acc  = self.storage.get_account_state()
         pnl  = acc.get("total_pnl", 0)
-        cost = acc.get("total_api_cost", 0)
-        net  = pnl - cost
-        return "\n".join([
+        bal  = acc.get("balance", 0)
+        start = acc.get("starting_balance", 0)
+        daily = acc.get("daily_loss_today", 0)
+        weekly = acc.get("weekly_loss", 0)
+        lines = [
             "💰 <b>Account Balance</b>", DIV,
-            f"Current:     <b>${acc.get('balance', 0):.2f}</b>",
-            f"Starting:    ${acc.get('starting_balance', 0):.2f}", DIV,
+            f"Current:     <b>${bal:.2f}</b>",
+            f"Starting:    ${start:.2f}", DIV,
             f"Total P&amp;L:   {'🟢 +' if pnl >= 0 else '🔴 '}${abs(pnl):.2f}",
-            f"API costs:   ${cost:.4f}",
-            f"Net profit:  {'🟢 +' if net >= 0 else '🔴 '}${abs(net):.2f}", DIV,
-            f"Daily loss:  ${abs(acc.get('daily_loss_today', 0)):.2f}",
-            f"Weekly loss: ${abs(acc.get('weekly_loss', 0)):.2f}",
-        ])
+        ]
+        if daily != 0:
+            lines.append(f"Daily P&amp;L:   {'🟢 +' if daily >= 0 else '🔴 '}${abs(daily):.2f}")
+        if weekly != 0:
+            lines.append(f"Weekly P&amp;L:  {'🟢 +' if weekly >= 0 else '🔴 '}${abs(weekly):.2f}")
+        lines += [
+            DIV,
+            f"Consec losses: {acc.get('consecutive_losses', 0)}",
+        ]
+        return "\n".join(lines)
 
     def _journal_text(self) -> str | None:
         """Returns formatted text or None if no trades."""
@@ -248,10 +277,16 @@ class TelegramBot:
         for t in trades:
             pnl  = t.get("pnl") or 0
             sign = "+" if pnl > 0 else ""
-            icon = "🟢" if pnl > 0 else "🔴"
+            icon = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
+            entry = t.get("entry_price")
+            exit_p = t.get("exit_price")
+            setup = (t.get("setup_type") or "—")[:20]
+            entry_str = f"{float(entry):,.0f}" if entry else "—"
+            exit_str = f"{float(exit_p):,.0f}" if exit_p else "open"
             lines.append(
                 f"{icon} #{t.get('trade_number')}  {t.get('direction')}  "
-                f"<b>{sign}${pnl:.2f}</b>  {t.get('result', '—')}"
+                f"<code>{entry_str}→{exit_str}</code>\n"
+                f"    <b>{sign}${pnl:.2f}</b>  {t.get('result', '—')}  <i>{setup}</i>"
             )
         return "\n".join(lines)
 
@@ -260,14 +295,25 @@ class TelegramBot:
         scans = self.storage.get_scans_today()
         if not scans:
             return None
-        lines = [f"📅 <b>Today's Scans</b>  ({len(scans)} total)", DIV]
+        # Show summary counts first
+        setups = sum(1 for s in scans if s.get("setup_found"))
+        rejects = sum(1 for s in scans if "rejected" in (s.get("action_taken") or ""))
+        pendings = sum(1 for s in scans if "pending" in (s.get("action_taken") or ""))
+        lines = [
+            f"📅 <b>Today's Scans</b>  ({len(scans)} total)",
+            f"Setups: {setups}  |  Rejected: {rejects}  |  Pending: {pendings}",
+            DIV,
+        ]
         _icons = {
             "cooldown":       "⏳", "haiku_rejected": "🤖",
             "ai_rejected":    "❌", "low_conf":       "📉",
             "event_block":    "🚫", "friday_block":   "🚫",
             "pending":        "📤", "no_setup":       "·",
         }
-        for s in scans[-10:]:
+        # Only show scans with setups or signals (skip no_setup noise)
+        notable = [s for s in scans if (s.get("action_taken") or "") != "no_setup"]
+        display = notable[-12:] if notable else scans[-5:]
+        for s in display:
             act = (s.get("action_taken") or "").lower()
             act_key = act.replace("_long", "").replace("_short", "")
             icon = _icons.get(act_key, "🔍" if s.get("setup_found") else "·")
@@ -279,32 +325,55 @@ class TelegramBot:
             direction = "LONG" if "long" in act else ("SHORT" if "short" in act else None)
             dir_icon  = "▲" if direction == "LONG" else ("▼" if direction == "SHORT" else "·")
             conf      = s.get("confidence")
-            conf_str  = f"  {_pct(conf)}" if conf is not None else ""
+            conf_str  = f"  {_pct(conf)}" if conf and conf > 0 else ""
             sess      = (s.get("session") or "—")[:3].upper()
             lines.append(f"{icon} <code>{t_str}</code> {sess}  {dir_icon}{direction or '—'}{conf_str}")
         return "\n".join(lines)
 
     def _stats_text(self) -> str:
         s   = self.storage.get_trade_stats()
-        pnl = s.get("total_pnl", 0)
-        return "\n".join([
-            "📈 <b>Performance Stats</b>", DIV,
-            f"Total trades: <b>{s.get('total', 0)}</b>",
-            f"Wins: 🟢 {s.get('wins', 0)}   Losses: 🔴 {s.get('losses', 0)}",
-            f"Win rate:  {_pct(s.get('win_rate', 0))}",
-            DIV,
-            f"Total P&amp;L:  {'🟢 +' if pnl >= 0 else '🔴 '}${abs(pnl):.2f}",
-            f"Avg win:    🟢 ${s.get('avg_win', 0):.2f}",
-            f"Avg loss:   🔴 ${s.get('avg_loss', 0):.2f}",
-            f"Best:       🏆 ${s.get('best_trade', 0):.2f}",
-            f"Worst:      💀 ${s.get('worst_trade', 0):.2f}",
-            DIV,
-            f"Avg confidence: {_pct(s.get('avg_confidence', 0))}",
-        ])
+        acc = self.storage.get_account_state()
+        # Use account_state PnL as source of truth (always updated by IG sync)
+        pnl = acc.get("total_pnl", 0) or s.get("total_pnl", 0)
+        total = s.get("total", 0)
+        lines = ["📈 <b>Performance Stats</b>", DIV]
+        if total > 0:
+            lines += [
+                f"Total trades: <b>{total}</b>",
+                f"Wins: 🟢 {s.get('wins', 0)}   Losses: 🔴 {s.get('losses', 0)}",
+                f"Win rate:  {_pct(s.get('win_rate', 0))}",
+                DIV,
+                f"Total P&amp;L:  {'🟢 +' if pnl >= 0 else '🔴 '}${abs(pnl):.2f}",
+                f"Avg win:    🟢 ${s.get('avg_win', 0):.2f}",
+                f"Avg loss:   🔴 ${abs(s.get('avg_loss', 0)):.2f}",
+                f"Best:       🏆 ${s.get('best_trade', 0):.2f}",
+                f"Worst:      💀 ${s.get('worst_trade', 0):.2f}",
+                DIV,
+                f"Avg confidence: {_pct(s.get('avg_confidence', 0))}",
+            ]
+        else:
+            # No individual trade logs yet — show what we know from account
+            bal = acc.get("balance", 0)
+            start = acc.get("starting_balance", 0)
+            lines += [
+                f"Balance:   <b>${bal:.2f}</b>  (started ${start:.2f})",
+                f"Total P&amp;L: {'🟢 +' if pnl >= 0 else '🔴 '}${abs(pnl):.2f}",
+                f"Consec losses: {acc.get('consecutive_losses', 0)}",
+                DIV,
+                "<i>Detailed per-trade stats available once trades are logged.</i>",
+            ]
+        return "\n".join(lines)
 
     def _cost_text(self) -> str:
         total = self.storage.get_api_cost_total()
-        return f"💸 <b>API Cost (trading AI)</b>\n{DIV}\nTotal: <b>${total:.4f}</b>"
+        scan_count = len(self.storage.get_scans_today())
+        lines = ["💸 <b>API Cost</b>", DIV]
+        if total > 0:
+            lines.append(f"Total: <b>${total:.4f}</b>")
+        else:
+            lines.append("Plan: <b>Subscription</b> (no per-call cost)")
+        lines.append(f"Scans today: <b>{scan_count}</b>")
+        return "\n".join(lines)
 
     # ── Send methods (called by monitor.py) ───────────────────────────────
 
