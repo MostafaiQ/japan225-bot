@@ -613,7 +613,7 @@
       <div class="card">
         <div class="flex-between" style="margin-bottom:12px;">
           <div class="card-title" style="margin-bottom:0">Trading Journal</div>
-          <button class="btn btn-ghost btn-sm" onclick="loadHistory()">Refresh</button>
+          <button class="btn btn-ghost btn-sm" onclick="refreshHistory()">Refresh</button>
         </div>
         <!-- Summary stats bar -->
         <div id="histSummary" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;"></div>
@@ -1170,6 +1170,12 @@ let _histTrades = [];      // raw from API
 let _histFiltered = [];    // after filters
 let _histSortCol = 'date';
 let _histSortAsc = true;
+
+async function refreshHistory() {
+  if (!S.url) return;
+  try { await req('POST', '/api/history/clear-cache'); } catch(e) {}
+  loadHistory();
+}
 
 async function loadHistory() {
   if (!S.url) return;

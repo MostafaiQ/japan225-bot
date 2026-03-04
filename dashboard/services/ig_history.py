@@ -16,7 +16,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _cache = {"ts": 0, "data": None}
-CACHE_TTL = 300  # seconds — 5 min to avoid spamming IG API
+CACHE_TTL = 60  # seconds — 1 min (short enough to show new trades quickly)
 
 # Date cutoff: only show trades from this date onwards
 JOURNAL_CUTOFF = "2026-02-26T00:00:00"
