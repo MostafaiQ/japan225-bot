@@ -1,12 +1,14 @@
 """
 Fetch transaction + activity history from IG REST API.
 Merges with local DB trades to produce a complete journal with Auto/Manual flags.
-Caches results for 60s to avoid hammering the API.
+Reuses a single IG session (never logs out — avoids kicking user off IG web).
+Caches results for 5 min with a lock to prevent concurrent fetches.
 """
 import os
 import json
 import time
 import logging
+import threading
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -14,7 +16,14 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _cache = {"ts": 0, "data": None}
-CACHE_TTL = 60  # seconds
+CACHE_TTL = 300  # seconds — 5 min to avoid spamming IG API
+
+# Reuse IG session tokens across calls (avoid creating/destroying sessions)
+_ig_session = {"cst": None, "token": None, "ts": 0}
+_IG_SESSION_TTL = 3600  # 1 hour — IG sessions last ~6h
+
+# Prevent concurrent fetches (rapid refresh clicks)
+_fetch_lock = threading.Lock()
 
 # IG API endpoints
 _BASE = "https://api.ig.com/gateway/deal"
@@ -117,22 +126,22 @@ def _fetch_activities(cst, token, days=30):
     return []
 
 
-def _logout(cst, token):
-    """Delete the IG session to free the slot."""
-    base = _get_base()
-    api_key = os.getenv("IG_API_KEY", "")
-    headers = {
-        "Content-Type": "application/json; charset=UTF-8",
-        "Accept": "application/json; charset=UTF-8",
-        "X-IG-API-KEY": api_key,
-        "CST": cst,
-        "X-SECURITY-TOKEN": token,
-        "_method": "DELETE",
-    }
-    try:
-        requests.post(f"{base}/session", headers=headers, timeout=10)
-    except Exception:
-        pass
+def _get_or_create_session():
+    """Reuse cached IG session tokens. Only re-auth when expired or invalid."""
+    global _ig_session
+    now = time.time()
+    if _ig_session["cst"] and (now - _ig_session["ts"]) < _IG_SESSION_TTL:
+        return _ig_session["cst"], _ig_session["token"]
+    cst, token = _auth()
+    if cst:
+        _ig_session = {"cst": cst, "token": token, "ts": now}
+    return cst, token
+
+
+def _invalidate_session():
+    """Mark cached session as expired (e.g. after a 401)."""
+    global _ig_session
+    _ig_session = {"cst": None, "token": None, "ts": 0}
 
 
 def _build_activity_map(activities):
@@ -207,6 +216,28 @@ def fetch_full_journal(days=30):
     if _cache["data"] and (now - _cache["ts"]) < CACHE_TTL:
         return _cache["data"]
 
+    # Prevent concurrent fetches (rapid refresh clicks)
+    if not _fetch_lock.acquire(blocking=False):
+        # Another fetch is in progress — return stale cache or empty
+        if _cache["data"]:
+            return _cache["data"]
+        return {"trades": [], "account": {}, "source": "busy"}
+
+    try:
+        return _fetch_journal_locked(days)
+    finally:
+        _fetch_lock.release()
+
+
+def _fetch_journal_locked(days):
+    """Inner fetch — called under _fetch_lock."""
+    global _cache
+    now = time.time()
+
+    # Re-check cache under lock (another thread may have just populated it)
+    if _cache["data"] and (now - _cache["ts"]) < CACHE_TTL:
+        return _cache["data"]
+
     # Get DB trades for AI analysis data
     from dashboard.services.db_reader import get_trade_history, get_account_state
     db_trades = get_trade_history(200)
@@ -220,8 +251,8 @@ def fetch_full_journal(days=30):
             db_by_ref[short_ref] = t
             db_by_ref[did] = t
 
-    # Auth to IG
-    cst, token = _auth()
+    # Reuse cached IG session (never logout — avoids kicking user off IG web)
+    cst, token = _get_or_create_session()
     if not cst:
         # Fallback to DB-only trades — add missing fields for frontend
         acc = get_account_state()
@@ -246,11 +277,16 @@ def fetch_full_journal(days=30):
         _cache = {"ts": now, "data": result}
         return result
 
-    try:
-        transactions = _fetch_transactions(cst, token, days)
-        activities = _fetch_activities(cst, token, days)
-    finally:
-        _logout(cst, token)
+    transactions = _fetch_transactions(cst, token, days)
+    activities = _fetch_activities(cst, token, days)
+
+    # If both empty, session may have expired — retry once with fresh auth
+    if not transactions and not activities:
+        _invalidate_session()
+        cst, token = _get_or_create_session()
+        if cst:
+            transactions = _fetch_transactions(cst, token, days)
+            activities = _fetch_activities(cst, token, days)
 
     open_ch_map, close_ch_map, close_to_open = _build_activity_map(activities)
 
