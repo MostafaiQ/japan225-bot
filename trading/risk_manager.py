@@ -123,7 +123,7 @@ class RiskManager:
         
         # --- CHECK 4: Max Positions ---
         state = self.storage.get_position_state()
-        open_count = 1 if state.get("has_open_position") else 0
+        open_count = 1 if state.get("has_open") else 0
         checks["max_positions"] = {
             "pass": open_count < MAX_OPEN_POSITIONS,
             "detail": f"{open_count} open positions (max {MAX_OPEN_POSITIONS})",

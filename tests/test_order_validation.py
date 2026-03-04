@@ -18,7 +18,7 @@ def make_storage(has_position=False, consec_losses=0, last_loss_time=None,
                  daily_loss=0, weekly_loss=0, system_active=True):
     """Create a mock storage object returning safe defaults."""
     storage = MagicMock()
-    storage.get_position_state.return_value = {"has_open_position": has_position}
+    storage.get_position_state.return_value = {"has_open": has_position}
     storage.get_account_state.return_value = {
         "consecutive_losses": consec_losses,
         "last_loss_time": last_loss_time,

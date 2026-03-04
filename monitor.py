@@ -177,7 +177,7 @@ class TradingMonitor:
         data_dir = Path(__file__).parent / "storage" / "data"
         try:
             for pending in sorted(data_dir.glob("ai_pending_*.txt")):
-                age = time.time() - pending.stat().st_mtime
+                age = datetime.now().timestamp() - pending.stat().st_mtime
                 if age > 300:  # older than 5 minutes — stale
                     pending.unlink(missing_ok=True)
                     continue
@@ -1046,7 +1046,7 @@ class TradingMonitor:
                     "confidence": local_score,
                     "session": session["name"],
                     "reasoning": f"100% local confidence ({criteria_detail}). AI rejected.",
-                    "ai_reasoning": ai_reasoning[:300],
+                    "ai_reasoning": final_result.get("reasoning", "")[:300],
                     "force_open": True,
                     "timestamp": datetime.now().isoformat(),
                     "local_confidence": local_score,
@@ -1337,7 +1337,9 @@ class TradingMonitor:
         # Determine result (TP/SL best guess)
         tp = pos_state.get("limit_level")
         sl = pos_state.get("stop_level")
-        if tp and abs(last_price - tp) < abs(last_price - sl):
+        if tp and sl and abs(last_price - tp) < abs(last_price - sl):
+            result = "TP_HIT"
+        elif tp and not sl and abs(last_price - tp) < 30:
             result = "TP_HIT"
         elif sl and abs(last_price - sl) < 30:
             result = "SL_HIT"
@@ -1378,35 +1380,6 @@ class TradingMonitor:
         )
         logger.info(f"Position closed: {result} | P&L: {pnl_points:+.0f}pts (${pnl_dollars:+.2f})")
 
-    # ============================================================
-    # AUTO-EXECUTE TIMEOUT (confirmed setups — 2 min no response)
-    # ============================================================
-
-    async def _auto_execute_after_timeout(self, alert_data: dict, timeout_secs: int = 120):
-        """Wait timeout_secs, then auto-execute if alert is still pending (user didn't respond)."""
-        try:
-            await asyncio.sleep(timeout_secs)
-            pending = self.storage.get_pending_alert()
-            if not pending:
-                # User already confirmed or rejected — nothing to do
-                return
-            # Check it's the same alert (match timestamp)
-            if pending.get("timestamp") != alert_data.get("timestamp"):
-                return
-            logger.info(
-                f"Auto-executing trade after {timeout_secs}s timeout — user did not respond. "
-                f"{alert_data.get('direction')} @ {alert_data.get('entry')}"
-            )
-            await self.telegram.send_alert(
-                f"⏱ <b>Auto-executing</b> — no response after {timeout_secs // 60} min.\n"
-                f"{alert_data.get('direction')} @ {alert_data.get('entry'):.0f}"
-            )
-            self.storage.clear_pending_alert()
-            await self._on_trade_confirm(alert_data)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error(f"Auto-execute timeout error: {e}")
 
     # ============================================================
     # SCALP AUTO-EXECUTION (Opus-gated near-miss trades)

@@ -13,7 +13,7 @@ class MockStorage:
     """Minimal mock for storage dependency."""
 
     def __init__(self):
-        self.position_state = {"has_open_position": False}
+        self.position_state = {"has_open": False}
         self.account_state = {
             "system_active": True,
             "consecutive_losses": 0,
@@ -106,7 +106,7 @@ class TestRiskManagerValidation:
         assert result["checks"]["risk_reward"]["pass"] is False
 
     def test_open_position_rejected(self):
-        self.storage.position_state["has_open_position"] = True
+        self.storage.position_state["has_open"] = True
         result = self.rm.validate_trade(**self._base_trade())
         assert result["checks"]["max_positions"]["pass"] is False
 
