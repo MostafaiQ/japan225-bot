@@ -936,11 +936,10 @@ function renderPos(p) {
       <span>No active position</span></div>`;
     return;
   }
-  const pnl = p.unrealised_pnl ?? 0;
-  const pClass = pnl >= 0 ? 'c-long' : 'c-short';
-  const pSign  = pnl >= 0 ? '+' : '';
-  const size   = parseFloat(p.size ?? 0);
-  const pnlDollars = pnl * size;
+  const pnlPts = p.unrealised_pnl_pts ?? 0;
+  const pnlDollars = p.unrealised_pnl ?? 0;
+  const pClass = pnlPts >= 0 ? 'c-long' : 'c-short';
+  const pSign  = pnlPts >= 0 ? '+' : '';
   const dir    = p.direction === 'LONG'
     ? '<span class="badge b-long">▲ LONG</span>'
     : '<span class="badge b-short">▼ SHORT</span>';
@@ -953,7 +952,7 @@ function renderPos(p) {
     <div class="flex-between" style="margin-bottom:12px;">
       ${dir}
       <div style="text-align:right;">
-        <div class="pnl-big ${pClass}">${pSign}${pnl.toFixed(0)} pts</div>
+        <div class="pnl-big ${pClass}">${pSign}${pnlPts.toFixed(0)} pts</div>
         <div style="font-size:13px;opacity:0.7;margin-top:2px;" class="${pClass}">${pSign}$${Math.abs(pnlDollars).toFixed(2)}</div>
       </div>
     </div>

@@ -69,9 +69,18 @@ async def status():
     state = _read_state()
     position = db_reader.get_position()
 
-    # Enrich position with live price/pnl from state file
-    if position and state.get("current_price"):
-        cp = float(state["current_price"])
+    # Enrich position with live price/pnl from IG (not stale state file)
+    if position:
+        try:
+            from core.ig_client import ig
+            market = ig.get_market_info()
+            if market and "bid" in market:
+                cp = float(market["bid"])
+            else:
+                cp = float(state.get("current_price", position.get("entry_price", 0)))
+        except Exception:
+            cp = float(state.get("current_price", position.get("entry_price", 0)))
+
         ep = float(position.get("entry_price") or 0)
         lots = float(position.get("size") or 0)
         direction = position.get("direction", "LONG")

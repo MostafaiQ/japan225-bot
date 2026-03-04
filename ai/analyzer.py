@@ -20,6 +20,7 @@ import httpx
 
 from config.settings import (
     SONNET_MODEL, OPUS_MODEL, SPREAD_ESTIMATE,
+    MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT,
 )
 
 logger = logging.getLogger(__name__)
@@ -426,10 +427,17 @@ def build_scan_prompt(
         sec_conf = sec.get("confidence", "?")
         sec_passed = sec.get("passed_criteria", "?")
         sec_reason = sec.get("reasoning", "")[:200]
+        sec_threshold = MIN_CONFIDENCE_SHORT if sec_dir == "SHORT" else MIN_CONFIDENCE
+        sec_qualifies = isinstance(sec_conf, (int, float)) and sec_conf >= sec_threshold
+        sec_framing = (
+            f"  → INDEPENDENT CANDIDATE: meets {sec_threshold}% threshold — evaluate as a primary trade, not just a fallback.\n"
+            if sec_qualifies
+            else f"  → Below {sec_threshold}% threshold — context only, do not execute independently.\n"
+        )
         secondary_block = (
             f"\nSECONDARY SETUP: {sec_dir} | {sec_type} | Local: {sec_conf}% ({sec_passed}/12)\n"
             f"  {sec_reason}\n"
-            f"  → Consider this direction if primary doesn't work.\n"
+            f"{sec_framing}"
         )
 
     local_conf_block = ""
@@ -817,7 +825,7 @@ class AIAnalyzer:
 
         raw, tokens = self._run_claude(
             OPUS_MODEL, system_prompt, user_prompt,
-            timeout=90, use_opus_agent=False,
+            timeout=120, use_opus_agent=False, effort="high",
         )
 
         default = {
@@ -855,6 +863,118 @@ class AIAnalyzer:
             f"sl={result.get('sl_distance', 'N/A')}, tp={result.get('tp_distance', 'N/A')}, "
             f"rr={result.get('effective_rr', 'N/A')}, "
             f"reason={result.get('reasoning', '')[:100]}"
+        )
+        return result
+
+
+    def evaluate_open_position(
+        self,
+        direction: str,
+        entry: float,
+        current_price: float,
+        stop_loss: float,
+        take_profit: float,
+        phase: str,
+        time_in_trade_min: float,
+        recent_prices: list,
+        setup_type: str = "unknown",
+        lots: float = 1.0,
+    ) -> dict:
+        """
+        Opus-powered position evaluator. Runs every 2 minutes on open positions.
+        Replaces MILD/MODERATE adverse alerts with intelligent assessment.
+
+        Returns: {recommendation, confidence, adverse_risk, tp_probability, reasoning, tighten_sl_to}
+        recommendation: HOLD | CLOSE_NOW | TIGHTEN_SL
+        adverse_risk: NONE | LOW | MEDIUM | HIGH | CRITICAL
+        """
+        from config.settings import (
+            ADVERSE_MILD_PTS, ADVERSE_MODERATE_PTS, ADVERSE_SEVERE_PTS, CONTRACT_SIZE,
+        )
+
+        pnl_pts = (current_price - entry) if direction == "LONG" else (entry - current_price)
+        pnl_dollars = pnl_pts * lots * CONTRACT_SIZE
+        sl_dist_remaining = abs(current_price - stop_loss)
+        tp_dist_remaining = abs(take_profit - current_price)
+
+        # Worst adverse from recent price buffer
+        if recent_prices and len(recent_prices) > 1:
+            if direction == "LONG":
+                worst_price = min(recent_prices)
+                worst_adverse = max(0, entry - worst_price)
+            else:
+                worst_price = max(recent_prices)
+                worst_adverse = max(0, worst_price - entry)
+            price_trend = recent_prices[-1] - recent_prices[0]
+            trend_dir = "bullish" if price_trend > 0 else "bearish" if price_trend < 0 else "flat"
+            price_summary = (
+                f"  Range over last {len(recent_prices)} readings: {min(recent_prices):.0f}–{max(recent_prices):.0f}\n"
+                f"  Trend: {price_trend:+.0f}pts ({trend_dir})\n"
+                f"  Worst adverse from entry: {worst_adverse:.0f}pts\n"
+            )
+        else:
+            price_summary = "  No recent price history available.\n"
+            worst_adverse = 0
+
+        system_prompt = (
+            "You are monitoring an open Japan 225 Cash CFD position ($1/pt, ~7pt spread).\n"
+            "Give a cold, honest assessment. No bias toward holding — if setup is broken, say CLOSE_NOW.\n\n"
+            "RECOMMENDATIONS:\n"
+            "  HOLD: conditions still support the thesis. Price neutral or moving toward TP.\n"
+            "  CLOSE_NOW: setup materially invalidated. Price reversing, TP unlikely, risk growing.\n"
+            "    Only recommend CLOSE_NOW with confidence >= 60%.\n"
+            "  TIGHTEN_SL: position profitable, protect gains by moving SL closer.\n"
+            "    Specify tighten_sl_to = new distance from entry (e.g. 50 means SL 50pts from entry).\n\n"
+            "ADVERSE RISK LEVELS:\n"
+            "  NONE: price moving toward TP, no adverse pressure.\n"
+            "  LOW: minor pullback (<60pts), within normal noise.\n"
+            "  MEDIUM: meaningful adverse (60-120pts), watch closely.\n"
+            "  HIGH: serious adverse (120-175pts), TP probability declining.\n"
+            "  CRITICAL: within SL distance, immediate risk of loss.\n\n"
+            "PHASE CONTEXT:\n"
+            "  INITIAL: SL+TP set. Breakeven not yet locked.\n"
+            "  BREAKEVEN: SL at entry — protected from loss. Be more patient.\n"
+            "  RUNNER: Trailing stop active — only CLOSE_NOW on clear hard reversal.\n\n"
+            "EXTREME DAY WARNING: If intraday moves are violent (2000+pts range), snaps are fast.\n"
+            "OUTPUT: JSON only. No preamble."
+        )
+
+        user_prompt = (
+            f"POSITION:\n"
+            f"  Direction: {direction} | Setup: {setup_type} | Phase: {phase}\n"
+            f"  Entry: {entry:.0f} | Current: {current_price:.0f} | P&L: {pnl_pts:+.0f}pts (${pnl_dollars:+.2f})\n"
+            f"  SL: {stop_loss:.0f} ({sl_dist_remaining:.0f}pts away) | TP: {take_profit:.0f} ({tp_dist_remaining:.0f}pts away)\n"
+            f"  Time open: {time_in_trade_min:.0f}min | Lots: {lots}\n\n"
+            f"RECENT PRICE MOVEMENT ({len(recent_prices)} readings, 2s apart):\n"
+            f"{price_summary}\n"
+            f"ADVERSE THRESHOLDS:\n"
+            f"  MILD at {ADVERSE_MILD_PTS}pts adverse | MODERATE at {ADVERSE_MODERATE_PTS}pts | SEVERE at {ADVERSE_SEVERE_PTS}pts\n\n"
+            f"Assess the position. Output ONLY valid JSON:\n"
+            f'{{"recommendation": "HOLD", "confidence": 72, "adverse_risk": "LOW", '
+            f'"tp_probability": 0.65, "reasoning": "Price moving toward TP, momentum intact. '
+            f'SL well protected at {ADVERSE_SEVERE_PTS}pts.", "tighten_sl_to": null}}'
+        )
+
+        raw, tokens = self._run_claude(
+            OPUS_MODEL, system_prompt, user_prompt,
+            timeout=90, use_opus_agent=False, effort="high",
+        )
+
+        default = {
+            "recommendation": "HOLD",
+            "confidence": 50,
+            "adverse_risk": "LOW",
+            "tp_probability": 0.5,
+            "reasoning": "Opus position eval returned unparseable output — defaulting to HOLD.",
+            "tighten_sl_to": None,
+        }
+        result = _parse_json(raw, default)
+        result["_model"] = OPUS_MODEL
+
+        logger.info(
+            f"Opus position eval: {result.get('recommendation')} ({result.get('confidence')}%) | "
+            f"adverse={result.get('adverse_risk')} | tp_prob={result.get('tp_probability')} | "
+            f"{result.get('reasoning', '')[:120]}"
         )
         return result
 

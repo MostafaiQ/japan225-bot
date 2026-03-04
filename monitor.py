@@ -31,7 +31,7 @@ from pathlib import Path
 
 from config.settings import (
     LOG_FORMAT, LOG_LEVEL, TRADING_MODE, CONTRACT_SIZE,
-    MONITOR_INTERVAL_SECONDS, POSITION_CHECK_EVERY_N_CYCLES,
+    MONITOR_INTERVAL_SECONDS, POSITION_CHECK_EVERY_N_CYCLES, OPUS_POSITION_EVAL_EVERY_N,
     SCAN_INTERVAL_SECONDS, OFFHOURS_INTERVAL_SECONDS,
     AI_COOLDOWN_MINUTES, HAIKU_MIN_SCORE, PRICE_DRIFT_ABORT_PTS, SAFETY_CONSECUTIVE_EMPTY,
     calculate_margin, calculate_profit, SPREAD_ESTIMATE, DEFAULT_SL_DISTANCE,
@@ -98,6 +98,8 @@ class TradingMonitor:
         self._last_scan_detail: dict = {}  # dashboard: shows last scan outcome
         self._dashboard_force_scan: bool = False  # Set by poll task, consumed by _scanning_cycle
         self._last_opus_decision: dict | None = None  # Track Opus direction consistency
+        self._opus_pos_eval_counter = 0          # Counts monitoring cycles; eval fires every OPUS_POSITION_EVAL_EVERY_N
+        self._position_price_buffer: list = []   # Rolling price buffer for Opus position evaluator
         # Paths for dashboard integration
         self._state_path   = Path(__file__).parent / "storage" / "data" / "bot_state.json"
         self._overrides_path = Path(__file__).parent / "storage" / "data" / "dashboard_overrides.json"
@@ -121,6 +123,7 @@ class TradingMonitor:
         await self.telegram.initialize()
         self.telegram.on_trade_confirm = self._on_trade_confirm
         self.telegram.on_force_scan = self._on_force_scan
+        self.telegram.on_pos_check = self._on_pos_check
         await self.telegram.start_polling()
 
         # Write initial bot_state.json so dashboard has fresh data immediately
@@ -1318,7 +1321,8 @@ class TradingMonitor:
         )
 
         # --- Update state file for dashboard (every cycle) ---
-        self._write_state()
+        session = get_current_session()
+        self._write_state(session_name=session["name"])
 
         # --- Stale data check ---
         if self.momentum_tracker.is_stale():
@@ -1334,13 +1338,12 @@ class TradingMonitor:
         if milestone_msg:
             await self.telegram.send_position_update(pnl_points, phase, current_price)
 
-        # --- Adverse move alerts ---
+        # --- Adverse move alerts: SEVERE safety net (MILD/MODERATE replaced by Opus position evaluator) ---
         should_alert, tier, alert_msg = self.momentum_tracker.should_alert()
-        if should_alert:
+        if should_alert and tier == TIER_SEVERE:
             await self.telegram.send_adverse_alert(alert_msg, tier, deal_id)
-
             # SEVERE: auto-move SL to breakeven to protect
-            if tier == TIER_SEVERE and phase == ExitPhase.INITIAL:
+            if phase == ExitPhase.INITIAL:
                 logger.warning(f"SEVERE adverse move. Auto-protecting with breakeven SL.")
                 if logical_direction == "LONG":
                     be_stop = entry + BREAKEVEN_BUFFER
@@ -1354,6 +1357,67 @@ class TradingMonitor:
                     self.storage.update_position_levels(stop_level=be_stop)
                     self.storage.update_position_phase(deal_id, ExitPhase.BREAKEVEN)
                     logger.info(f"Auto-protected: SL moved to {be_stop:.0f}")
+
+        # --- Opus position evaluator (every 2 minutes) ---
+        self._position_price_buffer.append(current_price)
+        if len(self._position_price_buffer) > 30:  # keep last 30 readings = 60s
+            self._position_price_buffer.pop(0)
+
+        self._opus_pos_eval_counter += 1
+        if self._opus_pos_eval_counter >= OPUS_POSITION_EVAL_EVERY_N:
+            self._opus_pos_eval_counter = 0
+            sl_level = pos_state.get("stop_level") or 0
+            tp_level = pos_state.get("limit_level") or 0
+            setup_type = pos_state.get("setup_type", "unknown")
+            opened_at_str = pos_state.get("opened_at", "")
+            try:
+                opened_at = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
+                time_open_min = (datetime.now(timezone.utc) - opened_at).total_seconds() / 60
+            except Exception:
+                time_open_min = 0
+
+            eval_result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.analyzer.evaluate_open_position(
+                    direction=logical_direction,
+                    entry=entry,
+                    current_price=current_price,
+                    stop_loss=sl_level,
+                    take_profit=tp_level,
+                    phase=phase,
+                    time_in_trade_min=time_open_min,
+                    recent_prices=list(self._position_price_buffer),
+                    setup_type=setup_type,
+                    lots=pos_state.get("lots", 1.0),
+                ),
+            )
+
+            rec = eval_result.get("recommendation", "HOLD")
+            conf = eval_result.get("confidence", 0)
+
+            await self.telegram.send_position_eval(
+                eval_result=eval_result,
+                direction=logical_direction,
+                entry=entry,
+                current_price=current_price,
+                pnl_pts=pnl_points,
+                phase=phase,
+                deal_id=deal_id,
+            )
+
+            # Auto-close if Opus says CLOSE_NOW with high confidence
+            if rec == "CLOSE_NOW" and conf >= 70:
+                logger.warning(
+                    f"Opus position eval recommends CLOSE_NOW ({conf}%). Auto-closing."
+                )
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self.ig.close_position(
+                        deal_id=deal_id,
+                        direction=logical_direction,
+                        size=pos_state.get("lots", 1.0),
+                    )
+                )
 
         # --- 3-Phase exit strategy ---
         position_data = {
@@ -1851,6 +1915,58 @@ class TradingMonitor:
         """Triggered by /force command. Wakes the main loop immediately."""
         await self.telegram.send_alert("Force scan requested. Running next cycle immediately...")
         self._force_scan_event.set()
+
+    async def _on_pos_check(self):
+        """Triggered by /poscheck command. Runs Opus position eval immediately."""
+        pos_state = self.storage.get_position_state()
+        if not pos_state.get("has_open"):
+            await self.telegram.send_alert("ℹ️ No open position to evaluate.")
+            return
+        await self.telegram.send_alert("🔍 Running Opus position check…")
+        direction = pos_state.get("direction", "LONG")
+        logical_direction = "LONG" if direction == "BUY" else ("SHORT" if direction == "SELL" else direction)
+        entry = pos_state.get("entry_price", 0)
+        sl_level = pos_state.get("stop_level") or 0
+        tp_level = pos_state.get("limit_level") or 0
+        setup_type = pos_state.get("setup_type", "unknown")
+        opened_at_str = pos_state.get("opened_at", "")
+        try:
+            opened_at = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
+            time_open_min = (datetime.now(timezone.utc) - opened_at).total_seconds() / 60
+        except Exception:
+            time_open_min = 0
+        try:
+            current_price_data = self.ig.get_market_info(EPIC)
+            current_price = current_price_data.get("bid", entry) if isinstance(current_price_data, dict) else entry
+        except Exception:
+            current_price = entry
+        pnl_pts = (current_price - entry) if logical_direction == "LONG" else (entry - current_price)
+        phase = self.storage.get_position_phase(pos_state.get("deal_id", "")) or "initial"
+
+        eval_result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: self.analyzer.evaluate_open_position(
+                direction=logical_direction,
+                entry=entry,
+                current_price=current_price,
+                stop_loss=sl_level,
+                take_profit=tp_level,
+                phase=phase,
+                time_in_trade_min=time_open_min,
+                recent_prices=list(self._position_price_buffer),
+                setup_type=setup_type,
+                lots=pos_state.get("lots", 1.0),
+            ),
+        )
+        await self.telegram.send_position_eval(
+            eval_result=eval_result,
+            direction=logical_direction,
+            entry=entry,
+            current_price=current_price,
+            pnl_pts=pnl_pts,
+            phase=phase,
+            deal_id=pos_state.get("deal_id", ""),
+        )
 
     # ============================================================
     # SHUTDOWN
