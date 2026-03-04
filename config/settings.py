@@ -51,8 +51,8 @@ MARGIN_FACTOR = 0.005  # 0.5% Tier 1 (0-95 contracts)
 # ============================================
 MAX_MARGIN_PERCENT = 0.50  # Margin must NEVER exceed 50% of balance
 MAX_OPEN_POSITIONS = 1  # One trade at a time
-MAX_CONSECUTIVE_LOSSES = 2  # 2 losses = 4-hour cooldown
-COOLDOWN_HOURS = 4
+MAX_CONSECUTIVE_LOSSES = 2  # 2 losses = 1-hour cooldown
+COOLDOWN_HOURS = 1
 DAILY_LOSS_LIMIT_PERCENT = 1.0  # Effectively disabled — AI finds the setups, user manages risk
 WEEKLY_LOSS_LIMIT_PERCENT = 0.20  # 20% of balance
 MIN_CONFIDENCE = 70  # Hard floor - no trades below this
