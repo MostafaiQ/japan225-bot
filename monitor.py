@@ -829,11 +829,11 @@ class TradingMonitor:
             f"| Daily: {tf_daily.get('volume_signal')}({tf_daily.get('volume_ratio')})"
         )
 
-        # --- Determine if Opus should run speculatively in parallel ---
+        # --- Always run Opus scalp eval in parallel with Sonnet ---
         local_score = local_conf.get("score", 0)
-        # Use MIN_CONFIDENCE (70) not direction-specific threshold — Opus is bidirectional
-        # and may flip SHORT pre-screen to LONG scalp (or vice versa)
-        should_run_opus_parallel = local_score >= MIN_CONFIDENCE
+        # $0/call subscription — no reason to gate. Opus evaluates both directions
+        # independently and may find scalps Sonnet misses.
+        should_run_opus_parallel = True
 
         # --- Direct to Sonnet (+ optional Opus in parallel) ---
         logger.info(
@@ -939,16 +939,13 @@ class TradingMonitor:
             )
             self._last_scan_detail = {"outcome": "ai_rejected", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
 
-            # --- Near-miss → check parallel Opus result (already running) ---
-            # Opus was launched speculatively in parallel with Sonnet when local_score >= min_conf.
-            # If near-miss conditions met, await the already-running Opus result.
-            ai_reasoning = final_result.get("reasoning", "")
-            is_quick_reject = "QUICK REJECT" in ai_reasoning.upper()
-
-            if local_score >= MIN_CONFIDENCE and not is_quick_reject and opus_future:
+            # --- Check parallel Opus scalp result (always running) ---
+            # Opus evaluates both directions independently. Even if Sonnet quick-rejected,
+            # Opus may find a scalp in the opposite direction.
+            if opus_future:
                 logger.info(
-                    f"Near-miss: local {local_score}% >= {min_conf}%, "
-                    f"AI {final_confidence}%. Checking parallel Opus result..."
+                    f"Sonnet rejected (conf {final_confidence}%). "
+                    f"Checking parallel Opus scalp result..."
                 )
                 try:
                     scalp_result = await opus_future
