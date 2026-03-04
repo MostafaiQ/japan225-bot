@@ -56,7 +56,9 @@ SETUPS — SHORT (min confidence 75% — BOJ risk; counter-trend allowed if stro
   high_volume_distribution: price ±200pts BB_upper OR swept_high | RSI 55-75 | vol ratio ≥1.4x | bearish candle/wick
   multi_tf_bearish:        rsi_15m<48 AND rsi_4h<48 AND daily bearish AND below EMA50 AND below VWAP AND HA bearish (≥4/5 factors)
 
-RULES: RR ≥ 1.5 after spread(7pts). No trade: HIGH event <60min. SL=150 TP=400.
+RULES: No trade: HIGH event <60min. SL=150 TP=400.
+R:R CHECK (MANDATORY): Before approving ANY trade, compute effective R:R = (TP_dist - 7) / (SL_dist + 7).
+  Must be >= 1.5. If not, REJECT. Report the R:R in your reasoning. SL/TP must come from structure (BB, pivots, fibs, EMA, PDH/PDL).
 VOLUME: HIGH(>1.5x)=conviction. LOW(<0.7x)=caution, weigh alongside other criteria. Not auto-reject.
 SWING LEVELS: dist_swing_hi <200pts → TP obstacle, reduce confidence.
               dist_swing_lo <100pts → SL anchor, good for LONG.
@@ -555,6 +557,7 @@ class AIAnalyzer:
             f'"confidence_breakdown": {{"daily_trend": false, "entry_at_tech_level": false, '
             f'"rsi_15m_in_range": false, "tp_viable": false, "price_structure": false, '
             f'"macro_aligned": false, "no_event_1hr": false, "no_friday_monthend": false}}, '
+            f'"effective_rr": 0.0, '
             f'"key_levels": {{"support": [], "resistance": []}}, '
             f'"trend_observation": "...", "warnings": [], "edge_factors": []}}'
         )
