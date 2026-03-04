@@ -449,16 +449,21 @@ def _fetch_journal_locked(days):
     cutoff = JOURNAL_CUTOFF
     trades = [t for t in trades if (t.get("opened_at") or "") >= cutoff]
 
-    # Compute running balance (work backwards from current balance)
-    current_bal = acc.get("balance", 0)
-    for t in reversed(trades):
-        t["balance_after"] = round(current_bal, 2)
-        current_bal -= t["pnl"]
-        t["balance_before"] = round(current_bal, 2)
+    # Compute running balance (forward from earliest balance)
+    # Start with current balance and subtract all PnL to get starting balance
+    total_pnl_filtered = sum(t["pnl"] for t in trades)
+    starting_bal = acc.get("balance", 0) - total_pnl_filtered
 
-    # The earliest balance_before should approximate starting balance
-    starting_balance = trades[0]["balance_before"] if trades else acc.get("starting_balance", 0)
+    current_bal = starting_bal
+    for t in trades:  # chronological order (oldest first)
+        t["balance_before"] = round(current_bal, 2)
+        current_bal += t["pnl"]
+        t["balance_after"] = round(current_bal, 2)
+
+    # Compute total PnL for this period
     total_pnl = sum(t["pnl"] for t in trades)
+    # Starting balance is the balance_before of the first trade
+    starting_balance = trades[0]["balance_before"] if trades else acc.get("starting_balance", 0)
 
     # Filter: only Japan 225 trades for win rate
     j225 = [t for t in trades if "Japan 225" in t.get("instrument", "")]
