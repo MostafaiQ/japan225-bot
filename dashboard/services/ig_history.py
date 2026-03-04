@@ -331,10 +331,21 @@ def _fetch_journal_locked(days):
             elif result_str:
                 notes_parts.append(result_str.replace("_", " "))
         else:
-            if "Japan 225" not in instrument:
-                notes_parts.append("Manual (non-bot)")
+            # Manual trade — build meaningful note from available data
+            is_j225 = "Japan 225" in instrument
+            dir_label = "Long" if direction == "LONG" else "Short"
+            result_label = "win" if pnl > 0 else ("loss" if pnl < 0 else "breakeven")
+            # How was it closed?
+            if close_ch == "SYSTEM":
+                close_label = "SL/TP hit"
+            elif close_ch in ("WEB", "MOBILE", "PUBLIC_FIX_API"):
+                close_label = "manually closed"
             else:
-                notes_parts.append("Manual")
+                close_label = "closed"
+            if is_j225:
+                notes_parts.append(f"Manual {dir_label.lower()} | {close_label} | {result_label}")
+            else:
+                notes_parts.append(f"Manual {dir_label.lower()} on {instrument.split('(')[0].strip()} | {close_label}")
 
         entry = float(txn.get("openLevel", 0))
         exit_p = float(txn.get("closeLevel", 0))

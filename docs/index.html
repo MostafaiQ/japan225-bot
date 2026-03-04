@@ -1323,7 +1323,7 @@ function renderHistTable(trades) {
       <td style="font-weight:600;font-size:12px;">${t.balance_after != null ? '$' + t.balance_after.toFixed(2) : '—'}</td>
       <td style="font-size:11px;color:var(--text-muted);">${esc(t.duration || '—')}</td>
       <td>${srcBadge(t.opened_by, t.closed_by)}</td>
-      <td style="font-size:11px;max-width:200px;color:var(--text-muted);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${esc(t.notes||'')}">${esc(t.notes || '—')}</td>
+      <td style="font-size:11px;max-width:220px;color:var(--text-muted);line-height:1.5;white-space:normal;word-break:break-word;">${esc(t.notes || '—')}</td>
     </tr>`;
   }).join('');
 }
