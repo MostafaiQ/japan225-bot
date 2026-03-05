@@ -40,6 +40,7 @@ from config.settings import (
     MINUTE_5_CANDLES, DISPLAY_TZ, display_now,
     EXTREME_DAY_RANGE_PTS, MOMENTUM_SCAN_BYPASS_SIGNALS,
     TOKYO_FORCED_LOTS, TOKYO_MAX_CONSECUTIVE_LOSSES,
+    CONTRADICTORY_SIGNAL_MIN_SCORE, CONTRADICTORY_SIGNAL_MAX_GAP,
 )
 from core.ig_client import IGClient, POSITIONS_API_ERROR
 from core.indicators import analyze_timeframe, detect_setup
@@ -821,6 +822,24 @@ class TradingMonitor:
             )
             logger.info(f"Local confidence SHORT: {conf_short['score']}%")
 
+        # --- Contradictory signal gate ---
+        # If BOTH directions score high with tiny gap → market is ambiguous, no real edge.
+        # e.g. LONG 94% + SHORT 94% means indicators are firing equally for both = skip.
+        if conf_long and conf_short:
+            s_long = conf_long["score"]
+            s_short = conf_short["score"]
+            if (s_long >= CONTRADICTORY_SIGNAL_MIN_SCORE
+                    and s_short >= CONTRADICTORY_SIGNAL_MIN_SCORE
+                    and abs(s_long - s_short) <= CONTRADICTORY_SIGNAL_MAX_GAP):
+                logger.info(
+                    f"Contradictory signals: LONG {s_long}% vs SHORT {s_short}% "
+                    f"(gap={abs(s_long-s_short)}pts ≤ {CONTRADICTORY_SIGNAL_MAX_GAP}). "
+                    f"No edge — skipping."
+                )
+                self._last_scan_detail = {"outcome": "contradictory_signals", "direction": "NONE",
+                                          "confidence": max(s_long, s_short), "price": current_price}
+                return SCAN_INTERVAL_SECONDS
+
         # --- Pick primary direction based on confidence ---
         # Rules:
         #   - If only one direction found: that's primary, no secondary
@@ -1187,6 +1206,11 @@ class TradingMonitor:
 
         sl_distance = abs(entry - sl)
         lots = self.risk.get_safe_lot_size(balance, current_price, sl_distance=sl_distance)
+        # Apply Tokyo lot cap here so Telegram notification shows correct size
+        _is_tokyo_scan = get_current_session()["name"] == "tokyo"
+        if _is_tokyo_scan and lots > TOKYO_FORCED_LOTS:
+            logger.info(f"Tokyo mode: capping lots {lots}→{TOKYO_FORCED_LOTS}")
+            lots = TOKYO_FORCED_LOTS
         logger.info(f"Lot size: {lots} (balance=${balance:.2f}, SL={sl_distance:.0f}pts)")
 
         validation = self.risk.validate_trade(

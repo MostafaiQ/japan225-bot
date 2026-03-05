@@ -189,6 +189,12 @@ TOKYO_MAX_CONSECUTIVE_LOSSES = 5   # Higher loss tolerance before cooldown (each
 ATR_PERIOD = 14                    # ATR(14) lookback — require this many candles before any entry
 
 # ============================================
+# CONTRADICTORY SIGNAL GATE
+# ============================================
+CONTRADICTORY_SIGNAL_MIN_SCORE = 80   # Both directions must be >= this to be considered contradictory
+CONTRADICTORY_SIGNAL_MAX_GAP = 5      # Max gap between LONG/SHORT scores to call it contradictory (no edge)
+
+# ============================================
 # COMPOUND PLAN
 # ============================================
 def get_lot_size(balance: float, price: float = 59500) -> float:
