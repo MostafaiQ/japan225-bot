@@ -1026,12 +1026,14 @@ class TradingMonitor:
             self._last_scan_detail = {"outcome": "ai_rejected", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
 
             # --- Opus evaluates OPPOSITE direction as swing trade ---
-            # Gate: opposite direction must have a detected setup AND local conf >= 60%,
-            # and Sonnet must have seen something real (conf >= 30%).
-            if final_confidence < 30:
+            # Gate: Sonnet must have < 50% confidence in the primary direction.
+            # If Sonnet scored >= 50% it had real conviction in the primary — Opus
+            # flipping to the opposite would be contradictory. Below 50% means
+            # Sonnet had no real setup, so the opposite direction is fair game.
+            if final_confidence >= 50:
                 logger.info(
-                    f"Sonnet quick-reject (conf {final_confidence}% < 30%). "
-                    f"Skipping Opus opposite eval — setup too weak."
+                    f"Sonnet partial conviction (conf {final_confidence}% >= 50%). "
+                    f"Skipping Opus opposite eval — Sonnet leaning primary direction."
                 )
             else:
                 _opposite_dir = "SHORT" if direction == "LONG" else "LONG"
