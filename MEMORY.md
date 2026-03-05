@@ -91,7 +91,7 @@ OVERSOLD_SHORT_BLOCK_RSI_4H = 32  OVERBOUGHT_LONG_BLOCK_RSI_4H = 68
 DEFAULT_SL_DISTANCE = 150      DEFAULT_TP_DISTANCE = 400      MIN_RR_RATIO = 1.5
 BREAKEVEN_TRIGGER = 150        BREAKEVEN_BUFFER = 10          TRAILING_STOP_DISTANCE = 150
 SCAN_INTERVAL_SECONDS = 300    MONITOR_INTERVAL_SECONDS = 2   OFFHOURS_INTERVAL_SECONDS = 1800
-POSITION_CHECK_EVERY_N_CYCLES = 15  # 15 × 2s = 30s position existence check; position cycle REPLACES price cycle = exactly 30 calls/min
+POSITION_CHECK_EVERY_N_CYCLES = 5   # 5 × 2s = 10s position existence check; 6 calls/min to positions endpoint
 ADVERSE_LOOKBACK_READINGS = 150     # 150 × 2s = 5-minute adverse window
 AI_COOLDOWN_MINUTES = 15       PRICE_DRIFT_ABORT_PTS = 20     SAFETY_CONSECUTIVE_EMPTY = 2
 HAIKU_MIN_SCORE = 60  # requires 5/12 criteria (5/12=59 < 60; 6/12=65≥60)
@@ -160,7 +160,61 @@ Test cases to add (not yet written):
 - analyzer.py: **Warning severity rule** — 4+ warnings → <70%, 6+ warnings → <60%. Prevents high confidence with many self-warnings.
 - monitor.py: **Extreme day logging** — logs warning when intraday range > 1000pts.
 - monitor.py: **indicators_snapshot wired** to both validate_trade() calls (Sonnet pipeline + opposite-direction eval).
-- Tests: 395/395 passing (2026-03-05).
+- Tests: 437/437 passing (2026-03-05 bug-fix session).
+
+## Session Notes (2026-03-05 #5) — Confirmed bug fixes (12 bugs)
+- exit_manager.py: **BUG-008** — `except ValueError` → `except (ValueError, TypeError)` + TZ stripping. Startup recovery stores TZ-aware `opened_at`; old code would crash unhandled.
+- monitor.py: **BUG-022** — Force-open path now applies Tokyo lot cap before building notification. Fixes "Manual FORCE-OPEN: ... lots=0.03" showing uncapped lots in Tokyo mode.
+- indicators.py: **BUG-002** — `analyze_timeframe()` now stores `candlestick_patterns` (plural list) alongside singular keys. `indicators_snapshot` in `detect_setup()` now includes `candlestick_patterns`. Bullish/bearish pattern detection in setup logic now works.
+- monitor.py: **BUG-016** — `milestone_alert()` msg now sent via `send_alert(milestone_msg)` (was discarded and wrong generic call made).
+- confidence.py: **BUG-017** — C3 SHORT now has `_momentum_short_setup` branch: RSI 30-60 accepted (was fixed 55-75). Consistent with C4/C5/C10/C11/C12.
+- indicators.py: **BUG-020** — `result["vwap"]` now overridden with `anchored_vwap_daily` when available (session-accurate, not multi-day cumulative). `above_vwap` updated accordingly.
+- MEMORY.md + settings.digest.md: **BUG-005** — `POSITION_CHECK_EVERY_N_CYCLES` corrected to `5` (was `15` in docs).
+- confidence.py: **BUG-006** — C10 and C11 default to `False` when data unavailable (was `True`). Conservative: missing API data no longer inflates confidence.
+- monitor.py: **BUG-015** — Opus opposite-direction rr log now uses `rr_computed` (local calc). Eliminated silent overwrite with `opus_result.get("effective_rr")` before log.
+- risk_manager.py: **BUG-014** — Month-end check aligned to trading-day counting (was calendar days). Now consistent with `session.py`.
+- session.py: **BUG-010** — Friday blackout end boundary changed `<= blackout_end` → `< blackout_end`. 16:00 UTC is now NOT blocked (consistent with all other session checks).
+- dashboard/services/ig_history.py: **BUG-007** — Module docstring corrected: "1 min" cache TTL (was "5 min").
+- tests/test_bug_fixes.py: **NEW** — 29 tests for all 6 code-level bug fixes.
+- tests/test_confidence.py: Updated 2 tests for new C10/C11 conservative-default behaviour.
+
+## Session Notes (2026-03-05 #4) — AI prompt engineering (Wyckoff + SMC + VP + token optimization)
+- analyzer.py: **build_system_prompt() rewritten** — 14,568 chars → 9,690 chars (-34% / ~1,220 tokens saved).
+  Verbose per-setup rule blocks condensed into compact tables. New framework sections added:
+  - WYCKOFF PHASE DETECTION: Accumulation/Markup/Distribution/Markdown/Coil with trade bias per phase.
+    Spring (swept_low+recovery) = strong LONG. UpThrust (swept_high+fail) = strong SHORT.
+    Coil (BB narrow + HA~0): lower bar for band-edge MR; pre-breakout pre-positioning from VP edge.
+  - VOLUME PROFILE USAGE: POC=equilibrium, VAH from below=resistance/SHORT, VAL from above=support/LONG.
+    Inside VA = slow mean-reversion. Outside VA = rejection vs acceptance. LVN = fast movement.
+    VP edge at slow-day band extremes → lower confidence threshold by 5pts.
+  - SMC CONCEPTS: Order Block (last candle before impulse = entry zone). FVG = soft S/R.
+    Sweeps = liquidity grabs. BOS = continuation, CHoCH = reversal. Sweep+OB+FVG = highest conviction.
+    SMC + Wyckoff: Spring = sweep(eq_lows)+bullish_FVG+demand_OB. UT = sweep(eq_highs)+bearish_FVG+supply_OB.
+- analyzer.py: **build_scan_prompt() updated**:
+  - WYCKOFF/SMC CONTEXT block pre-computed from live 15M/4H indicators and injected into every scan prompt.
+    Fields: Phase hint | Bias | HA streaks (15M + 4H) | Sweep status | VP position | BB width with COIL tag.
+    Phase heuristic: HA≥3+>VWAP+>EMA50=MARKUP. HA≤-3+<VWAP+<EMA50=MARKDOWN. swept_low=Spring. swept_high=UT. BBW<200+|HA|≤1=COIL.
+    VP position: AT POC / INSIDE VA (above/below POC) / ABOVE VAH / BELOW VAL.
+  - Role block expanded from 5-step to 7-step: Wyckoff phase → VP context → SMC → Structure → Quality → Risk/Edge → Devil's advocate.
+    Step 7 has SLOW DAY CHECK: coil detected → lower bar for band-edge MR, pre-position for breakout.
+- Tests: 408/408 passing.
+
+## Session Notes (2026-03-05 #3) — telegram_bot.py bug fixes
+- Bug 1 FIXED: `send_position_eval` inserted raw Opus `reasoning` into HTML without `_html.escape()`. Any `<`,`>`,`&` in AI text caused HTML parse failure and silent message loss.
+- Bug 2 FIXED: `send_position_eval` showed CLOSE_NOW buttons at `conf >= 60`, but monitor.py auto-closes at `>= 70`. Both now aligned at `>= 70`.
+- Bug 3 FIXED: `send_force_open_alert` had no plain-text fallback. On HTML failure, user never saw the alert. Added same fallback pattern as `send_trade_alert`.
+- Bug 4 FIXED: `_journal_text()` showed only entry/exit/PnL. Now shows SL, TP, calculated R:R, confidence, duration, session.
+- Bug 5 FIXED: No chat ID auth on any command/message handler. Added `_auth()` wrapper on all CommandHandlers and `_is_authorized()` guard on `_handle_callback` + `_handle_text`.
+- Tests: 408/408 passing.
+
+## Session Notes (2026-03-05 #2) — journal corruption fixes
+- ig_history.py: **Double replace no-op** fixed — `did.replace("DIAAAAQ", "", 1)` (was two chained replaces with no effect after first).
+- ig_history.py: **Timestamp fallback match** added — when ref-based DB lookup fails (no close activity or format mismatch), falls back to matching by `openDateUtc ± 60s + same direction`. Fixes missing SL/TP/notes for most trades.
+- ig_history.py: **opened_by/closed_by inference** fixed — when `open_ch`/`close_ch` is empty but DB match found, infers "Auto"/"System" instead of "Manual". Bot trades no longer labeled "Manual".
+- ig_history.py: **`_sync_trades_to_db` rowcount** fixed — was using `conn.total_changes` (cumulative, wrong); now uses `cursor.rowcount` per UPDATE.
+- ig_history.py: **dur_str "—" handled** — if DB returns "—" placeholder, recomputes duration from IG timestamps instead of using "—" in notes.
+- ig_history.py: **`_ts_fallback_match` loop mutation** fixed — `txn_ts` was mutated inside loop via `.replace(tzinfo=...)`; now uses local `cmp_txn` variable.
+- Tests: 408/408 passing (2026-03-05).
 
 ## Session Notes (2026-03-05) — major context enrichment
 - Storage.data_dir crash fix (save_opus_decision/get_recent_opus_decision used self.data_dir but __init__ never set it).

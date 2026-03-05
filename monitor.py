@@ -453,6 +453,10 @@ class TradingMonitor:
                 sl = float(data.get("sl", 0))
                 sl_dist = abs(entry - sl) if sl else DEFAULT_SL_DISTANCE
                 data["lots"] = self.risk.get_safe_lot_size(balance, entry, sl_distance=sl_dist)
+                # Apply Tokyo lot cap so notification shows correct size
+                if get_current_session()["name"] == "tokyo" and data["lots"] > TOKYO_FORCED_LOTS:
+                    logger.info(f"Tokyo mode: capping force-open lots {data['lots']}→{TOKYO_FORCED_LOTS}")
+                    data["lots"] = TOKYO_FORCED_LOTS
             else:
                 data["lots"] = 0.01
 
@@ -1174,7 +1178,7 @@ class TradingMonitor:
                                             reward_pts = abs(tp - entry)
                                             effective_risk = risk_pts + SPREAD_ESTIMATE
                                             effective_reward = reward_pts - SPREAD_ESTIMATE
-                                            rr = effective_reward / effective_risk if effective_risk > 0 else 0
+                                            rr_computed = effective_reward / effective_risk if effective_risk > 0 else 0
 
                                             opus_alert = {
                                                 "direction": _opposite_dir,
@@ -1183,7 +1187,7 @@ class TradingMonitor:
                                                 "tp": tp,
                                                 "lots": lots,
                                                 "confidence": opus_conf,
-                                                "rr_ratio": rr,
+                                                "rr_ratio": rr_computed,
                                                 "margin": calculate_margin(lots, entry),
                                                 "free_margin": balance - calculate_margin(lots, entry),
                                                 "dollar_risk": calculate_profit(lots, risk_pts),
@@ -1199,11 +1203,10 @@ class TradingMonitor:
                                                 "is_scalp": False,
                                             }
 
-                                            rr = opus_result.get("effective_rr", 0)
                                             _opus_short = opus_result.get("reasoning_short") or opus_result.get("reasoning", "")[:400]
                                             logger.info(
                                                 f"Opus EXECUTING {_opposite_dir} @ {entry:.0f} | "
-                                                f"SL={sl:.0f} TP={tp:.0f} RR={rr:.1f} conf={opus_conf}%"
+                                                f"SL={sl:.0f} TP={tp:.0f} RR={rr_computed:.1f} conf={opus_conf}%"
                                             )
                                             logger.info(f"Opus reasoning: {_opus_short}")
                                             await self.telegram.send_trade_alert(opus_alert)
@@ -1492,7 +1495,7 @@ class TradingMonitor:
         # --- Milestone alerts ---
         milestone_msg = self.momentum_tracker.milestone_alert()
         if milestone_msg:
-            await self.telegram.send_position_update(pnl_points, phase, current_price)
+            await self.telegram.send_alert(milestone_msg)
 
         # --- Adverse move alerts: SEVERE safety net (MILD/MODERATE replaced by Opus position evaluator) ---
         should_alert, tier, alert_msg = self.momentum_tracker.should_alert()

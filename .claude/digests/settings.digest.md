@@ -44,7 +44,7 @@ AI_MAX_TOKENS=2000  AI_TEMPERATURE=0.1
 
 ## Monitor timing
 MONITOR_INTERVAL_SECONDS=2   SCAN_INTERVAL_SECONDS=300  OFFHOURS_INTERVAL_SECONDS=1800
-POSITION_CHECK_EVERY_N_CYCLES=15  # 15 × 2s = 30s position check (2 calls/min to positions endpoint)
+POSITION_CHECK_EVERY_N_CYCLES=5   # 5 × 2s = 10s position check (6 calls/min to positions endpoint)
 AI_COOLDOWN_MINUTES=15
 HAIKU_MIN_SCORE=60      # Local confidence floor before AI (legacy name). Effective floor already 50 (C7+C8).
                         # Requires ≥1 technical criterion beyond C7/C8. Scores discrete: 30,40,50,60,...

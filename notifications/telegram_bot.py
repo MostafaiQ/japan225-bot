@@ -136,6 +136,14 @@ class TelegramBot:
         self.on_force_scan: Optional[Callable] = None
         self.on_pos_check: Optional[Callable] = None
 
+    def _auth(self, fn):
+        """Wrap a command handler to reject unauthorized senders silently."""
+        async def _wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not self._is_authorized(update):
+                return
+            return await fn(update, context)
+        return _wrapper
+
     async def initialize(self):
         self.app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
@@ -158,7 +166,7 @@ class TelegramBot:
             ("kill",    self._cmd_kill),
             ("chat",    self._cmd_chat),
         ]:
-            self.app.add_handler(CommandHandler(cmd, fn))
+            self.app.add_handler(CommandHandler(cmd, self._auth(fn)))
 
         self.app.add_handler(CallbackQueryHandler(self._handle_callback))
         # Handles reply-keyboard taps and unknown text
@@ -277,18 +285,40 @@ class TelegramBot:
             return None
         lines = ["📒 <b>Last 5 Trades</b>", DIV]
         for t in trades:
-            pnl  = t.get("pnl") or 0
-            sign = "+" if pnl > 0 else ""
-            icon = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
-            entry = t.get("entry_price")
+            pnl    = t.get("pnl") or 0
+            sign   = "+" if pnl > 0 else ""
+            icon   = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
+            entry  = t.get("entry_price")
             exit_p = t.get("exit_price")
-            setup = (t.get("setup_type") or "—")[:20]
+            sl     = t.get("stop_loss")
+            tp     = t.get("take_profit")
+            conf   = t.get("confidence")
+            dur    = t.get("duration_minutes")
+            session = (t.get("session") or "—")[:3].upper()
+            setup  = (t.get("setup_type") or "—")[:22]
             entry_str = f"{float(entry):,.0f}" if entry else "—"
-            exit_str = f"{float(exit_p):,.0f}" if exit_p else "open"
+            exit_str  = f"{float(exit_p):,.0f}" if exit_p else "open"
+            sl_str    = f"{float(sl):,.0f}" if sl else "—"
+            tp_str    = f"{float(tp):,.0f}" if tp else "—"
+            # Compute R:R from levels when available
+            rr_str = "—"
+            if entry and sl and tp:
+                try:
+                    sl_dist = abs(float(entry) - float(sl))
+                    tp_dist = abs(float(tp) - float(entry))
+                    if sl_dist > 0:
+                        rr_str = f"1:{tp_dist / sl_dist:.1f}"
+                except Exception:
+                    pass
+            dur_str  = f"{dur}m" if dur else "—"
+            conf_str = f"{conf}%" if conf else "—"
             lines.append(
-                f"{icon} #{t.get('trade_number')}  {t.get('direction')}  "
-                f"<code>{entry_str}→{exit_str}</code>\n"
-                f"    <b>{sign}${pnl:.2f}</b>  {t.get('result', '—')}  <i>{setup}</i>"
+                f"{icon} <b>#{t.get('trade_number')}</b>  {t.get('direction')}  "
+                f"{session}  <i>{setup}</i>\n"
+                f"    Entry: <code>{entry_str}</code>  Exit: <code>{exit_str}</code>\n"
+                f"    SL: <code>{sl_str}</code>  TP: <code>{tp_str}</code>  R:R: <b>{rr_str}</b>\n"
+                f"    <b>{sign}${pnl:.2f}</b>  {t.get('result', '—')}  "
+                f"Conf: {conf_str}  Dur: {dur_str}"
             )
         return "\n".join(lines)
 
@@ -507,8 +537,8 @@ class TelegramBot:
             InlineKeyboardButton("🔓 Force Open", callback_data="force_open"),
             InlineKeyboardButton("❌ Skip",       callback_data="reject_force"),
         ]])
+        self.storage.set_pending_alert(alert_data)
         try:
-            self.storage.set_pending_alert(alert_data)
             await self.app.bot.send_message(
                 chat_id=TELEGRAM_CHAT_ID,
                 text=text,
@@ -517,7 +547,18 @@ class TelegramBot:
             )
             logger.info(f"Force open alert sent: {direction} 100% local, AI rejected")
         except Exception as e:
-            logger.error(f"send_force_open_alert failed: {e}")
+            logger.warning(f"HTML force-open alert failed ({e}), retrying as plain text")
+            import re as _re
+            plain = _re.sub(r"<[^>]+>", "", text)
+            try:
+                await self.app.bot.send_message(
+                    chat_id=TELEGRAM_CHAT_ID,
+                    text=plain,
+                    reply_markup=keyboard,
+                )
+                logger.info("Force open alert sent (plain text fallback)")
+            except Exception as e2:
+                logger.error(f"send_force_open_alert failed completely: {e2}")
 
     async def send_position_update(self, pnl_points: float, phase: str, current_price: float):
         text = "\n".join([
@@ -574,10 +615,10 @@ class TelegramBot:
             f"Phase: <b>{phase}</b>",
             f"{rec_emoji} <b>{rec}</b> ({conf}%)  |  {adverse_emoji} Adverse: <b>{adverse}</b>  |  TP prob: {tp_prob:.0%}",
             DIV,
-            f"{reasoning}",
+            _html.escape(reasoning),
         ])
 
-        if rec == "CLOSE_NOW" and conf >= 60:
+        if rec == "CLOSE_NOW" and conf >= 70:
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔴 Close now", callback_data=f"close_position:{deal_id}"),
                 InlineKeyboardButton("⏳ Hold", callback_data="hold_position"),
@@ -594,10 +635,22 @@ class TelegramBot:
                 logger.error(f"send_position_eval failed: {e}")
         await self.send_alert(text)
 
+    # ── Chat-ID guard ──────────────────────────────────────────────────────
+
+    def _is_authorized(self, update: Update) -> bool:
+        """Return True only if the update comes from the configured chat."""
+        try:
+            cid = str(update.effective_chat.id)
+        except Exception:
+            return False
+        return cid == str(TELEGRAM_CHAT_ID)
+
     # ── Reply-keyboard text handler ────────────────────────────────────────
 
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Route persistent keyboard taps; forward unknown text to Claude chat."""
+        if not self._is_authorized(update):
+            return
         text = (update.message.text or "").strip()
         cb = _KB_MAP.get(text)
         if cb == "__menu__":
@@ -948,6 +1001,8 @@ class TelegramBot:
     # ── Callback handler ───────────────────────────────────────────────────
 
     async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update):
+            return
         query = update.callback_query
         try:
             await query.answer()

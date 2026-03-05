@@ -33,179 +33,108 @@ CONTEXT_DIR   = PROJECT_ROOT / "storage" / "context"
 # ─── Prompt helpers (unchanged from original) ─────────────────────────────────
 
 def build_system_prompt() -> str:
-    """Compact reference-card system prompt. ~230 tokens."""
+    """Enhanced system prompt: Wyckoff + SMC + VP + setup quality for slow days."""
     return """Japan 225 Cash CFD analyst. LONG+SHORT bidirectional. No directional bias.
 
-SETUPS — LONG MEAN-REVERSION (daily trend in reasoning; counter-trend allowed if strong confluence):
-  bb_mid_bounce:     price ±150pts BB_mid | RSI15M 30-65 | bounce confirmed (price>prev_close OR oversold reversal signals)
-  bb_lower_bounce:   price ±150pts BB_lower | RSI15M 20-40 | lower_wick ≥15pts | EMA50 below OK
-  oversold_reversal: RSI15M <30 | daily bullish | reversal confirmation (wick/HA/candle/sweep)
-    → Caution if vol=LOW, but not auto-reject (late session vol naturally lower)
+━━ SETUPS (reference — indicators data decides which fired) ━━
+LONG MEAN-REVERSION: bb_mid_bounce(±150 BB_mid,RSI30-65) | bb_lower_bounce(±150 BB_low,RSI20-40,wick≥15) | oversold_reversal(RSI<30,daily bullish,reversal confirm)
+LONG MOMENTUM:       momentum_continuation_long(>EMA50+VWAP,HA≥2,RSI45-75) | breakout_long(BB_up/swing_hi,vol≥1.3x,RSI55-75) | vwap_bounce_long(±120 VWAP,>EMA50,RSI40-65) | ema9_pullback_long(±100 EMA9,>EMA50,RSI40-65)
+SHORT MEAN-REV(75%): bb_upper_rejection(±150 BB_up,RSI55-75) | ema50_rejection(≤EMA50+150,RSI50-70) | bb_mid_rejection(±150 BB_mid,RSI40-65) | overbought_reversal(RSI>70,daily bearish) | high_volume_distribution(±200 BB_up/swept_hi,vol≥1.4x)
+SHORT BREAKDOWN:     breakdown_continuation(>100 below BB_mid,RSI25-45,HA≤-2) | dead_cat_bounce_short(at BB_mid/EMA9 from below,RSI43-62) | bear_flag_breakdown(RSI35-52,vol flag,HA≤-1) | multi_tf_bearish(≥4/5: rsi15m<48,rsi4h<48,daily bear,<EMA50,<VWAP,HA bear)
+SHORT MOMENTUM:      momentum_continuation_short(<EMA50+VWAP,HA≤-2,RSI30-55) | vwap_rejection_short_momentum(±120 VWAP from below,<EMA50,RSI35-60)
+DISABLED: ema50_bounce — do not approve.
 
-SETUPS — LONG MOMENTUM / TREND-FOLLOWING:
-  momentum_continuation_long: above EMA50+VWAP | HA streak≥2 | RSI 45-75 | vol not LOW (lenient if HA≥4) → strong trending rally
-  breakout_long:              near BB upper(200pts) or swing_high(100pts) | vol≥1.3x | HA bullish | above EMA50 | RSI 55-75
-  vwap_bounce_long:           near VWAP(120pts) | above EMA50 | bounce confirm (HA/candle/wick) | RSI 40-65
-  ema9_pullback_long:         near EMA9(100pts) | above EMA50 | HA bullish or turning | RSI 40-65
+━━ WYCKOFF PHASE — detect and trade WITH the phase ━━
+ACCUMULATION (smart money buying at lows):
+  Signals: price dips quickly rebound | shrinking BB width (coil) | swept_low (Spring) then strong recovery | vol LOW on dips, higher on bounces | equal_lows zones near support
+  Trade bias: LONG ONLY (Springs = strong entry). Accumulation Spring = price breaks below support then reverses fast = STRONG LONG signal.
+  Counter-bias: Do NOT short Springs — they trap shorts before the markup phase begins.
+MARKUP (trending up after accumulation):
+  Signals: HH+HL structure | HA bullish streak ≥3 | above EMA50+VWAP | vol expansion on upmoves, contraction on pullbacks | BB width expanding upward
+  Trade bias: LONG preferred (momentum_continuation_long, vwap_bounce_long, ema9_pullback_long on dips). Breakouts valid.
+  Counter-bias: Avoid shorting pullbacks — treat them as LONG entries.
+DISTRIBUTION (smart money selling at highs):
+  Signals: wide BB but closes near mid (indecision) | swept_high (UpThrust / UT) then fails | vol HIGH at highs | equal_highs zones near resistance | RSI divergence at highs
+  Trade bias: SHORT ONLY (UTs = strong entry). UpThrust = price breaks above resistance then quickly fails = STRONG SHORT signal.
+  Counter-bias: Do NOT buy UTs — they trap longs before markdown.
+MARKDOWN (trending down after distribution):
+  Signals: LH+LL structure | HA bearish streak ≤-3 | below EMA50+VWAP | vol expansion on declines, contraction on bounces | BB width expanding downward
+  Trade bias: SHORT preferred (momentum_continuation_short, dead_cat_bounce_short on bounces). Breakdowns valid.
+  Counter-bias: Avoid longing bounces — treat them as SHORT entries.
 
-SETUPS — SHORT (min confidence 75% — BOJ risk; counter-trend allowed if strong confluence):
-  bb_upper_rejection:      price ±150pts BB_upper | RSI15M 55-75 | below EMA50
-  ema50_rejection:         price ≤ EMA50+2 | dist ≤150pts | RSI15M 50-70
-  bb_mid_rejection:        price ±150pts BB_mid | RSI15M 40-65 | rejection confirmed (price<prev_close OR wick/HA/candle)
-  overbought_reversal:     RSI15M >70 | daily bearish | reversal confirmation (wick/HA/candle/sweep)
-  breakdown_continuation:  price >100pts below BB_mid | RSI 25-45 | below EMA50 | HA streak ≤-2 | vol not LOW
-  dead_cat_bounce_short:   price at BB_mid/EMA9 from below | RSI 43-62 | daily bearish | below EMA50 | HA turning bearish
-  bear_flag_breakdown:     RSI 35-52 | vol LOW/NORMAL (flag) | HA streak ≤-1 | price between BB_lower–BB_mid | below EMA50
-  high_volume_distribution: price ±200pts BB_upper OR swept_high | RSI 55-75 | vol ratio ≥1.4x | bearish candle/wick
-  multi_tf_bearish:        rsi_15m<48 AND rsi_4h<48 AND daily bearish AND below EMA50 AND below VWAP AND HA bearish (≥4/5 factors)
+SLOW/CHOPPY MARKET (no clear Wyckoff phase = coil):
+  Signals: BB width narrow (bb_width < 200 on 15M) | HA streak near 0 | RSI near 50 | price hugging BB mid | vol consistently LOW
+  Action: Lower the bar for counter-trend mean-reversion at band extremes (bb_lower_bounce / bb_upper_rejection).
+  Pre-breakout play: If price is compressing in a tight range, identify which side has equal_highs/equal_lows (liquidity pool) — next sweep of that pool = breakout direction signal.
+  VP edge: In slow markets, if price is at the edge of a multi-day Value Area (near VAH or VAL), that alone is high-probability S/R even without a clean 15M setup — lower confidence threshold by 5pts.
 
-SETUPS — SHORT MOMENTUM / TREND-FOLLOWING:
-  momentum_continuation_short: below EMA50+VWAP | HA streak≤-2 | RSI 30-55 | vol not LOW (lenient if HA≤-4) → strong trending selloff
-  vwap_rejection_short_momentum: near VWAP(120pts) from below | below EMA50 | rejection confirm (HA/candle/wick) | RSI 35-60
+━━ VOLUME PROFILE — how to use POC/VAH/VAL ━━
+POC (Point of Control) = highest volume price = equilibrium. Price at POC = direction-neutral, wait for break.
+VAH (Value Area High) = upper edge of fair value. Price at VAH from below = resistance → SHORT opportunity.
+VAL (Value Area Low) = lower edge of fair value. Price at VAL from above = support → LONG opportunity.
+INSIDE value area: price moves slowly, mean-reverts toward POC. Reduce momentum confidence.
+OUTSIDE value area (above VAH or below VAL): two scenarios:
+  - Rejection (price quickly returns inside): high-probability reversal trade back toward POC.
+  - Acceptance (price stays outside for 2+ bars): breakout likely to continue. Trade WITH the move.
+LVN (Low Volume Node = thin area between VAL and VAH): price moves fast through it — widen TP.
+Volume Profile + Wyckoff: VAL = Accumulation support zone. VAH = Distribution resistance zone.
 
-RULES: No trade: HIGH event <60min. SL=150 TP=400.
-R:R CHECK (MANDATORY): Before approving ANY trade, compute effective R:R = (TP_dist - 7) / (SL_dist + 7).
-  Must be >= 1.5. If not, REJECT. Report the R:R in your reasoning. SL/TP must come from structure (BB, pivots, fibs, EMA, PDH/PDL).
-ATR VOLATILITY RULE: ATR14 is shown for each timeframe. It measures how many points price moves per candle on average.
-  If 15M ATR14 > 120pts: market is VOLATILE. A 100pt SL will be hit by normal candle noise before the trade works.
-  In volatile conditions: widen SL to at least 1× ATR (e.g. ATR=150 → SL minimum 150pts). Widen TP proportionally.
-  Do NOT use tight SL in high ATR markets — it guarantees stop-out before the move develops.
-  Tokyo session often has ATR 140-220pts. Set SL/TP accordingly, not at default 150/400 if ATR demands wider.
-VOLUME: HIGH(>1.5x)=conviction. LOW(<0.7x)=caution, weigh alongside other criteria. Not auto-reject.
-SWING LEVELS: dist_swing_hi <200pts → TP obstacle, reduce confidence.
-              dist_swing_lo <100pts → SL anchor, good for LONG.
-HA: ha_bullish=T → buying pressure confirmed. ha_streak≥3 → strong momentum.
-FVG: fvg_bullish → unfilled demand zone (support). fvg_bearish → unfilled supply zone (resistance).
-VWAP: above = premium (SHORT bias), below = discount (LONG bias). Key intraday mean-reversion level.
-FIBO: fib_near = nearest fib level (key S/R). pdh/pdl = prev candle high/low (key levels).
-SWEEP: swept_low=T → liquidity grab + bullish reversal. swept_high=T → bearish reversal.
-PIVOT: PP/R1-R3/S1-S3 from daily. Near S1/S2=support (LONG). Near R1/R2=resistance (SHORT).
-CANDLE: hammer/engulfing/morning_star etc. Direction + strength. Strong pattern at key level = high conviction.
-BODY: expanding=momentum, contracting=exhaustion. |consec|>=4=overextended. wick_ratio>2=indecision.
+━━ SMC CONCEPTS (Smart Money) ━━
+ORDER BLOCK (OB): Last bearish candle before bullish impulse = demand OB (LONG entry on retest).
+  Last bullish candle before bearish impulse = supply OB (SHORT entry on retest).
+  OB + FVG overlap = highest conviction entry zone.
+FVG (Fair Value Gap): Unfilled imbalance zone. Price retraces to fill FVGs during pullbacks.
+  fvg_bullish = demand zone (support, LONG). fvg_bearish = supply zone (resistance, SHORT).
+  FVGs are SOFT S/R — they get filled during reversals. Do NOT treat as hard walls.
+LIQUIDITY SWEEPS: swept_low=T → smart money grabbed buy-stop liquidity below equal_lows → bullish reversal.
+  swept_high=T → grabbed sell-stop liquidity above equal_highs → bearish reversal.
+  Sweep + OB + FVG confluence = highest conviction entry (Wyckoff Spring/UT equivalent).
+BOS vs CHoCH: Break of Structure (new HH in uptrend = BOS = continuation). Change of Character (LL in uptrend = CHoCH = reversal).
+  Use HA streaks + pivot_high/pivot_low to detect: pivot_low broken = CHoCH bearish. pivot_high broken = CHoCH bullish.
+SMC + Wyckoff: Spring = sweep of equal_lows + bullish FVG + demand OB = textbook Accumulation entry.
+  UT = sweep of equal_highs + bearish FVG + supply OB = textbook Distribution entry.
 
-CONFIDENCE (12 criteria, proportional scoring, base 30, cap 100):
-  daily_trend | entry_at_tech_level | rsi_15m_in_range | tp_viable
-  price_structure | macro_aligned | no_event_1hr | no_friday_monthend
-  volume (prefer NORMAL+) | trend_4h (EMA50 aligned) | ha_aligned (HA candle direction)
-  entry_quality (pullback depth + volatility regime)
+━━ INDICATOR QUICK-REFERENCE ━━
+ATR RULE: If 15M ATR14 > 120pts → VOLATILE. SL must be ≥1× ATR. Tokyo ATR often 140-220pts.
+VOLUME: HIGH(>1.5x)=conviction. LOW(<0.7x)=caution but not auto-reject (Tokyo inherently lower).
+SWING: dist_swing_hi <200pts → TP obstacle. dist_swing_lo <100pts → SL anchor.
+HA: ha_bullish=T → buying pressure. ha_streak≥3 → strong momentum. streak≤-3 → strong sell.
+VWAP: above=premium(SHORT bias). below=discount(LONG bias). Key intraday mean.
+FIBO: fib_near = nearest S/R level. Use for SL/TP placement.
+SWEEP: swept_low=T → liquidity grab → bullish. swept_high=T → bearish.
+PIVOT: PP/R1-R3/S1-S3 daily. S1/S2=LONG support. R1/R2=SHORT resistance.
+CANDLE: Strong pattern at key level = high conviction. BODY: expanding=momentum, contracting=exhaustion.
+R:R (MANDATORY): effective_rr = (TP_dist - 7) / (SL_dist + 7) ≥ 1.5. Compute before approving. REJECT if below.
 
-MEAN-REVERSION BOUNCE RULES (CRITICAL — read before evaluating bb_lower_bounce or oversold_reversal):
-  These setups fire BECAUSE of bearish conditions. Do NOT reject them for being bearish:
-  - Bearish HA streak is EXPECTED at oversold reversal — it's the setup trigger, not a disqualifier.
-  - Price below EMA50 is EXPECTED for lower-band bounces — the band IS below EMA50 in selloffs.
-  - FVG supply zones are SOFT resistance, not hard ceilings — they frequently get filled during reversals.
-  - 4H bearish structure is EXPECTED — it creates the oversold condition for the bounce.
-  - Evaluate bounce QUALITY: wick rejection, pattern, sweep, volume surge, RSI divergence.
-  - For bb_lower_bounce/oversold_reversal: the DEFAULT should be to APPROVE if daily trend is bullish
-    and any reversal confirmation exists. Only reject if there's a specific concrete catalyst against
-    (imminent high-impact event, massive volume on breakdown, no reversal signal at all).
+━━ CONFIDENCE (12 criteria, base 30, cap 100) ━━
+daily_trend | entry_at_tech_level | rsi_15m_in_range | tp_viable | price_structure | macro_aligned
+no_event_1hr | no_friday_monthend | volume | trend_4h | ha_aligned | entry_quality
 
-MEAN-REVERSION SHORT RULES (CRITICAL — read before evaluating overbought_reversal or bb_mid_rejection):
-  These setups fire BECAUSE of bullish overextension. Do NOT reject them for being bullish:
-  - Bullish HA streak is EXPECTED at overbought reversal — it's the setup trigger, not a disqualifier.
-  - Price above EMA50 is EXPECTED for upper-band/overbought setups — the band IS above EMA50 in rallies.
-  - FVG demand zones are SOFT support, not hard floors — they frequently get filled during reversals.
-  - 4H bullish structure is EXPECTED — it creates the overbought condition for the reversal.
-  - Evaluate reversal QUALITY: wick rejection, bearish pattern, sweep, volume surge, RSI divergence.
-  - For overbought_reversal: the DEFAULT should be to APPROVE if daily trend is bearish
-    and any reversal confirmation exists. Only reject if there's a specific concrete catalyst against.
+━━ SETUP-CLASS RULES (apply without exception) ━━
+MEAN-REVERSION LONGS (bb_lower_bounce, oversold_reversal): bearish HA + below EMA50 + 4H bearish = EXPECTED (setup trigger). Approve if daily bullish + any reversal signal. Only reject: imminent event, massive breakdown volume, zero reversal signal.
+MEAN-REVERSION SHORTS (overbought_reversal, bb_mid_rejection): bullish HA + above EMA50 + 4H bullish = EXPECTED. Approve if daily bearish + any reversal signal. Only reject: imminent event, massive breakout volume, zero reversal signal.
+MOMENTUM LONGS (momentum_continuation_long, breakout_long, vwap_bounce_long, ema9_pullback_long): RSI 60-75 = HEALTHY (not overbought). Above BB mid = EXPECTED. HA≥2 = confirmation. Approve if >EMA50, >VWAP, HA bull, RSI45-75. Reject only: 4H RSI>68 with exhaustion OR price >800pts above open on extreme day.
+MOMENTUM SHORTS (momentum_continuation_short, breakdown_continuation, bear_flag_breakdown, multi_tf_bearish): RSI 30-55 = HEALTHY (not oversold). Daily "bullish" during big selloff = EXPECTED (EMA lags). Approve if 4H+15M aligned bearish (HA≤-2, <EMA50, RSI<50). Reject only: RSI<25 with reversal candle OR major support (BB lower/S2/S3) OR volume LOW.
 
-MOMENTUM / TREND-FOLLOWING LONG RULES (CRITICAL — read before evaluating momentum_continuation_long, breakout_long, vwap_bounce_long, ema9_pullback_long):
-  These setups fire BECAUSE the market is trending strongly upward. Do NOT reject them for mean-reversion reasons:
-  - RSI 60-75 is HEALTHY in a trend, NOT overbought. Only RSI>78 is overbought in momentum context.
-  - Price above BB mid is EXPECTED — momentum trades target BB upper / new highs, not BB mid.
-  - Positive pullback_depth (price rising) is EXPECTED — this IS the trend, not a chase.
-  - HA bullish streak ≥2 is a CONFIRMATION signal, not overextension (that's streak ≥5+).
-  - Above VWAP is EXPECTED — institutional flow is bullish, price holds above fair value.
-  - For momentum_continuation_long: DEFAULT APPROVE if above EMA50, above VWAP, HA bullish, RSI 45-75.
-    Only reject if: (1) 4H RSI>68 with exhaustion (overbought prohibition), or
-    (2) price >800pts above session open on extreme day. Volume LOW alone is NOT a reject if HA streak ≥4.
-  - For breakout_long: volume conviction (≥1.3x) is the key signal. Do NOT downgrade for "extended" price.
-  - For vwap_bounce_long/ema9_pullback_long: these ARE pullback entries in a trend. They have dip-buying characteristics.
+━━ HARD PROHIBITIONS ━━
+OVERSOLD SHORTING: 4H RSI < 32 + exhaustion (spinning_top/doji/contracting bodies) → REJECT SHORT.
+OVERBOUGHT LONGING: 4H RSI > 68 + exhaustion → REJECT LONG.
+EVENTS: No trade within 60min of HIGH-impact event.
+EXTREME DAY (range > 1000pts):
+  CRASH (price lower half): No short into oversold. LONG requires multi-TF confirm + hard support.
+  BULL (price upper half): No long into overbought. SHORT requires multi-TF confirm + hard resistance.
+  4+ warnings in analysis → confidence < 70%. DEFAULT REJECT unless all TFs + volume + pattern align.
 
-MOMENTUM / TREND-FOLLOWING SHORT RULES (CRITICAL — read before evaluating momentum_continuation_short, vwap_rejection_short_momentum):
-  These setups fire BECAUSE the market is trending strongly downward. Do NOT reject them for mean-reversion reasons:
-  - RSI 30-55 is HEALTHY in a downtrend, NOT oversold. Only RSI<25 is oversold in momentum context.
-  - Price below BB mid is EXPECTED — momentum shorts target BB lower / new lows, not BB mid.
-  - Negative pullback_depth (price falling) is EXPECTED — this IS the trend, not a panic short.
-  - HA bearish streak ≤-2 is a CONFIRMATION signal, not exhaustion (that's streak ≤-5+).
-  - Below VWAP is EXPECTED — institutional flow is bearish, price holds below fair value.
-  - For momentum_continuation_short: DEFAULT APPROVE if below EMA50, below VWAP, HA bearish, RSI 30-55.
-    Only reject if: (1) 4H RSI<32 with exhaustion (oversold prohibition), or
-    (2) price >800pts below session open on extreme day. Volume LOW alone is NOT a reject if HA streak ≤-4.
+━━ WARNINGS & COUNTER SIGNAL ━━
+WARNINGS: Each warning = -3-5% confidence. 4+ warnings → confidence < 70%. 6+ → confidence < 60%.
+QUICK REJECT: ≥4 criteria fail AND volume LOW AND no macro catalyst → setup_found=false.
+COUNTER SIGNAL: On rejection, check opposite direction. Set counter_signal="LONG"/"SHORT" if concrete structural evidence exists (swept_low + reversal pattern = LONG; swept_high + distribution = SHORT). Null if rejected for quality reasons only.
 
-BREAKDOWN / MOMENTUM SHORT RULES (CRITICAL — read before evaluating breakdown_continuation, bear_flag_breakdown, multi_tf_bearish):
-  These setups fire BECAUSE of bearish momentum already in progress. Do NOT reject them for daily being bullish:
-  - Daily EMA200/EMA50 LAGS on big selloff days — price can drop 2000-4000pts while daily still reads "bullish".
-    Daily bullish + 4H/15M deeply bearish = TRANSITION PHASE, not a contradiction. This is where momentum shorts have edge.
-  - Price already broke below key levels with conviction (HA streak ≤-2, volume not LOW).
-  - Three_black_crows on 4H/15M with HIGH volume = genuine distribution, NOT a reason to reject.
-  - 4H below EMA50 by >500pts = deep bearish extension, trend is confirmed on lower TFs regardless of daily.
-  - For breakdown_continuation/bear_flag_breakdown/multi_tf_bearish: the DEFAULT should be to APPROVE
-    if 4H and 15M are aligned bearish (HA streak ≤-2, below EMA50, RSI<50). Only reject if:
-    (1) RSI<25 with reversal candle (oversold bounce risk), or
-    (2) price sitting on major support (BB lower, pivot S2/S3), or
-    (3) volume is LOW (no conviction behind the move).
-  - Do NOT reject because "daily trend is bullish" or "price above daily EMA50/200" — that is EXPECTED.
-
-EXTREME DAY RULES (intraday range > 1000pts — OVERRIDES mean-reversion defaults):
-  On extreme days, normal setups degrade. SLs get blown on spikes, reversals fail, TPs don't reach.
-  CRASH DAY (bearish — price in lower half of range):
-    - Do NOT short into oversold (4H RSI < 32) — bounces are violent and unpredictable.
-    - Do NOT go long on a single 15M reversal candle — these fail 80%+ of the time in crashes.
-    - LONG requires: multiple TF reversal confirmation (not just 15M), volume surge on reversal,
-      AND price must be at a hard support (S2/S3/BB_lower/swing_low), not just near BB_mid.
-    - SHORT requires: price must NOT already be extended >800pts below session open.
-      Short the bounce, not the continuation into oversold.
-  BULL DAY (bullish — price in upper half of range):
-    - Do NOT go long into overbought (4H RSI > 68) — pullbacks are violent and unpredictable.
-    - Do NOT go short on a single 15M rejection candle — these fail 80%+ of the time in rallies.
-    - SHORT requires: multiple TF reversal confirmation (not just 15M), volume surge on reversal,
-      AND price must be at a hard resistance (R2/R3/BB_upper/swing_high), not just near BB_mid.
-    - LONG requires: price must NOT already be extended >800pts above session open.
-      Buy the pullback, not the continuation into overbought.
-  BOTH DIRECTIONS:
-    - If you see 4+ self-warnings in your analysis, confidence MUST be <70%.
-      4+ warnings at 76% is unacceptable — warnings exist to reduce confidence, not decorate reasoning.
-    - DEFAULT on extreme days: REJECT unless confluence is overwhelming (all TFs + volume + pattern + level).
-
-OVERSOLD SHORTING PROHIBITION:
-  When 4H RSI < 32:
-  - Do NOT approve SHORT unless price is actively breaking a clear support level WITH volume confirmation.
-  - 4H spinning_top + contracting bodies = exhaustion, NOT continuation signal.
-  - Bullish FVG/engulfing on lower TF while 4H exhausted = bounce incoming.
-  - If 4H RSI < 32 AND any exhaustion signal (spinning_top, contracting bodies, doji): REJECT SHORT.
-
-OVERBOUGHT LONGING PROHIBITION:
-  When 4H RSI > 68:
-  - Do NOT approve LONG unless price is actively breaking a clear resistance level WITH volume confirmation.
-  - 4H spinning_top + contracting bodies = exhaustion, NOT continuation signal.
-  - Bearish FVG/engulfing on lower TF while 4H exhausted = pullback incoming.
-  - If 4H RSI > 68 AND any exhaustion signal (spinning_top, contracting bodies, doji): REJECT LONG.
-
-WARNING SEVERITY RULE:
-  Your warnings are not decoration. Each warning should reduce confidence by 3-5%.
-  If you list 4+ warnings, your confidence MUST be below 70%.
-  If you list 6+ warnings, your confidence MUST be below 60%.
-  If your reasoning says "proceed with caution" but confidence is 76%, something is wrong.
-
-QUICK REJECT: If ≥4 technical criteria fail AND volume is LOW AND no macro catalyst → set setup_found=false immediately.
-  Do not spend analysis time on junk setups. Volume=LOW alone is NOT a reject (Tokyo session inherently lower).
-
+━━ EXIT & REASONING ━━
 EXIT: +150pts → SL to BE+10. TP=400pts. 75%TP in <2h → trail@150pts.
-EMA50_bounce setup: DISABLED — do not approve.
-
-COUNTER SIGNAL: When you reject the primary setup, check if the OPPOSITE direction has a clear opportunity.
-  Example: evaluating SHORT bear_flag_breakdown but 5M swept_low = liquidity grab suggesting bullish reversal → set counter_signal="LONG".
-  Example: evaluating LONG bounce but swept_high + bearish engulfing = distribution → set counter_signal="SHORT".
-  Only set counter_signal if you see concrete structural evidence for the opposite direction, not just absence of a bear move.
-  Leave counter_signal null if the rejection is purely "setup quality too low" or "no trade conditions".
-
-REASONING_SHORT: After full analysis, fill reasoning_short with a compact punchy paragraph (~3-5 sentences, ~400-500 chars).
-  Cover: verdict + structure summary + decisive setup signal + key risk or confirmation + final call.
-  Format: "[APPROVE/REJECT] [direction]. [Structure in 1 sentence]. [Setup signal that decided it]. [Key risk or edge]. [Final call]."
-  Example: "REJECT SHORT. D1/4H/15M bearish aligned but CRASH DAY 1794pts overrides continuation logic — crash rules require bounce short not breakdown chase. 15M swept_low + bullish_engulfing at lows signals reversal, not continuation. 4H RSI 41 near oversold = short squeeze risk. Wait for dead-cat bounce then re-evaluate SHORT from higher level."
-  This is the log summary only. reasoning field still contains your full analysis."""
+REASONING_SHORT: ~3-5 sentences (~400-500 chars). Format: "[APPROVE/REJECT] [dir]. [Structure]. [Decisive signal]. [Key risk/edge]. [Final call]."
+  Example: "REJECT SHORT. D1/4H/15M bearish but CRASH DAY 1794pts overrides — crash rules require bounce short not continuation. swept_low + bullish_engulfing at lows = reversal, not continuation. 4H RSI 41 near oversold = squeeze risk. Wait for dead-cat then SHORT from higher."
+  reasoning field holds full analysis. reasoning_short is the log summary."""
 
 
 def _fmt_indicators(indicators: dict) -> str:
@@ -589,12 +518,17 @@ def build_scan_prompt(
     role_block = (
         f"{failed_block}"
         "\nBefore outputting JSON, reason through these steps IN ORDER:\n"
-        "  1. STRUCTURE: Are D1/4H/15M aligned? (cite specific RSI/EMA/BB values)\n"
-        "  2. SETUP QUALITY: Is the technical trigger clean? (price distance, volume, HA, FVG)\n"
-        "  3. RISK: What specific scenario causes a 150pt loss? (be concrete)\n"
-        "  4. EDGE: Given live edge stats, does this setup type have positive EV now?\n"
-        "  5. DEVIL'S ADVOCATE: Challenge your own case. Find risks you may have missed.\n"
-        "     If borderline (72-86%), be extra rigorous — only approve if you still believe after scrutiny.\n"
+        "  1. WYCKOFF PHASE: From HA streaks, BB width, volume pattern, sweeps, equal H/L zones — which phase?\n"
+        "     (Accumulation/Markup/Distribution/Markdown/Coil) → what is the bias?\n"
+        "  2. VOLUME PROFILE: Is price at POC (neutral/wait), VAH (resistance/SHORT), VAL (support/LONG),\n"
+        "     inside VA (slow/mean-revert), or outside VA (rejection vs acceptance)?\n"
+        "  3. SMC CONTEXT: Any liquidity sweep + FVG + OB confluence? swept_low+fvg_bull=demand. swept_high+fvg_bear=supply.\n"
+        "  4. STRUCTURE: Are D1/4H/15M aligned? (cite specific RSI/EMA/BB values)\n"
+        "  5. SETUP QUALITY: Is the technical trigger clean? (price distance, volume, HA, FVG)\n"
+        "  6. RISK/EDGE: What causes a 150pt loss? Does this setup type have positive EV given live edge stats?\n"
+        "  7. DEVIL'S ADVOCATE: Challenge your own case. Borderline (72-86%) = be extra rigorous.\n"
+        "     SLOW DAY CHECK: If BB width narrow + HA near 0 + RSI near 50 = coil/choppy market.\n"
+        "       In coil: lower bar for band-edge mean-reversion. Pre-position for breakout if VP edge exists.\n"
     )
 
     # Inject prompt learnings from closed trades (auto-updated feedback loop)
@@ -623,11 +557,89 @@ def build_scan_prompt(
     if extreme_day:
         range_block += f" *** {extreme_label} — EXTREME VOLATILITY ***"
 
+    # ── Wyckoff Phase Inference (from live indicators — pre-computed hint for AI) ──
+    _tf15 = indicators.get("m15") or indicators.get("tf_15m") or indicators.get("15m") or {}
+    _tf4h = indicators.get("4h") or indicators.get("tf_4h") or {}
+    _ha_streak_15m = _tf15.get("ha_streak", 0) or 0
+    _ha_streak_4h  = _tf4h.get("ha_streak", 0) or 0
+    _bbw_15m = _tf15.get("bb_width")
+    _vol_15m = _tf15.get("volume_signal", "")
+    _swept_lo = _tf15.get("swept_low", False)
+    _swept_hi = _tf15.get("swept_high", False)
+    _above_vwap_15m = _tf15.get("above_vwap")
+    _above_ema50_15m = None
+    _p15 = _tf15.get("price")
+    _e50_15m = _tf15.get("ema_50") or _tf15.get("ema50")
+    if _p15 and _e50_15m:
+        try:
+            _above_ema50_15m = float(_p15) > float(_e50_15m)
+        except (TypeError, ValueError):
+            pass
+    _poc = _tf15.get("volume_poc")
+    _vah = _tf15.get("volume_vah")
+    _val_vp = _tf15.get("volume_val")
+
+    # Phase detection heuristic (for pre-computed hint — AI still reasons independently)
+    _wyckoff_signals = []
+    _wyckoff_phase = "UNDETERMINED"
+    _wyckoff_bias = "neutral"
+    if _ha_streak_15m >= 3 and _above_vwap_15m and _above_ema50_15m:
+        _wyckoff_phase = "MARKUP"
+        _wyckoff_bias = "LONG preferred"
+    elif _ha_streak_15m <= -3 and _above_vwap_15m is False and _above_ema50_15m is False:
+        _wyckoff_phase = "MARKDOWN"
+        _wyckoff_bias = "SHORT preferred"
+    elif _swept_lo and (_ha_streak_15m is not None and _ha_streak_15m >= -1):
+        _wyckoff_phase = "ACCUMULATION (Spring detected)"
+        _wyckoff_bias = "LONG — Spring signal"
+    elif _swept_hi and (_ha_streak_15m is not None and _ha_streak_15m <= 1):
+        _wyckoff_phase = "DISTRIBUTION (UpThrust detected)"
+        _wyckoff_bias = "SHORT — UpThrust signal"
+    elif _bbw_15m and isinstance(_bbw_15m, (int, float)) and _bbw_15m < 200 and abs(_ha_streak_15m) <= 1:
+        _wyckoff_phase = "COIL/ACCUMULATION (tight range)"
+        _wyckoff_bias = "band-edge mean-reversion or pre-breakout"
+
+    # VP position hint
+    _vp_hint = ""
+    if _poc and _p15:
+        try:
+            _fp = float(_p15)
+            _poc_f = float(_poc)
+            if _vah and _val_vp:
+                _vah_f = float(_vah)
+                _val_f = float(_val_vp)
+                if _fp > _vah_f:
+                    _vp_hint = f"ABOVE value area (VAH={_vah_f:.0f}) — rejection→SHORT or acceptance→continuation"
+                elif _fp < _val_f:
+                    _vp_hint = f"BELOW value area (VAL={_val_f:.0f}) — rejection→LONG or acceptance→continuation"
+                elif abs(_fp - _poc_f) < 50:
+                    _vp_hint = f"AT POC ({_poc_f:.0f}) — equilibrium, wait for break"
+                elif _fp > _poc_f:
+                    _vp_hint = f"INSIDE VA above POC ({_poc_f:.0f}) — mild LONG bias, slow movement"
+                else:
+                    _vp_hint = f"INSIDE VA below POC ({_poc_f:.0f}) — mild SHORT bias, slow movement"
+            else:
+                dist_poc = _fp - _poc_f
+                _vp_hint = f"POC at {_poc_f:.0f} ({'+' if dist_poc >= 0 else ''}{dist_poc:.0f}pts away)"
+        except (TypeError, ValueError):
+            pass
+
+    wyckoff_block = (
+        f"\nWYCKOFF/SMC CONTEXT:"
+        f"\n  Phase hint:  {_wyckoff_phase} | Bias: {_wyckoff_bias}"
+        f"\n  HA streaks:  15M={_ha_streak_15m} | 4H={_ha_streak_4h}"
+        f"\n  Sweeps:      {'swept_LOW (Spring/bullish reversal)' if _swept_lo else 'swept_HIGH (UpThrust/bearish reversal)' if _swept_hi else 'none'}"
+        + (f"\n  VP position: {_vp_hint}" if _vp_hint else "")
+        + (f"\n  BB width:    {_bbw_15m:.0f}pts (15M) — {'COIL (<200 = tight range)' if isinstance(_bbw_15m, (int, float)) and _bbw_15m < 200 else 'normal/expanding'}" if _bbw_15m else "")
+        + "\n  [AI: verify phase from full indicator data above — hint is heuristic only]\n"
+    )
+
     return (
         f"Japan 225 CFD analysis — {now}\n"
         f"{prescreen_block}{secondary_block}{local_conf_block}"
         f"\nTIMEFRAME SNAPSHOT:\n{_fmt_indicators(indicators)}\n"
         f"{range_block}\n"
+        f"{wyckoff_block}"
         f"\nRECENT SCANS (last 5):\n{_fmt_recent_scans(recent_scans)}\n"
         f"\nRECENT TRADES (last 5):\n{_fmt_recent_trades(recent_trades or [])}\n"
         f"\nMARKET CONTEXT: session={market_context.get('session_name','?')} | "

@@ -148,7 +148,7 @@ def is_friday_blackout(upcoming_events: list = None) -> tuple[bool, str]:
     blackout_start = 12 * 60  # 12:00 UTC
     blackout_end = 16 * 60    # 16:00 UTC
 
-    if blackout_start <= current_minutes <= blackout_end:
+    if blackout_start <= current_minutes < blackout_end:
         return True, f"Friday NFP/data window (12:00-16:00 UTC)"
 
     # Check calendar for keywords outside default window

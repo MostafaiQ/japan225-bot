@@ -281,6 +281,10 @@ def compute_confidence(
             else:
                 c3 = LONG_RSI_LOW <= rsi_15m <= LONG_RSI_HIGH
                 reasons["rsi_15m"] = f"RSI 15M: {rsi_15m:.1f} (zone {LONG_RSI_LOW}-{LONG_RSI_HIGH})"
+        elif _momentum_short_setup:
+            # Momentum shorts: RSI 30-60 is valid (strong downtrend with room to fall)
+            c3 = 30 <= rsi_15m <= 60
+            reasons["rsi_15m"] = f"RSI 15M: {rsi_15m:.1f} (momentum short zone 30-60)"
         else:
             c3 = SHORT_RSI_LOW <= rsi_15m <= SHORT_RSI_HIGH
             reasons["rsi_15m"] = f"RSI 15M: {rsi_15m:.1f} (zone {SHORT_RSI_LOW}-{SHORT_RSI_HIGH})"
@@ -435,8 +439,8 @@ def compute_confidence(
                 c10 = not bool(above_ema50_4h)
                 reasons["trend_4h"] = f"4H EMA50: {'below (bearish)' if c10 else 'above (not bearish)'}"
     else:
-        c10 = True  # default pass if 4H data unavailable
-        reasons["trend_4h"] = "4H EMA50 unavailable — defaulting pass"
+        c10 = False  # default FAIL if 4H data unavailable (conservative — don't inflate on API failure)
+        reasons["trend_4h"] = "4H EMA50 unavailable — defaulting fail"
     criteria["trend_4h"] = c10
 
     # ---- Criterion 11: Heiken Ashi Alignment (setup-type-aware) ----
@@ -469,8 +473,8 @@ def compute_confidence(
                 c11 = not bool(ha_bullish)
                 reasons["ha_aligned"] = f"HA 15M: {'bearish (aligned SHORT)' if c11 else 'bullish (counter-HA)'}{streak_str}"
     else:
-        c11 = True  # default pass if HA unavailable (older candle data)
-        reasons["ha_aligned"] = "HA unavailable — defaulting pass"
+        c11 = False  # default FAIL if HA unavailable (conservative — don't inflate on missing data)
+        reasons["ha_aligned"] = "HA unavailable — defaulting fail"
     criteria["ha_aligned"] = c11
 
     # ---- Criterion 12: Entry Quality (pullback depth + volatility regime) ----

@@ -137,9 +137,9 @@ class TestIsFridayBlackout:
         assert blocked is True
 
     def test_friday_at_window_end(self):
-        # Friday 16:00 UTC — exactly at end
+        # Friday 16:00 UTC — exclusive end (consistent with all other session boundaries using <)
         blocked, _ = self._check(_utc(4, 16))
-        assert blocked is True
+        assert blocked is False
 
 
 # ── is_no_trade_day ───────────────────────────────────────────────────────────

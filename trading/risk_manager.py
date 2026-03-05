@@ -256,12 +256,16 @@ class RiskManager:
                         block_reason = f"Friday with {event.get('name', 'high-impact event')}"
                         break
 
-        # Month-end check
+        # Month-end check — use trading days (consistent with session.py)
         last_day = cal_module.monthrange(now.year, now.month)[1]
-        days_until_monthend = last_day - now.day
-        is_monthend = days_until_monthend < MONTHEND_BLACKOUT_DAYS
+        days_left = last_day - now.day
+        trading_days_left = sum(
+            1 for i in range(1, days_left + 1)
+            if (now.date().replace(day=now.day + i)).weekday() < 5
+        )
+        is_monthend = trading_days_left <= MONTHEND_BLACKOUT_DAYS
         if is_monthend:
-            block_reason = f"Month-end rebalancing ({days_until_monthend} days to EOM)"
+            block_reason = f"Month-end rebalancing ({trading_days_left} trading days to EOM)"
 
         checks["calendar_block"] = {
             "pass": not is_blocked_day and not is_monthend,

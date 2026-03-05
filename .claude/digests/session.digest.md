@@ -22,7 +22,7 @@ is_active_session() -> bool  # True if major session (active=True)
 is_weekend() -> bool  # Fri 21:00 UTC to Sun 21:00 UTC
 
 is_friday_blackout(upcoming_events=None) -> (bool, str)
-  # Default window: 12:00-16:00 UTC (covers NFP)
+  # Default window: 12:00 UTC (inclusive) to 16:00 UTC (exclusive) — BUG-010 fix: < not <=
   # Also blocks on FRIDAY_BLOCK_KEYWORDS: NFP, Non-Farm, CPI, PPI, BOJ, FOMC, Rate Decision
 
 is_month_end_blackout() -> (bool, str)

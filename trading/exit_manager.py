@@ -83,8 +83,11 @@ class ExitManager:
         if opened_at:
             try:
                 open_dt = datetime.fromisoformat(opened_at)
+                # Strip TZ info if present (startup recovery stores TZ-aware isoformat)
+                if open_dt.tzinfo is not None:
+                    open_dt = open_dt.replace(tzinfo=None)
                 time_open = datetime.now() - open_dt
-            except ValueError:
+            except (ValueError, TypeError):
                 pass
         
         # ---- PHASE 1 -> PHASE 3: Runner Detection (no breakeven stop) ----

@@ -33,7 +33,9 @@ __init__(storage, ig_client=None)
 on_trade_confirm: Optional[Callable]  — set by TradingMonitor after initialize()
 on_force_scan: Optional[Callable]     — set by TradingMonitor after initialize()
 
-initialize()      → Creates Application, registers all handlers (CommandHandler + CallbackQueryHandler + MessageHandler)
+_auth(fn)         → Wraps a command handler coroutine with chat-ID guard (silently drops unauthorized)
+_is_authorized(update) → bool — checks update.effective_chat.id == TELEGRAM_CHAT_ID
+initialize()      → Creates Application, registers all handlers (CommandHandler + CallbackQueryHandler + MessageHandler). All CommandHandlers wrapped in _auth(). _handle_callback and _handle_text also check _is_authorized.
 start_polling()   → Starts Telegram polling (drop_pending_updates=True)
 stop()            → Graceful shutdown
 
@@ -43,7 +45,7 @@ stop()            → Graceful shutdown
 /menu   → full inline button panel (Info + Control sections)
 /status → mode, position, session, scanning_paused, balance, today P&L + _nav_kb("status")
 /balance→ account details, compound plan progress + _nav_kb("balance")
-/journal→ last 5 trades (P&L colored) + _nav_kb("journal")
+/journal→ last 5 trades with entry/exit, SL/TP, R:R (calculated), confidence, duration, session + _nav_kb("journal")
 /today  → today's scan history + _nav_kb("today")
 /stats  → win rate, avg win/loss, performance + _nav_kb("stats")
 /cost   → API costs (today + total) + _nav_kb("cost")
@@ -68,14 +70,15 @@ Section headers (── Info ──, ── Controls ──) use callback_data="
 
 ## Alert methods
 send_alert(message: str)                    → plain HTML message
-send_trade_alert(trade_data: dict)          → CONFIRM / REJECT inline buttons, stores in self.pending_alert. Auto-executes after 2 min if no response.
-send_force_open_alert(alert_data: dict)     → Force Open / Skip inline buttons. 100% local confidence, AI rejected. 15min TTL. No auto-execute — requires explicit user click. Uses same pending_alert slot.
+send_trade_alert(trade_data: dict)          → CONFIRM / REJECT inline buttons, stores pending_alert BEFORE send. Plain-text fallback on HTML failure.
+send_force_open_alert(alert_data: dict)     → Force Open / Skip inline buttons. 100% local confidence, AI rejected. 15min TTL. No auto-execute. Stores pending_alert BEFORE send. Plain-text fallback on HTML failure.
 send_scalp_executed(alert_data, scalp_result) → notification-only (no buttons). Opus-approved scalp auto-executed.
 send_position_update(pnl_pts, phase, price) → milestone or phase change, colored P&L
 send_adverse_alert(message, tier, deal_id)  → tier-colored alert with Close now / Hold inline buttons (SEVERE only — MILD/MODERATE removed)
 send_position_eval(eval_result, direction, entry, current_price, pnl_pts, phase, deal_id)
   → Opus 2-min position evaluation result. Shows recommendation, confidence, adverse_risk, tp_probability, reasoning.
-  → If CLOSE_NOW and conf >= 60: shows Close now / Hold inline buttons.
+  → reasoning is _html.escape()'d to prevent HTML parse failures from AI output.
+  → If CLOSE_NOW and conf >= 70: shows Close now / Hold inline buttons (matches monitor.py auto-close gate).
 
 ## Inline button callbacks (CallbackQueryHandler)
 confirm_trade     → checks expiry → on_trade_confirm(alert_data) → clears pending_alert

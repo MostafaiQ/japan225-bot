@@ -26,6 +26,8 @@ def make_tf(
     volume_signal="NORMAL",
     pullback_depth=-50,
     avg_candle_range=80,
+    ha_bullish=None,
+    ha_streak=None,
 ):
     """Build a synthetic analyze_timeframe() output dict."""
     return {
@@ -41,6 +43,8 @@ def make_tf(
         "volume_signal": volume_signal,
         "pullback_depth": pullback_depth,
         "avg_candle_range": avg_candle_range,
+        "ha_bullish": ha_bullish,
+        "ha_streak": ha_streak,
     }
 
 
@@ -53,6 +57,7 @@ def ideal_long_setup():
         bb_lower=37700,
         ema50=37985,     # price above EMA50 (C5 passes)
         above_ema50=True, above_ema200=True,
+        ha_bullish=True, ha_streak=3,  # C11: HA aligned bullish
     )
     tf_4h = make_tf(rsi=55, above_ema200=True, above_ema50=True)
     tf_daily = make_tf(rsi=60, above_ema200=True, above_ema50=True)
@@ -77,6 +82,7 @@ def ideal_short_setup():
         ema50=38050,      # price below EMA50 (bearish)
         above_ema50=False, above_ema200=False,
         pullback_depth=50,  # price rallied before SHORT entry (C12)
+        ha_bullish=False, ha_streak=-3,  # C11: HA bearish aligned for SHORT
     )
     return tf_daily, tf_4h, tf_15m
 
@@ -253,11 +259,12 @@ class TestTrend4hC10:
         result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
         assert result["criteria"]["trend_4h"] is False
 
-    def test_4h_ema50_unavailable_defaults_pass(self):
+    def test_4h_ema50_unavailable_defaults_fail(self):
+        # BUG-006 fix: conservative default — missing 4H data should not inflate confidence
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
         tf_4h["above_ema50"] = None
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
-        assert result["criteria"]["trend_4h"] is True
+        assert result["criteria"]["trend_4h"] is False
 
 
 # ── SHORT Criteria ────────────────────────────────────────────────────────────
@@ -416,11 +423,12 @@ class TestHaAlignedC11:
         result = compute_confidence("SHORT", tf_daily, tf_4h, tf_15m)
         assert result["criteria"]["ha_aligned"] is False
 
-    def test_ha_unavailable_defaults_pass(self):
+    def test_ha_unavailable_defaults_fail(self):
+        # BUG-006 fix: conservative default — missing HA data should not inflate confidence
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
         tf_15m.pop("ha_bullish", None)
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
-        assert result["criteria"]["ha_aligned"] is True
+        assert result["criteria"]["ha_aligned"] is False
 
     def test_ha_affects_score(self):
         """C11 failure should reduce score by ~6 points (70/11 ≈ 6.36)."""

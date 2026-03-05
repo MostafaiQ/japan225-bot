@@ -51,55 +51,69 @@ NEW (2026-03-05): counter_signal (null | "LONG" | "SHORT") — Sonnet sets this 
   counter_reasoning (null | str) — explanation of why Sonnet flagged the counter-direction.
 
 ## build_system_prompt() -> str
-Compact reference card. ~350 tokens. Includes HA, FVG, Fibonacci, sweep signal guidance.
-VWAP guidance: above=premium (SHORT), below=discount (LONG). PDH/PDL.
-11-criteria confidence breakdown. Quick-reject guidance for junk setups.
-NEW (2026-03-05): COUNTER SIGNAL instruction — Sonnet instructed to set counter_signal when
-  it sees a compelling opposite-direction opportunity during evaluation.
-NEW: EXTREME DAY RULES section — bidirectional: crash day (bearish) + bull day (bullish).
-  Crash: prohibits shorting into oversold 4H<32, prohibits LONG on single 15M candle.
-  Bull: prohibits LONG into overbought 4H>68, prohibits SHORT on single 15M candle.
-  MARKET REGIME block detects direction (price vs midpoint of range).
-NEW: OVERSOLD SHORTING PROHIBITION — 4H RSI<32 + exhaustion = REJECT SHORT.
-NEW: OVERBOUGHT LONGING PROHIBITION — 4H RSI>68 + exhaustion = REJECT LONG.
-NEW: WARNING SEVERITY RULE — 4+ warnings → <70%, 6+ warnings → <60%.
-NEW: MEAN-REVERSION BOUNCE RULES section:
-  - bb_lower_bounce: ±150pts from lower band, RSI 20-40, reversal confirms on wick/HA/candle/sweep.
-  - oversold_reversal: RSI<30 + daily bullish + reversal confirm.
-  Both: expect to fail C5/C10/C11 (EMA50 gates relaxed for oversold).
-NEW: BREAKDOWN/MOMENTUM SHORT RULES section (added 2026-03-03):
-  - breakdown_continuation, bear_flag_breakdown, multi_tf_bearish: daily bullish = EXPECTED during
-    transition. AI instructed to evaluate on 4H/15M structure, NOT daily trend. Default APPROVE
-    if HA streak ≤-2 and below EMA50. Reject only on oversold bounce risk, major support, LOW volume.
-Opus review instructions simplified for oversold setups (focus on reversal signals).
+REWRITTEN 2026-03-05 (prompt engineering pass). Was ~14,568 chars, now ~9,690 chars (-34%).
+Condensed verbose per-setup rule blocks into compact tables + decision tables.
+Added NEW framework sections:
+
+WYCKOFF PHASE DETECTION:
+  4 phases: Accumulation (Spring=LONG), Markup (LONG preferred), Distribution (UT=SHORT), Markdown (SHORT preferred).
+  Coil/slow market: BBW<200 + HA~0 → lower bar for band-edge mean-reversion, pre-breakout pre-positioning.
+  Spring = swept_low + quick recovery = strong LONG signal. UpThrust = swept_high + fails = strong SHORT signal.
+
+VOLUME PROFILE USAGE (POC/VAH/VAL):
+  POC = equilibrium (wait for break). VAH from below = resistance/SHORT. VAL from above = support/LONG.
+  Inside VA = slow mean-reversion. Outside VA = rejection (reversal) or acceptance (continuation).
+  LVN = price moves fast. VP edge at slow-day band extremes → lower confidence threshold by 5pts.
+
+SMC (Smart Money Concepts):
+  Order Block: last bearish candle before bullish impulse = demand OB (LONG retest). Vice versa = supply OB.
+  FVG: fvg_bullish = demand zone. fvg_bearish = supply zone. Soft S/R (fills during reversals).
+  Sweeps: swept_low = liquidity grab → bullish. swept_high → bearish. Sweep+OB+FVG = highest conviction.
+  BOS vs CHoCH: BOS = trend continuation. CHoCH = reversal (pivot_low broken in uptrend = CHoCH bearish).
+  SMC + Wyckoff: Spring = sweep(equal_lows) + bullish_FVG + demand_OB. UT = sweep(equal_highs) + bearish_FVG + supply_OB.
+
+SETUP-CLASS RULES (condensed from verbose sections):
+  Mean-reversion longs: bearish HA + below EMA50 = EXPECTED. Approve if daily bullish + reversal signal.
+  Mean-reversion shorts: bullish HA + above EMA50 = EXPECTED. Approve if daily bearish + reversal signal.
+  Momentum longs: RSI 60-75 = healthy. Above BB mid = expected. Approve if >EMA50+VWAP+HA bull+RSI45-75.
+  Momentum shorts: RSI 30-55 = healthy. Daily "bullish" during selloff = expected (EMA lags). Approve if 4H+15M aligned.
+
+HARD PROHIBITIONS (unchanged): oversold shorting (4H RSI<32), overbought longing (4H RSI>68), extreme day rules.
+WARNINGS RULE (unchanged): 4+ → <70%, 6+ → <60%.
+COUNTER SIGNAL (unchanged): set counter_signal="LONG"/"SHORT" on concrete structural evidence.
 Passed as <system> block in _run_claude.
 
 ## build_scan_prompt(..., failed_criteria=None) -> str
 Compact format. Appends JSON schema template at end.
-Dead context_note removed (was telling AI about files it can't access since --tools "" disables all tools).
 PRE-SCREEN line includes `Entry TF: {entry_tf}`.
-SECONDARY SETUP block: shown when bidirectional scan finds both directions. Includes direction, type, conf, reasoning.
-  Threshold-aware framing: if secondary meets its threshold (≥70% LONG / ≥75% SHORT) → "INDEPENDENT CANDIDATE: evaluate as primary trade."
-  If below threshold → "context only, do not execute independently."
+SECONDARY SETUP block: threshold-aware framing (INDEPENDENT CANDIDATE vs context-only).
 failed_criteria → FAILED LOCAL CRITERIA block.
 MARKET REGIME block: intraday range + crash day flag injected into user prompt.
-Role block: 5-step analysis (structure → quality → risk → edge → opus review if borderline).
-Key formatters:
-  _fmt_indicators(indicators)   → pipe-format table (HA, FVG, full fib grid, sweep, VWAP, PDH/PDL, BB width)
-                                  TF_KEYS: D1, 4H, 15M, 5M (5M data now formatted for AI).
-                                  Full fibonacci: 5 levels (236/382/500/618/786) with distance from price.
-                                  BB width: volatility proxy per TF.
-                                  NEW (2026-03-05): MARKET STRUCTURE block appended at end:
-                                    - Anchored VWAPs: Daily + Weekly with distance from price
-                                    - Volume Profile: POC/VAH/VAL with INSIDE/ABOVE/BELOW value area position
-                                    - PDH/PDL (Daily): from indicators_snapshot.pdh_daily/pdl_daily, marks ↑SWEPT/↓SWEPT
-                                    - Prev Week H/L: from indicators_snapshot.prev_week_high/low
-                                    - Session Open: price distance from session open
-                                    - Asia Range: 00-06 UTC high-low range with price position
-                                    - Gap from prev close: tagged (gap up/down/flat)
-                                    - Equal Highs/Lows zones: top 3 liquidity zones
-                                    - Tick Density: if available in snap
-                                  All fields pulled from: tf15 (15M TF dict) + indicators["indicators_snapshot"]
+
+NEW (2026-03-05 prompt engineering pass):
+WYCKOFF/SMC CONTEXT block: pre-computed from live 15M + 4H indicators — injected after MARKET REGIME.
+  Fields: Phase hint (Accumulation/Markup/Distribution/Markdown/Coil) | Bias | HA streaks 15M + 4H
+           Sweep status | VP position (AT POC / INSIDE VA / ABOVE VAH / BELOW VAL) | BB width with COIL tag
+  Phase detection heuristic:
+    HA≥3 + above VWAP + above EMA50 → MARKUP / LONG preferred
+    HA≤-3 + below VWAP + below EMA50 → MARKDOWN / SHORT preferred
+    swept_low + HA≥-1 → ACCUMULATION Spring / LONG signal
+    swept_high + HA≤1 → DISTRIBUTION UpThrust / SHORT signal
+    BBW<200 + |HA|≤1 → COIL / band-edge mean-reversion or pre-breakout
+  VP position computed from volume_poc/volume_vah/volume_val in 15M TF dict.
+  Caveat line: "AI: verify phase from full indicator data — hint is heuristic only"
+
+Role block: 7-step analysis (was 5-step):
+  1. WYCKOFF PHASE (HA/BB/sweeps/VP) → phase + bias
+  2. VOLUME PROFILE (POC/VAH/VAL position)
+  3. SMC CONTEXT (sweep + FVG + OB confluence)
+  4. STRUCTURE (D1/4H/15M alignment, specific values)
+  5. SETUP QUALITY (trigger, distance, volume, HA, FVG)
+  6. RISK/EDGE (loss scenario, EV from live stats)
+  7. DEVIL'S ADVOCATE (challenge your case; SLOW DAY CHECK: coil → lower bar for band-edge MR)
+
+Key formatters (unchanged):
+  _fmt_indicators(indicators)   → pipe-format table with MARKET STRUCTURE block (VP, anchored VWAP, etc.)
   _fmt_recent_scans(scans)      → 1-line per scan summary
   _fmt_web_research(web)        → 3 lines, HIGH-impact calendar only
 

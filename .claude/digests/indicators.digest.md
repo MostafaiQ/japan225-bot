@@ -4,6 +4,12 @@
 #   Fibonacci S/R enhanced in _build_confluence(). indicators_snapshot expanded with ema9_15m, above_ema9, above_ema200, fibonacci dict.
 # Updated 2026-03-05: 4 new market structure functions. analyze_timeframe() extended.
 #   indicators_snapshot expanded with anchored VWAPs, volume profile, equal levels, PDH/PDL sweep.
+# Updated 2026-03-05 (bug fixes):
+#   BUG-002: analyze_timeframe() now stores candlestick_patterns (plural list) alongside singular keys.
+#     Non-neutral patterns → [{"direction":..., "name":..., "strength":...}]. Neutral → [].
+#     detect_setup() indicators_snapshot now includes candlestick_patterns key.
+#   BUG-020: result["vwap"] overridden with anchored_vwap_daily when available (session-accurate).
+#     above_vwap updated to match. Fallback to cumulative VWAP if anchored unavailable.
 
 ## Functions
 
@@ -31,7 +37,8 @@ analyze_timeframe(candles: list[dict]) -> dict
   #   fibonacci (dict: fib_236/382/500/618/786), fib_near (str|None),
   #   ha_bullish, ha_streak, fvg_bullish/bearish, fvg_level,
   #   pullback_depth, avg_candle_range, bb_width, atr,
-  #   candlestick_pattern/direction/strength, body_trend, consecutive_direction,
+  #   candlestick_pattern/direction/strength, candlestick_patterns (list of dicts — BUG-002 fix),
+  #   body_trend, consecutive_direction,
   #   # NEW (2026-03-05):
   #   anchored_vwap_daily, anchored_vwap_weekly (None if no timestamp/volume data),
   #   volume_poc, volume_vah, volume_val (None if no volume),

@@ -2,6 +2,11 @@
 # Purpose: Local 12-criteria confidence scorer. Gates AI escalation (score must be >=60%).
 # Bidirectional: LONG and SHORT criteria differ.
 # Updated 2026-03-04: _momentum_setup + _momentum_short_setup flags for trend-following setups.
+# Updated 2026-03-05 (bug fixes):
+#   BUG-017: C3 SHORT now has _momentum_short_setup branch: RSI 30-60 accepted (was fixed 55-75).
+#     Both momentum_continuation_short and vwap_rejection_short_momentum use widened zone.
+#   BUG-006: C10 defaults to False when 4H above_ema50 unavailable (was True — inflating score).
+#            C11 defaults to False when ha_bullish unavailable (was True — inflating score).
 
 ## Constants
 BASE_SCORE=30  MAX_SCORE=100
@@ -16,7 +21,7 @@ SHORT_RSI_LOW/HIGH=55/75
 # 1. daily_trend:   EMA50 PRIMARY. Oversold exempt. Momentum LONG exempt. Breakdown/momentum SHORT exempt.
 # 2. entry_level:   Near BB mid/EMA50/BB lower/VWAP. MOMENTUM: accepts above VWAP, near BB upper, near EMA9.
 #                  NEW (2026-03-05): also passes when near anchored weekly VWAP (within 200pts). Both LONG and SHORT.
-# 3. rsi_15m:       LONG 30-55. BB lower 20-40. MOMENTUM LONG 40-75. SHORT 55-75.
+# 3. rsi_15m:       LONG 30-55. BB lower 20-40. MOMENTUM LONG 40-75. SHORT 55-75. MOMENTUM SHORT 30-60.
 # 4. tp_viable:     LONG: price<=bb_mid. MOMENTUM: always pass. SHORT breakdown/momentum: always pass.
 # 5. structure:     LONG: above EMA50. SHORT: below EMA50. Oversold/overbought: reversal signals.
 # 6. macro:         4H RSI range. LONG 35-75. SHORT 30-60.

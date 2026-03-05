@@ -594,6 +594,11 @@ def analyze_timeframe(candles: list[dict]) -> dict:
     result["candlestick_pattern"]   = cp["pattern_name"]
     result["candlestick_direction"] = cp["pattern_direction"]
     result["candlestick_strength"]  = cp["pattern_strength"]
+    # Plural list form used by detect_setup() (candlestick_patterns)
+    if cp["pattern_name"] and cp["pattern_direction"] != "neutral":
+        result["candlestick_patterns"] = [{"direction": cp["pattern_direction"], "name": cp["pattern_name"], "strength": cp["pattern_strength"]}]
+    else:
+        result["candlestick_patterns"] = []
 
     # ── Body Trend Analysis ─────────────────────────────────────────────────
     bt = analyze_body_trend(candles, lookback=5)
@@ -631,6 +636,10 @@ def analyze_timeframe(candles: list[dict]) -> dict:
         week_start = (now_utc - timedelta(days=days_since_mon)).strftime("%Y-%m-%d")
         result["anchored_vwap_daily"]  = anchored_vwap(candles, today_str)
         result["anchored_vwap_weekly"] = anchored_vwap(candles, week_start)
+        # Use daily-anchored VWAP as primary if available (more accurate than cumulative multi-day)
+        if result["anchored_vwap_daily"] is not None:
+            result["vwap"] = result["anchored_vwap_daily"]
+            result["above_vwap"] = current_price > result["vwap"]
     except Exception:
         result["anchored_vwap_daily"]  = None
         result["anchored_vwap_weekly"] = None
@@ -1156,6 +1165,7 @@ def detect_setup(
         "candlestick_pattern": tf_15m.get("candlestick_pattern"),
         "candlestick_direction": tf_15m.get("candlestick_direction"),
         "candlestick_strength": tf_15m.get("candlestick_strength"),
+        "candlestick_patterns": tf_15m.get("candlestick_patterns", []),
         "body_trend": tf_15m.get("body_trend"),
         "consecutive_direction": tf_15m.get("consecutive_direction"),
         "avg_body_size": tf_15m.get("avg_body_size"),

@@ -66,7 +66,7 @@ POST /api/apply-fix            → body:{target, diff} → git_ops.apply_fix()
 Read-only SQLite: file:{DB_PATH}?mode=ro
 get_position()            → dict or None (maps stop_level→stop_loss, limit_level→take_profit)
 get_recent_scans(n)       → list[dict] last N scans, oldest-first
-get_trade_history(n)      → list[dict] last N closed trades
+get_trade_history(n)      → list[dict] last N closed trades. NOTE: renames phase_at_close→exit_phase, notes→close_reason
 get_cost_today()          → float ($)
 get_ai_calls_today()      → int
 db_exists()               → bool
@@ -82,6 +82,19 @@ write_overrides(updates, tier) → validates keys for tier, atomic write, return
 apply_fix(target: str, diff: str) → dict
   Validates: path in project root, .py/.json/.md only, no .env or *.db
   Sequence: patch --dry-run → git stash <file> (rollback safety) → patch apply → git add/commit/push
+
+### services/ig_history.py
+fetch_full_journal(days=30) → {trades, account, source}
+  Caches 60s. Threading lock prevents concurrent IG fetches. Reuses IG session (1hr TTL).
+  Merges IG transactions with DB trades. Matching: ref-based first, then timestamp fallback (±60s).
+  db_by_ref: keyed by both full deal_id ("DIAAAAQXXXXX") and short ref ("XXXXX", one .replace() strip).
+  _ts_fallback_match: matches by openDateUtc ± 60s + same direction when ref match fails.
+  opened_by/closed_by: uses channel from activities; if missing, infers from DB match presence.
+  _sync_trades_to_db: writes pnl/exit_price/balance_before/balance_after back to DB (uses cursor.rowcount).
+  SL/TP: db_match.get("stop_loss") / db_match.get("take_profit") — absolute price levels from DB.
+  RR: round(abs(tp-entry) / abs(entry-sl), 1) — same price scale, no unit mismatch.
+  Notes: _build_trade_note (DB match) or _build_manual_note (no match). Bot trades never labeled Manual when DB match found.
+  "dur_str == '—'" (DB placeholder) → recomputed from IG timestamps.
 
 ## Inter-process communication (monitor.py ↔ dashboard)
 storage/data/bot_state.json           ← monitor._write_state() each cycle

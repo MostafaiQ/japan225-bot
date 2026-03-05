@@ -2,7 +2,7 @@
 Fetch transaction + activity history from IG REST API.
 Merges with local DB trades to produce a complete journal with Auto/Manual flags.
 Reuses a single IG session (never logs out — avoids kicking user off IG web).
-Caches results for 5 min with a lock to prevent concurrent fetches.
+Caches results for 1 min with a lock to prevent concurrent fetches.
 """
 import os
 import json
@@ -74,11 +74,11 @@ def _sync_trades_to_db(trades):
             db_deal_id = t.get("_db_deal_id")
             if not db_deal_id:
                 continue
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE trades SET pnl=?, exit_price=?, balance_before=?, balance_after=? WHERE deal_id=?",
                 (t["pnl"], t["exit_price"], t.get("balance_before"), t.get("balance_after"), db_deal_id),
             )
-            updated += conn.total_changes
+            updated += cursor.rowcount
         conn.commit()
         conn.close()
         if updated:
@@ -369,9 +369,9 @@ def _fetch_journal_locked(days):
     for t in db_trades:
         did = t.get("deal_id", "") or ""
         # deal_id in DB is like "DIAAAAQ2W9K76AJ", reference in IG is "2W9K76AJ"
-        # Match by the last part
+        # Match by the last part (strip DIAAAAQ prefix once)
         if did:
-            short_ref = did.replace("DIAAAAQ", "").replace("DIAAAAQ", "")
+            short_ref = did.replace("DIAAAAQ", "", 1)
             db_by_ref[short_ref] = t
             db_by_ref[did] = t
 
@@ -414,6 +414,41 @@ def _fetch_journal_locked(days):
 
     open_ch_map, close_ch_map, close_to_open = _build_activity_map(activities)
 
+    # Build a sorted list of DB trades for timestamp-based fallback matching
+    # (used when ref-based matching fails because IG activity is missing/malformed)
+    _db_by_ts = sorted(
+        [t for t in db_trades if t.get("opened_at")],
+        key=lambda t: t["opened_at"]
+    )
+
+    def _ts_fallback_match(open_date_utc: str, direction: str):
+        """Find the closest DB trade opened within 60s of open_date_utc, same direction."""
+        if not open_date_utc or not _db_by_ts:
+            return None
+        try:
+            txn_ts = datetime.fromisoformat(open_date_utc.replace("Z", "+00:00"))
+        except Exception:
+            return None
+        best = None
+        best_delta = 60  # max 60 seconds difference
+        for t in _db_by_ts:
+            try:
+                db_ts = datetime.fromisoformat(t["opened_at"].replace("Z", "+00:00"))
+                # Normalise timezone: compare both as UTC-aware or both naive
+                cmp_txn = txn_ts
+                if cmp_txn.tzinfo and not db_ts.tzinfo:
+                    db_ts = db_ts.replace(tzinfo=cmp_txn.tzinfo)
+                elif db_ts.tzinfo and not cmp_txn.tzinfo:
+                    cmp_txn = cmp_txn.replace(tzinfo=db_ts.tzinfo)
+                delta = abs((cmp_txn - db_ts).total_seconds())
+                t_dir = (t.get("direction") or "").upper()
+                if delta < best_delta and t_dir == direction.upper():
+                    best_delta = delta
+                    best = t
+            except Exception:
+                continue
+        return best
+
     # Build trade list from IG transactions
     trades = []
     acc = get_account_state()
@@ -436,12 +471,31 @@ def _fetch_journal_locked(days):
         open_ch = open_ch_map.get(open_ref, "")
         close_ch = close_ch_map.get(open_ref, "")
 
-        # Check if we have DB data for this trade (try close ref and open ref)
+        # Check if we have DB data for this trade (try close ref and open ref first)
         db_match = db_by_ref.get(ref) or db_by_ref.get(open_ref)
 
-        # Determine auto/manual labels
-        opened_by = _channel_label(open_ch) if open_ch else "Manual"
-        closed_by = _channel_label(close_ch) if close_ch else "Manual"
+        # Fallback: match by timestamp if ref-based lookup failed
+        if db_match is None:
+            db_match = _ts_fallback_match(txn.get("openDateUtc", ""), direction)
+
+        # Determine auto/manual labels.
+        # If we have a DB match, it's a bot trade (opened via PUBLIC_WEB_API).
+        # Only fall back to "Manual" when we have no DB match AND no channel info.
+        if open_ch:
+            opened_by = _channel_label(open_ch)
+        elif db_match:
+            opened_by = "Auto"  # DB match = bot opened it
+        else:
+            opened_by = "Manual"
+
+        if close_ch:
+            closed_by = _channel_label(close_ch)
+        elif db_match:
+            # Infer close channel: if result is SL_HIT or TP_HIT it was a system close
+            db_result = (db_match.get("result") or "").upper()
+            closed_by = "System" if db_result in ("SL_HIT", "TP_HIT") else "Manual"
+        else:
+            closed_by = "Manual"
 
         entry = float(txn.get("openLevel", 0))
         exit_p = float(txn.get("closeLevel", 0))
@@ -458,6 +512,8 @@ def _fetch_journal_locked(days):
 
         # Compute duration string
         dur_str = db_match.get("duration") if db_match else None
+        if dur_str == "—":
+            dur_str = None  # DB placeholder — recompute from IG timestamps
         if not dur_str:
             try:
                 t_open = datetime.fromisoformat(txn.get("openDateUtc", ""))
