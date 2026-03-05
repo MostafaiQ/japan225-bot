@@ -43,7 +43,7 @@ from config.settings import (
     CONTRADICTORY_SIGNAL_MIN_SCORE, CONTRADICTORY_SIGNAL_MAX_GAP,
 )
 from core.ig_client import IGClient, POSITIONS_API_ERROR
-from core.indicators import analyze_timeframe, detect_setup
+from core.indicators import analyze_timeframe, detect_setup, compute_session_context
 from core.session import get_current_session, is_no_trade_day
 from core.momentum import MomentumTracker, TIER_SEVERE
 from core.confidence import compute_confidence
@@ -704,6 +704,18 @@ class TradingMonitor:
                 indicators = {"m15": tf_15m, "h4": tf_4h, "daily": tf_daily}
                 if tf_5m:
                     indicators["m5"] = tf_5m
+                _mom_sess_ctx = compute_session_context(candles_15m, candles_daily)
+                _mom_tick = self.ig.get_tick_density()
+                indicators["indicators_snapshot"] = {
+                    "session_open": _mom_sess_ctx.get("session_open"),
+                    "asia_high": _mom_sess_ctx.get("asia_high"),
+                    "asia_low": _mom_sess_ctx.get("asia_low"),
+                    "pdh_daily": _mom_sess_ctx.get("pdh"),
+                    "pdl_daily": _mom_sess_ctx.get("pdl"),
+                    "gap_pts": _mom_sess_ctx.get("gap_pts"),
+                    "tick_density_signal": _mom_tick.get("signal"),
+                    "tick_density_latest": _mom_tick.get("latest"),
+                }
                 try:
                     _mom_opus_result = await asyncio.get_event_loop().run_in_executor(
                         None,
@@ -941,6 +953,24 @@ class TradingMonitor:
         if tf_5m:
             indicators["m5"] = tf_5m
 
+        # ── Session context + order flow → injected into indicators_snapshot ──
+        sess_ctx = compute_session_context(candles_15m, candles_daily)
+        tick_density = self.ig.get_tick_density()
+        snap = setup.get("indicators_snapshot", {})
+        snap.update({
+            "session_open":      sess_ctx.get("session_open"),
+            "asia_high":         sess_ctx.get("asia_high"),
+            "asia_low":          sess_ctx.get("asia_low"),
+            "pdh_daily":         sess_ctx.get("pdh"),
+            "pdl_daily":         sess_ctx.get("pdl"),
+            "prev_week_high":    sess_ctx.get("prev_week_high"),
+            "prev_week_low":     sess_ctx.get("prev_week_low"),
+            "gap_pts":           sess_ctx.get("gap_pts"),
+            "tick_density_signal": tick_density.get("signal"),
+            "tick_density_latest": tick_density.get("latest"),
+        })
+        indicators["indicators_snapshot"] = snap
+
         recent_trades_ctx = self.storage.get_recent_trades(10)
 
         logger.info(
@@ -1040,17 +1070,35 @@ class TradingMonitor:
                 _opposite_conf = conf_short if direction == "LONG" else conf_long
                 _opposite_setup = setup_short if direction == "LONG" else setup_long
                 _sonnet_conf_score = final_result.get("confidence", 0)
+                _counter_signal = final_result.get("counter_signal")  # "LONG"/"SHORT" set by Sonnet
 
-                if (
+                # Normal gate: pre-detected opposite setup with local conf >= 60%
+                _normal_gate = (
                     _opposite_conf is not None
                     and _opposite_conf.get("score", 0) >= 60
                     and _opposite_setup.get("found", False)
                     and _sonnet_conf_score >= 30
-                ):
-                    logger.info(
-                        f"Sonnet rejected {direction}. Opus evaluating {_opposite_dir} "
-                        f"(opposite local conf: {_opposite_conf.get('score')}%)"
-                    )
+                )
+                # Counter-signal gate: Sonnet explicitly identified an opposite-direction opportunity
+                # (e.g., swept_low = liquidity grab → bullish reversal while evaluating SHORT)
+                _counter_gate = (
+                    _counter_signal == _opposite_dir
+                    and _opposite_conf is not None
+                    and _sonnet_conf_score <= 45  # strong rejection of primary only
+                )
+
+                if _normal_gate or _counter_gate:
+                    if _counter_gate and not _normal_gate:
+                        logger.info(
+                            f"Sonnet counter_signal={_counter_signal} detected "
+                            f"(primary rejected at {_sonnet_conf_score}%). "
+                            f"Triggering Opus on {_opposite_dir} despite no pre-detected setup."
+                        )
+                    else:
+                        logger.info(
+                            f"Sonnet rejected {direction}. Opus evaluating {_opposite_dir} "
+                            f"(opposite local conf: {_opposite_conf.get('score')}%)"
+                        )
                     sonnet_key_levels = final_result.get("key_levels", {"support": [], "resistance": []})
                     try:
                         opus_result = await asyncio.get_event_loop().run_in_executor(
@@ -1186,10 +1234,10 @@ class TradingMonitor:
                         logger.warning(f"Opus opposite evaluation failed: {e}")
                 else:
                     logger.info(
-                        f"Opus opposite skipped: opposite setup not found or conf too low "
+                        f"Opus opposite skipped: no gate passed "
                         f"(opposite_found={_opposite_setup.get('found', False)}, "
                         f"opposite_conf={_opposite_conf.get('score', 0) if _opposite_conf else 'N/A'}%, "
-                        f"sonnet_conf={_sonnet_conf_score}%)"
+                        f"sonnet_conf={_sonnet_conf_score}%, counter_signal={_counter_signal})"
                     )
 
             # --- Force Open: 100% local confidence, AI rejected → user decides ---

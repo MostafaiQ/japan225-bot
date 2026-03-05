@@ -51,6 +51,8 @@ class IGClient:
         self._ls_client = None
         self._streaming_price: float | None = None
         self._streaming_price_ts: float = 0.0  # time.monotonic() of last tick
+        # Tick density (CHART:5MINUTE CONS_TICK_COUNT) — order flow proxy
+        self._tick_candles: list = []  # last 15 5M candles: {tick_count, range, density}
 
     def _load_disk_cache(self) -> None:
         """Load candle cache from disk (survives restarts)."""
@@ -176,7 +178,43 @@ class IGClient:
             )
             sub.addListener(_TickListener())
             self._ls_client.subscribe(sub)
-            logger.info("Lightstreamer streaming started (CHART tick)")
+
+            # ── CHART:5MINUTE — tick density / order flow proxy ───────────────
+            class _5MinListener(SubscriptionListener):
+                def onItemUpdate(self, update):
+                    fields = update.getChangedFields()
+                    tc_str  = fields.get("CONS_TICK_COUNT")
+                    bh_str  = fields.get("BID_HIGH")
+                    bl_str  = fields.get("BID_LOW")
+                    oh_str  = fields.get("OFR_HIGH")
+                    ol_str  = fields.get("OFR_LOW")
+                    utm_str = fields.get("UTM")
+                    if not (tc_str and bh_str and bl_str):
+                        return
+                    try:
+                        tc    = int(float(tc_str))
+                        mid_h = (float(bh_str) + float(oh_str)) / 2 if oh_str else float(bh_str)
+                        mid_l = (float(bl_str) + float(ol_str)) / 2 if ol_str else float(bl_str)
+                        rng   = round(mid_h - mid_l, 1)
+                        density = round(tc / rng, 2) if rng > 1 else 0.0
+                        client_ref._tick_candles.append({
+                            "tick_count": tc,
+                            "range": rng,
+                            "density": density,
+                            "ts": int(utm_str) if utm_str else None,
+                        })
+                        client_ref._tick_candles = client_ref._tick_candles[-15:]
+                    except (ValueError, TypeError):
+                        pass
+
+            sub5 = Subscription(
+                mode="MERGE",
+                items=[f"CHART:{EPIC}:5MINUTE"],
+                fields=["CONS_TICK_COUNT", "BID_HIGH", "BID_LOW", "OFR_HIGH", "OFR_LOW", "UTM"],
+            )
+            sub5.addListener(_5MinListener())
+            self._ls_client.subscribe(sub5)
+            logger.info("Lightstreamer streaming started (CHART tick + 5MIN tick density)")
             return True
         except Exception as e:
             logger.warning(f"Streaming start failed (will use REST polling): {e}")
@@ -200,6 +238,28 @@ class IGClient:
         if self._streaming_price and (time.monotonic() - self._streaming_price_ts) < STREAMING_STALE_SECONDS:
             return self._streaming_price
         return None
+
+    def get_tick_density(self, recent_n: int = 3) -> dict:
+        """
+        Order flow proxy from CHART:5MINUTE CONS_TICK_COUNT.
+        HIGH_ABSORPTION: high ticks + small range = contested level, price going nowhere.
+        HIGH_EXPANSION:  high ticks + large range = institutional conviction behind the move.
+        NORMAL: typical activity.
+        Returns {"signal": str|None, "latest": float|None, "candles": list}
+        """
+        if not self._tick_candles:
+            return {"signal": None, "latest": None, "candles": []}
+        recent = self._tick_candles[-recent_n:]
+        avg_ticks = sum(c["tick_count"] for c in recent) / len(recent)
+        avg_range = sum(c["range"] for c in recent) / len(recent)
+        latest    = recent[-1]["density"] if recent else None
+        if avg_ticks > 250 and avg_range < 80:
+            signal = "HIGH_ABSORPTION"
+        elif avg_ticks > 200 and avg_range > 150:
+            signal = "HIGH_EXPANSION"
+        else:
+            signal = "NORMAL"
+        return {"signal": signal, "latest": latest, "candles": recent}
 
     # ==========================================
     # MARKET DATA

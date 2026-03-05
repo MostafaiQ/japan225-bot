@@ -49,6 +49,10 @@ _scanning_cycle() -> int (sleep seconds):
      Cold start: all 4 sequential (rate limit). Warm: 5M+15M+4H parallel, Daily time-gated.
      All use candle caching: full fetch on first call, delta on subsequent (see ig_client.digest.md)
   5b. Extreme day detection: if tf_daily high-low > EXTREME_DAY_RANGE_PTS (1000pts) → logs warning.
+  5c. SESSION CONTEXT (NEW 2026-03-05): after indicators dict built, calls compute_session_context(candles_15m, candles_daily).
+      Also calls ig.get_tick_density(). Injects results into indicators["indicators_snapshot"]:
+        session_open, asia_high, asia_low, pdh_daily, pdl_daily, prev_week_high, prev_week_low, gap_pts,
+        tick_density_signal, tick_density_latest. Same injection done in momentum bypass path.
   6. BIDIRECTIONAL detect_setup(): two calls with exclude_direction="SHORT" and "LONG"
   6b. 5M FALLBACK (per-direction): if 15M no setup → try 5M with _5m_aligns_with_15m() guard
       → LONG: 15M RSI<65 + price within 300pts of 15M BB mid/lower
@@ -68,6 +72,9 @@ _scanning_cycle() -> int (sleep seconds):
       9d. If Sonnet rejects (conf >= 30%) → check if OPPOSITE direction has detected setup + conf >= 60%
           → If yes: evaluate_opposite() — Opus evaluates opposite direction as SWING trade (full context)
           → Gate: _opposite_conf.score >= 60 AND _opposite_setup.found AND sonnet_conf >= 30
+          → COUNTER GATE (NEW 2026-03-05): also fires if Sonnet sets counter_signal == opposite_direction
+            AND sonnet_conf <= 45%. Triggers evaluate_opposite() even without pre-detected setup for that direction.
+            Fixes: Sonnet saw swept_low=bullish reversal during SHORT eval but opposite wasn't pre-detected.
           → If Opus approves opposite at >= 70%/75%: risk validate + execute via send_trade_alert + _on_trade_confirm
           → Consistency tracking: storage.save_opus_decision() / storage.get_recent_opus_decision() (30-min persistence)
       9e. If Sonnet conf < 30% → skip Opus entirely (clear reject)

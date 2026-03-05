@@ -15,14 +15,29 @@ __init__(): reads IG_API_KEY/USERNAME/PASSWORD/ACC_NUMBER/IG_ENV from settings.
             Streaming state: _lightstreamer_endpoint (str|None), _ls_client, _streaming_price (float|None),
               _streaming_price_ts (float, time.monotonic())
 
-## LIGHTSTREAMER STREAMING (added 2026-03-04)
+## LIGHTSTREAMER STREAMING (added 2026-03-04, extended 2026-03-05)
 connect() now saves lightstreamerEndpoint from session response → _lightstreamer_endpoint.
+__init__(): also sets self._tick_candles: list = []  — accumulates 5M tick-density candles (in-memory only).
 
 start_streaming() -> bool
   # Connect LightstreamerClient using existing session tokens (CST/XST from self.ig.session.headers).
-  # No re-authentication. Subscribes to CHART:{EPIC}:TICK (BID+OFR → mid stored in _streaming_price).
+  # No re-authentication. Subscribes to TWO streams:
+  #   1. CHART:{EPIC}:TICK — BID+OFR → mid stored in _streaming_price (price streaming, unchanged)
+  #   2. CHART:{EPIC}:5MINUTE MERGE — CONS_TICK_COUNT, BID_HIGH/LOW, OFR_HIGH/LOW, UTM fields.
+  #      _5MinListener accumulates completed 5M candles into self._tick_candles (max 15 kept).
+  #      Each entry: {tick_count, high, low, range_pts, timestamp}
   # Returns True if subscription started. Logs warning and returns False on any error.
   # Safe to call multiple times — calls stop_streaming() first to clean up previous connection.
+  # NOTE: _tick_candles builds up after restart (in-memory only, not disk-backed).
+
+get_tick_density(recent_n: int = 3) -> dict
+  # Returns {"signal": str|None, "latest": float|None, "candles": list}
+  # Analyzes last recent_n candles from _tick_candles. Returns signal=None if < recent_n available.
+  # Signals:
+  #   HIGH_ABSORPTION: avg tick_count > 250 AND avg range_pts < 80 — high activity, price going nowhere
+  #   HIGH_EXPANSION:  avg tick_count > 200 AND avg range_pts > 150 — high activity + wide range = trending
+  #   NORMAL: otherwise (or insufficient data)
+  # latest: tick_count of most recent completed 5M candle.
 
 stop_streaming() -> None
   # Disconnects LightstreamerClient. Clears _ls_client, _streaming_price, _streaming_price_ts.

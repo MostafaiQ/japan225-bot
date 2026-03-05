@@ -198,7 +198,12 @@ def compute_confidence(
         near_ema9_mom = (
             _momentum_setup and ema9_15m is not None and abs(price - ema9_15m) <= 100
         )
-        c2 = near_bb_mid or near_ema50 or near_bb_lower or near_vwap_long or near_bb_upper_mom or above_vwap_mom or near_ema9_mom
+        # Anchored weekly VWAP: near the weekly institutional fair value (within 200pts)
+        avwap_weekly = tf_15m.get("anchored_vwap_weekly")
+        near_avwap_weekly = (
+            avwap_weekly is not None and abs(price - avwap_weekly) <= 200
+        )
+        c2 = near_bb_mid or near_ema50 or near_bb_lower or near_vwap_long or near_bb_upper_mom or above_vwap_mom or near_ema9_mom or near_avwap_weekly
         if near_bb_lower:
             reasons["entry_level"] = f"Price {abs(price - bb_lower):.0f}pts from BB lower ({bb_lower:.0f})"
         elif near_bb_mid:
@@ -213,6 +218,8 @@ def compute_confidence(
             reasons["entry_level"] = f"Momentum: above VWAP ({vwap_15m:.0f}, trend continuation)"
         elif near_ema9_mom:
             reasons["entry_level"] = f"Momentum: near EMA9 ({ema9_15m:.0f}, pullback entry)"
+        elif near_avwap_weekly:
+            reasons["entry_level"] = f"Near weekly anchored VWAP ({avwap_weekly:.0f}, {abs(price - avwap_weekly):.0f}pts)"
         else:
             reasons["entry_level"] = (
                 f"Not at tech level. BB mid dist: {abs(price - bb_mid):.0f}pts, "
@@ -239,7 +246,12 @@ def compute_confidence(
             and above_vwap_15m is True
             and abs(price - vwap_15m) <= BB_MID_THRESHOLD_PTS
         )
-        c2 = near_bb_upper or near_bb_mid or near_ema50_short or near_vwap_short
+        # Anchored weekly VWAP: near the weekly institutional fair value (within 200pts)
+        avwap_weekly_s = tf_15m.get("anchored_vwap_weekly")
+        near_avwap_weekly_s = (
+            avwap_weekly_s is not None and abs(price - avwap_weekly_s) <= 200
+        )
+        c2 = near_bb_upper or near_bb_mid or near_ema50_short or near_vwap_short or near_avwap_weekly_s
         if near_bb_upper:
             reasons["entry_level"] = f"Price {abs(price - bb_upper):.0f}pts from BB upper ({bb_upper:.0f})"
         elif near_ema50_short:
@@ -248,6 +260,8 @@ def compute_confidence(
             reasons["entry_level"] = f"Price {abs(price - bb_mid):.0f}pts from BB mid"
         elif near_vwap_short:
             reasons["entry_level"] = f"Price {abs(price - vwap_15m):.0f}pts above VWAP ({vwap_15m:.0f}, premium)"
+        elif near_avwap_weekly_s:
+            reasons["entry_level"] = f"Near weekly anchored VWAP ({avwap_weekly_s:.0f}, {abs(price - avwap_weekly_s):.0f}pts)"
         else:
             reasons["entry_level"] = "Not at technical level for short"
     criteria["entry_level"] = c2

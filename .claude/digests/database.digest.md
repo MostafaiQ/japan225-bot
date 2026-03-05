@@ -4,6 +4,7 @@
 
 ## class Storage
 __init__(db_path=None)  # Defaults to settings.DB_PATH
+  # Sets self.data_dir = Path(self.db_path).parent (used by save_opus_decision, get_recent_opus_decision)
 
 ## Scan history
 save_scan(scan_data: dict)                 # Saves to scans table

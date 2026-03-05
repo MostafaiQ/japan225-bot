@@ -197,7 +197,13 @@ OPUS REVIEW: If an opus_reviewer agent is available AND your confidence lands in
   If confidence >=87% (clear approve) or <=71% (clear reject), skip extra review.
 
 EXIT: +150pts → SL to BE+10. TP=400pts. 75%TP in <2h → trail@150pts.
-EMA50_bounce setup: DISABLED — do not approve."""
+EMA50_bounce setup: DISABLED — do not approve.
+
+COUNTER SIGNAL: When you reject the primary setup, check if the OPPOSITE direction has a clear opportunity.
+  Example: evaluating SHORT bear_flag_breakdown but 5M swept_low = liquidity grab suggesting bullish reversal → set counter_signal="LONG".
+  Example: evaluating LONG bounce but swept_high + bearish engulfing = distribution → set counter_signal="SHORT".
+  Only set counter_signal if you see concrete structural evidence for the opposite direction, not just absence of a bear move.
+  Leave counter_signal null if the rejection is purely "setup quality too low" or "no trade conditions"."""
 
 
 def _fmt_indicators(indicators: dict) -> str:
@@ -356,6 +362,85 @@ def _fmt_indicators(indicators: dict) -> str:
         s_str = s_near or f"S1={pvt.get('s1', '?')}"
         r_str = r_near or f"R1={pvt.get('r1', '?')}"
         lines.append(f"PIVOT: PP={pp:.0f} {s_str} {r_str}")
+
+    # ── Market Structure Block ────────────────────────────────────────────────
+    # Pull from 15M timeframe (most relevant for entry context)
+    tf15 = indicators.get("tf_15m") or indicators.get("15m") or indicators.get("15M") or {}
+
+    ms_lines = []
+
+    # Anchored VWAPs
+    avd = tf15.get("anchored_vwap_daily")
+    avw = tf15.get("anchored_vwap_weekly")
+    price_now = tf15.get("price")
+    if avd or avw:
+        avd_str = f"{avd:.0f}" if avd else "n/a"
+        avw_str = f"{avw:.0f}" if avw else "n/a"
+        avd_dist = f"({'+' if price_now and price_now > avd else '-'}{abs(price_now - avd):.0f}pts)" if avd and price_now else ""
+        avw_dist = f"({'+' if price_now and price_now > avw else '-'}{abs(price_now - avw):.0f}pts)" if avw and price_now else ""
+        ms_lines.append(f"  Anchored VWAP: Daily={avd_str}{avd_dist} | Weekly={avw_str}{avw_dist}")
+
+    # Volume Profile
+    poc = tf15.get("volume_poc")
+    vah = tf15.get("volume_vah")
+    val = tf15.get("volume_val")
+    if poc:
+        poc_dist = f"({'+' if price_now and price_now > poc else '-'}{abs(price_now - poc):.0f}pts)" if price_now else ""
+        inside_va = val and vah and val <= price_now <= vah if price_now else None
+        va_str = "INSIDE value area" if inside_va else ("ABOVE value area" if price_now and vah and price_now > vah else "BELOW value area" if price_now and val and price_now < val else "")
+        ms_lines.append(f"  Volume Profile: POC={poc:.0f}{poc_dist} | VAH={f'{vah:.0f}' if vah else 'n/a'} | VAL={f'{val:.0f}' if val else 'n/a'} | {va_str}")
+
+    # PDH/PDL (daily)
+    snap = indicators.get("indicators_snapshot") or {}
+    pdh_d = snap.get("pdh_daily") or tf15.get("pdh_daily")
+    pdl_d = snap.get("pdl_daily") or tf15.get("pdl_daily")
+    pdh_swept = snap.get("pdh_swept", False)
+    pdl_swept = snap.get("pdl_swept", False)
+    if pdh_d or pdl_d:
+        pdh_str = f"{pdh_d:.0f}{'↑SWEPT' if pdh_swept else ''}" if pdh_d else "n/a"
+        pdl_str = f"{pdl_d:.0f}{'↓SWEPT' if pdl_swept else ''}" if pdl_d else "n/a"
+        ms_lines.append(f"  PDH/PDL (Daily): {pdh_str} / {pdl_str}")
+
+    # Prev Week H/L
+    pwh = snap.get("prev_week_high")
+    pwl = snap.get("prev_week_low")
+    if pwh or pwl:
+        pwh_str = f"{pwh:.0f}" if pwh else "n/a"
+        pwl_str = f"{pwl:.0f}" if pwl else "n/a"
+        ms_lines.append(f"  Prev Week: H={pwh_str} | L={pwl_str}")
+
+    # Session Open + Asia Range + Gap
+    sess_open = snap.get("session_open")
+    asia_h = snap.get("asia_high")
+    asia_l = snap.get("asia_low")
+    gap_pts = snap.get("gap_pts")
+    if sess_open and price_now:
+        dist_from_open = price_now - sess_open
+        ms_lines.append(f"  Session Open: {sess_open:.0f} (price {'+' if dist_from_open >= 0 else ''}{dist_from_open:.0f}pts from open)")
+    if asia_h and asia_l:
+        in_asia = asia_l <= price_now <= asia_h if price_now else None
+        asia_pos = "inside" if in_asia else ("above" if price_now and price_now > asia_h else "below")
+        ms_lines.append(f"  Asia Range: {asia_h:.0f}–{asia_l:.0f} (price {asia_pos})")
+    if gap_pts is not None:
+        ms_lines.append(f"  Gap from prev close: {'+' if gap_pts >= 0 else ''}{gap_pts:.0f}pts {'(gap up)' if gap_pts > 30 else '(gap down)' if gap_pts < -30 else '(flat open)'}")
+
+    # Equal Highs/Lows zones
+    eq_highs = tf15.get("equal_highs_zones", [])
+    eq_lows  = tf15.get("equal_lows_zones",  [])
+    if eq_highs:
+        ms_lines.append(f"  Equal Highs (liquidity): {', '.join(f'{z:.0f}' for z in eq_highs[:3])}")
+    if eq_lows:
+        ms_lines.append(f"  Equal Lows  (liquidity): {', '.join(f'{z:.0f}' for z in eq_lows[:3])}")
+
+    # Order flow / Tick density (from ig_client streaming, if available)
+    tick_density = snap.get("tick_density_signal")
+    tick_latest  = snap.get("tick_density_latest")
+    if tick_density:
+        ms_lines.append(f"  Tick Density: {tick_density} (latest={tick_latest:.1f} ticks/pt)" if tick_latest else f"  Tick Density: {tick_density}")
+
+    if ms_lines:
+        lines.append("\nMARKET STRUCTURE:")
+        lines.extend(ms_lines)
 
     return "\n".join(lines) if lines else "(no indicator data)"
 
@@ -712,7 +797,8 @@ class AIAnalyzer:
             f'"macro_aligned": false, "no_event_1hr": false, "no_friday_monthend": false}}, '
             f'"effective_rr": 0.0, '
             f'"key_levels": {{"support": [], "resistance": []}}, '
-            f'"trend_observation": "...", "warnings": [], "edge_factors": []}}'
+            f'"trend_observation": "...", "warnings": [], "edge_factors": [], '
+            f'"counter_signal": null, "counter_reasoning": null}}'
         )
 
         # Conditional Opus: only load sub-agent when local conf in borderline zone (60-86%)

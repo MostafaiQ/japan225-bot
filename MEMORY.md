@@ -162,6 +162,39 @@ Test cases to add (not yet written):
 - monitor.py: **indicators_snapshot wired** to both validate_trade() calls (Sonnet pipeline + opposite-direction eval).
 - Tests: 395/395 passing (2026-03-05).
 
+## Session Notes (2026-03-05) — major context enrichment
+- Storage.data_dir crash fix (save_opus_decision/get_recent_opus_decision used self.data_dir but __init__ never set it).
+- counter_signal: Sonnet JSON now has counter_signal/counter_reasoning fields. monitor.py triggers Opus on opposite direction when Sonnet sets counter_signal, even without pre-detected setup (fixes 08:05 case where Sonnet saw swept_low=bullish reversal during SHORT evaluation but Opus was skipped).
+- New indicators: anchored_vwap_daily/weekly (from timestamps), volume_poc/vah/val (approximate volume profile), equal_highs/lows_zones (liquidity pools), compute_session_context() (session open, Asia range, PDH/PDL, prev week H/L, gap).
+- Sonnet prompt: MARKET STRUCTURE block added — weekly/daily VWAP, POC/VAH/VAL, PDH/PDL with sweep markers, prev week H/L, session open, Asia range, gap, equal levels, tick density.
+- Lightstreamer: CHART:5MINUTE subscription added for CONS_TICK_COUNT → tick density (HIGH_ABSORPTION/HIGH_EXPANSION/NORMAL). In-memory only (builds up after restart). get_tick_density() method on IGClient.
+- confidence.py: C2 enriched with weekly anchored VWAP proximity (within 200pts). Zero formula/threshold changes.
+- Tests: 395/395 passing.
+
+## Market Structure Features (2026-03-05)
+- indicators.py: **4 new functions** added after detect_higher_lows():
+  - `anchored_vwap(candles, anchor_isodate)` — VWAP from a specific date onwards (volume-weighted)
+  - `compute_volume_profile(candles, lookback=50, bucket_size=25)` — POC/VAH/VAL via bucket distribution
+  - `detect_equal_levels(candles, lookback=30, tolerance=20.0)` — equal highs/lows liquidity zones
+  - `compute_session_context(candles_15m, candles_daily)` — session_open, asia_high/low, pdh/pdl, prev_week_h/l, gap_pts
+- indicators.py: **analyze_timeframe()** now appends 8 new keys to result dict:
+  - anchored_vwap_daily, anchored_vwap_weekly (from today/week-start)
+  - volume_poc, volume_vah, volume_val (volume profile, None if no volume data)
+  - equal_highs_zones, equal_lows_zones (lists of zone prices)
+- indicators.py: **detect_setup() indicators_snapshot** expanded:
+  - anchored_vwap_daily/weekly, volume_poc/vah/val, equal_highs/lows_zones
+  - pdh_daily, pdl_daily (from tf_daily prev_candle_high/low)
+  - prev_week_high/low (always None here — injected by monitor.py via session_context)
+  - pdh_swept, pdl_swept (bool — 15M sweep flag + proximity to daily PDH/PDL < 100pts)
+- analyzer.py: **_fmt_indicators()** has new MARKET STRUCTURE block:
+  - Anchored VWAPs with distance from current price
+  - Volume Profile POC/VAH/VAL with value area position
+  - PDH/PDL with SWEPT markers
+  - Prev Week H/L
+  - Session Open + Asia Range + Gap from prev close
+  - Equal Highs/Lows zones (top 3)
+  - Tick Density signal (when available in snap)
+
 ## Architecture Change (2026-03-05)
 - **Opus scalp path → Opus opposite-direction swing path**: After Sonnet rejects primary direction, Opus now evaluates the OPPOSITE direction as a swing trade (not a scalp).
 - Gate: opposite direction must have had a detected setup + local conf >= 60% + Sonnet conf >= 30%.

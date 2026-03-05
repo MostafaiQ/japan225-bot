@@ -43,10 +43,21 @@ _analyze(model, indicators, recent_scans, market_context, web_research,
 Tries fenced ```json...``` block first, then any {…} in text, then returns default.
 Logs warning if parse fails.
 
+## JSON schema fields (in scan_with_sonnet response)
+Standard fields: setup_found, direction, confidence, entry, stop_loss, take_profit, setup_type,
+  reasoning, effective_rr, warnings, edge_factors, _model, _cost, _tokens
+NEW (2026-03-05): counter_signal (null | "LONG" | "SHORT") — Sonnet sets this when it sees an
+  opposite-direction opportunity during evaluation. If counter_signal == opposite_direction AND
+  sonnet_conf <= 45%, monitor.py triggers evaluate_opposite() even without a pre-detected setup
+  (counter_gate). Fixes cases like 08:05 where Sonnet saw swept_low=bullish reversal during SHORT eval.
+  counter_reasoning (null | str) — explanation of why Sonnet flagged the counter-direction.
+
 ## build_system_prompt() -> str
 Compact reference card. ~350 tokens. Includes HA, FVG, Fibonacci, sweep signal guidance.
 VWAP guidance: above=premium (SHORT), below=discount (LONG). PDH/PDL.
 11-criteria confidence breakdown. Quick-reject guidance for junk setups.
+NEW (2026-03-05): COUNTER SIGNAL instruction — Sonnet instructed to set counter_signal when
+  it sees a compelling opposite-direction opportunity during evaluation.
 NEW: EXTREME DAY RULES section — bidirectional: crash day (bearish) + bull day (bullish).
   Crash: prohibits shorting into oversold 4H<32, prohibits LONG on single 15M candle.
   Bull: prohibits LONG into overbought 4H>68, prohibits SHORT on single 15M candle.
@@ -80,6 +91,17 @@ Key formatters:
                                   TF_KEYS: D1, 4H, 15M, 5M (5M data now formatted for AI).
                                   Full fibonacci: 5 levels (236/382/500/618/786) with distance from price.
                                   BB width: volatility proxy per TF.
+                                  NEW (2026-03-05): MARKET STRUCTURE block appended at end:
+                                    - Anchored VWAPs: Daily + Weekly with distance from price
+                                    - Volume Profile: POC/VAH/VAL with INSIDE/ABOVE/BELOW value area position
+                                    - PDH/PDL (Daily): from indicators_snapshot.pdh_daily/pdl_daily, marks ↑SWEPT/↓SWEPT
+                                    - Prev Week H/L: from indicators_snapshot.prev_week_high/low
+                                    - Session Open: price distance from session open
+                                    - Asia Range: 00-06 UTC high-low range with price position
+                                    - Gap from prev close: tagged (gap up/down/flat)
+                                    - Equal Highs/Lows zones: top 3 liquidity zones
+                                    - Tick Density: if available in snap
+                                  All fields pulled from: tf15 (15M TF dict) + indicators["indicators_snapshot"]
   _fmt_recent_scans(scans)      → 1-line per scan summary
   _fmt_web_research(web)        → 3 lines, HIGH-impact calendar only
 

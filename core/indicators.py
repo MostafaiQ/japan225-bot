@@ -8,6 +8,7 @@ Output: dicts with calculated values
 """
 import logging
 import math
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from config.settings import (
     RSI_ENTRY_HIGH_BOUNCE, ENABLE_EMA50_BOUNCE_SETUP,
@@ -622,6 +623,34 @@ def analyze_timeframe(candles: list[dict]) -> dict:
     # ATR(14) — true volatility per candle, used by AI to set appropriate SL/TP width
     result["atr"] = round(compute_atr(candles, period=14), 1)
 
+    # ── Anchored VWAPs (requires timestamp field in candles) ─────────────────
+    try:
+        now_utc = datetime.now(timezone.utc)
+        today_str = now_utc.strftime("%Y-%m-%d")
+        days_since_mon = now_utc.weekday()
+        week_start = (now_utc - timedelta(days=days_since_mon)).strftime("%Y-%m-%d")
+        result["anchored_vwap_daily"]  = anchored_vwap(candles, today_str)
+        result["anchored_vwap_weekly"] = anchored_vwap(candles, week_start)
+    except Exception:
+        result["anchored_vwap_daily"]  = None
+        result["anchored_vwap_weekly"] = None
+
+    # ── Volume Profile (POC / VAH / VAL) ──────────────────────────────────────
+    if any(c.get("volume", 0) > 0 for c in candles):
+        vp = compute_volume_profile(candles, lookback=50, bucket_size=25)
+        result["volume_poc"] = vp["poc"]
+        result["volume_vah"] = vp["vah"]
+        result["volume_val"] = vp["val"]
+    else:
+        result["volume_poc"] = None
+        result["volume_vah"] = None
+        result["volume_val"] = None
+
+    # ── Equal Highs/Lows Liquidity Zones ──────────────────────────────────────
+    eq = detect_equal_levels(candles, lookback=30, tolerance=20.0)
+    result["equal_highs_zones"] = eq["equal_highs_zones"]
+    result["equal_lows_zones"]  = eq["equal_lows_zones"]
+
     return result
 
 
@@ -660,6 +689,193 @@ def detect_higher_lows(prices: list[float], lookback: int = 5) -> bool:
     # Check last 2-3 swing lows are ascending
     recent_lows = lows[-3:]
     return all(recent_lows[i] > recent_lows[i - 1] for i in range(1, len(recent_lows)))
+
+
+def anchored_vwap(candles: list[dict], anchor_isodate: str) -> float | None:
+    """
+    VWAP anchored to a specific date (YYYY-MM-DD format).
+    Returns VWAP computed only from candles on/after that date.
+    Requires candles to have 'timestamp' and 'volume' fields.
+    """
+    try:
+        filtered = [c for c in candles if str(c.get("timestamp", ""))[:10] >= anchor_isodate and c.get("volume", 0) > 0]
+        if not filtered:
+            return None
+        total_vol = sum(c["volume"] for c in filtered)
+        if total_vol <= 0:
+            return None
+        tpv = sum(((c["high"] + c["low"] + c["close"]) / 3) * c["volume"] for c in filtered)
+        return round(tpv / total_vol, 1)
+    except Exception:
+        return None
+
+
+def compute_volume_profile(candles: list[dict], lookback: int = 50, bucket_size: int = 25) -> dict:
+    """
+    Approximate volume profile: distribute each candle's volume uniformly across its price range.
+    Returns POC (highest-volume price), VAH (value area high), VAL (value area low).
+    Uses last `lookback` candles. bucket_size in points (25 works well for Japan 225).
+    """
+    recent = candles[-lookback:] if len(candles) > lookback else candles
+    vol_by_price: dict[int, float] = {}
+
+    for c in recent:
+        vol = c.get("volume", 0)
+        if vol <= 0:
+            continue
+        price_range = c["high"] - c["low"]
+        if price_range < bucket_size:
+            # Narrow candle: put all volume at midpoint bucket
+            bucket = round(((c["high"] + c["low"]) / 2) / bucket_size) * bucket_size
+            vol_by_price[bucket] = vol_by_price.get(bucket, 0) + vol
+            continue
+        n_buckets = max(1, round(price_range / bucket_size))
+        vol_per_bucket = vol / n_buckets
+        for i in range(n_buckets):
+            bucket = round((c["low"] + i * bucket_size) / bucket_size) * bucket_size
+            vol_by_price[bucket] = vol_by_price.get(bucket, 0) + vol_per_bucket
+
+    if not vol_by_price:
+        return {"poc": None, "vah": None, "val": None}
+
+    sorted_prices = sorted(vol_by_price.keys())
+    poc = max(vol_by_price, key=lambda p: vol_by_price[p])
+    poc_idx = sorted_prices.index(poc)
+
+    # Value area: expand from POC until 70% of total volume is covered
+    total_vol = sum(vol_by_price.values())
+    target = total_vol * 0.70
+    accumulated = vol_by_price[poc]
+    lo_idx = hi_idx = poc_idx
+
+    while accumulated < target and (lo_idx > 0 or hi_idx < len(sorted_prices) - 1):
+        lo_add = vol_by_price[sorted_prices[lo_idx - 1]] if lo_idx > 0 else 0.0
+        hi_add = vol_by_price[sorted_prices[hi_idx + 1]] if hi_idx < len(sorted_prices) - 1 else 0.0
+        if lo_add >= hi_add and lo_idx > 0:
+            lo_idx -= 1
+            accumulated += lo_add
+        elif hi_idx < len(sorted_prices) - 1:
+            hi_idx += 1
+            accumulated += hi_add
+        else:
+            lo_idx -= 1
+            accumulated += lo_add
+
+    return {
+        "poc": sorted_prices[poc_idx],
+        "vah": sorted_prices[hi_idx],
+        "val": sorted_prices[lo_idx],
+    }
+
+
+def detect_equal_levels(candles: list[dict], lookback: int = 30, tolerance: float = 20.0) -> dict:
+    """
+    Detect equal highs and equal lows liquidity pools.
+    Equal levels = price clusters within `tolerance` points across `lookback` candles.
+    Returns lists of zone prices where 2+ candles touched the same level.
+    """
+    recent = candles[-lookback:] if len(candles) >= lookback else candles
+    all_highs = [c["high"] for c in recent]
+    all_lows  = [c["low"]  for c in recent]
+
+    def find_zones(values: list[float], tol: float) -> list[float]:
+        used = [False] * len(values)
+        zones = []
+        for i in range(len(values)):
+            if used[i]:
+                continue
+            cluster = [values[i]]
+            for j in range(i + 1, len(values)):
+                if not used[j] and abs(values[j] - values[i]) <= tol:
+                    cluster.append(values[j])
+                    used[j] = True
+            if len(cluster) >= 2:
+                zones.append(round(sum(cluster) / len(cluster), 1))
+        return zones
+
+    return {
+        "equal_highs_zones": find_zones(all_highs, tolerance),
+        "equal_lows_zones":  find_zones(all_lows,  tolerance),
+    }
+
+
+def compute_session_context(candles_15m: list[dict], candles_daily: list[dict] | None = None) -> dict:
+    """
+    Compute session-level price context from 15M and daily candles.
+    Returns: session_open, asia_high, asia_low, prev_session_high, prev_session_low,
+             pdh (prev day high), pdl (prev day low), prev_week_high, prev_week_low, gap_pts.
+    Candle timestamps must be parseable ISO strings (e.g. '2026-03-05 08:00:00').
+    """
+    result: dict = {
+        "session_open": None,
+        "asia_high": None,
+        "asia_low": None,
+        "pdh": None,
+        "pdl": None,
+        "prev_week_high": None,
+        "prev_week_low": None,
+        "gap_pts": None,
+    }
+
+    def parse_ts(c: dict):
+        try:
+            return datetime.fromisoformat(str(c.get("timestamp", "")).replace(" ", "T"))
+        except Exception:
+            return None
+
+    now_utc = datetime.now(timezone.utc)
+    today = now_utc.date()
+    current_hour = now_utc.hour
+
+    # ── Session open from 15M candles ─────────────────────────────────────────
+    if candles_15m:
+        if 0 <= current_hour < 6:
+            session_start_h, session_end_h = 0, 6
+        elif 8 <= current_hour < 16:
+            session_start_h, session_end_h = 8, 16
+        elif 16 <= current_hour < 21:
+            session_start_h, session_end_h = 16, 21
+        else:
+            session_start_h, session_end_h = None, None
+
+        if session_start_h is not None:
+            sess_candles = [
+                c for c in candles_15m
+                if (ts := parse_ts(c)) and ts.date() == today
+                and session_start_h <= ts.hour < session_end_h
+            ]
+            if sess_candles:
+                result["session_open"] = sess_candles[0]["open"]
+
+        # ── Asia range (Tokyo session: 00:00–05:59 UTC) ───────────────────────
+        asia = [
+            c for c in candles_15m
+            if (ts := parse_ts(c)) and ts.date() == today and 0 <= ts.hour < 6
+        ]
+        if asia:
+            result["asia_high"] = max(c["high"] for c in asia)
+            result["asia_low"]  = min(c["low"]  for c in asia)
+
+    # ── PDH/PDL + prev week + gap from daily candles ─────────────────────────
+    if candles_daily and len(candles_daily) >= 2:
+        result["pdh"] = candles_daily[-2]["high"]
+        result["pdl"] = candles_daily[-2]["low"]
+        result["gap_pts"] = round(candles_daily[-1]["open"] - candles_daily[-2]["close"], 1)
+
+        # Prev week: find candles from last calendar week (Mon–Sun)
+        days_since_mon = now_utc.weekday()  # Mon=0
+        this_monday_dt = (now_utc - timedelta(days=days_since_mon)).replace(hour=0, minute=0, second=0, microsecond=0)
+        last_monday_dt = this_monday_dt - timedelta(weeks=1)
+        prev_week = [
+            c for c in candles_daily
+            if (ts := parse_ts(c))
+            and last_monday_dt.date() <= ts.date() < this_monday_dt.date()
+        ]
+        if prev_week:
+            result["prev_week_high"] = max(c["high"] for c in prev_week)
+            result["prev_week_low"]  = min(c["low"]  for c in prev_week)
+
+    return result
 
 
 def confirm_5m_entry(tf_5m: dict, direction: str) -> bool:
@@ -952,6 +1168,28 @@ def detect_setup(
         "ema9_15m": tf_15m.get("ema9"),
         "above_ema9": tf_15m.get("above_ema9"),
         "above_ema200": tf_15m.get("above_ema200"),
+        # New market structure fields
+        "anchored_vwap_daily":  tf_15m.get("anchored_vwap_daily"),
+        "anchored_vwap_weekly": tf_15m.get("anchored_vwap_weekly"),
+        "volume_poc":           tf_15m.get("volume_poc"),
+        "volume_vah":           tf_15m.get("volume_vah"),
+        "volume_val":           tf_15m.get("volume_val"),
+        "equal_highs_zones":    tf_15m.get("equal_highs_zones", []),
+        "equal_lows_zones":     tf_15m.get("equal_lows_zones", []),
+        # Daily structure (from tf_daily)
+        "pdh_daily":            tf_daily.get("prev_candle_high"),
+        "pdl_daily":            tf_daily.get("prev_candle_low"),
+        "prev_week_high":       None,
+        "prev_week_low":        None,
+        # PDH/PDL sweep detection (from tf_15m sweep analysis against daily levels)
+        "pdh_swept": (
+            tf_15m.get("swept_high") and tf_daily.get("prev_candle_high") is not None
+            and abs(tf_15m.get("high", 0) - tf_daily.get("prev_candle_high", 0)) < 100
+        ),
+        "pdl_swept": (
+            tf_15m.get("swept_low") and tf_daily.get("prev_candle_low") is not None
+            and abs(tf_15m.get("low", 0) - tf_daily.get("prev_candle_low", 0)) < 100
+        ),
     }
 
     if not price:
