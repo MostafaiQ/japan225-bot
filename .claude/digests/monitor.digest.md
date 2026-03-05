@@ -71,10 +71,11 @@ _scanning_cycle() -> int (sleep seconds):
       9c. If Sonnet approves → proceed to risk validation + execute
       9d. If Sonnet rejects (conf >= 30%) → check if OPPOSITE direction has detected setup + conf >= 60%
           → If yes: evaluate_opposite() — Opus evaluates opposite direction as SWING trade (full context)
-          → Gate: _opposite_conf.score >= 60 AND _opposite_setup.found AND sonnet_conf >= 30
-          → COUNTER GATE (NEW 2026-03-05): also fires if Sonnet sets counter_signal == opposite_direction
-            AND sonnet_conf <= 45%. Triggers evaluate_opposite() even without pre-detected setup for that direction.
-            Fixes: Sonnet saw swept_low=bullish reversal during SHORT eval but opposite wasn't pre-detected.
+          → Gate: _opposite_conf.score >= 60 AND _opposite_setup.found AND (sonnet_conf >= 30 OR parse_error)
+            parse_error = sonnet_conf==0 AND found==False (JSON parse failure fallback — don't block valid opposite)
+          → COUNTER GATE (NEW 2026-03-05): fires if Sonnet sets counter_signal == opposite_direction
+            AND sonnet_conf <= 45%. Does NOT require pre-detected opposite setup (that's the whole point).
+            Fixes: Sonnet identifies LONG opportunity during SHORT eval even when local screening found nothing.
           → If Opus approves opposite at >= 70%/75%: risk validate + execute via send_trade_alert + _on_trade_confirm
           → Consistency tracking: storage.save_opus_decision() / storage.get_recent_opus_decision() (30-min persistence)
       9e. If Sonnet conf < 30% → skip Opus entirely (clear reject)

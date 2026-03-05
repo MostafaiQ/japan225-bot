@@ -1023,7 +1023,8 @@ class TradingMonitor:
         final_result = sonnet_result
         final_confidence = final_result.get("confidence", 0)
         logger.info(f"AI: found={final_result.get('setup_found')}, confidence={final_confidence}%")
-        logger.info(f"AI reasoning: {final_result.get('reasoning', 'N/A')[:500]}")
+        _log_reasoning = final_result.get("reasoning_short") or final_result.get("reasoning", "N/A")[:500]
+        logger.info(f"AI reasoning: {_log_reasoning}")
 
         # --- Determine final outcome before saving ---
         direction = final_result.get("direction") or prescreen_direction
@@ -1073,17 +1074,20 @@ class TradingMonitor:
                 _counter_signal = final_result.get("counter_signal")  # "LONG"/"SHORT" set by Sonnet
 
                 # Normal gate: pre-detected opposite setup with local conf >= 60%
+                # Also fires when Sonnet returned confidence=0 (parse error fallback) —
+                # don't penalise a valid pre-detected opposite setup due to a parse failure.
+                _sonnet_parse_error = _sonnet_conf_score == 0 and not final_result.get("found", False)
                 _normal_gate = (
                     _opposite_conf is not None
                     and _opposite_conf.get("score", 0) >= 60
                     and _opposite_setup.get("found", False)
-                    and _sonnet_conf_score >= 30
+                    and (_sonnet_conf_score >= 30 or _sonnet_parse_error)
                 )
                 # Counter-signal gate: Sonnet explicitly identified an opposite-direction opportunity
                 # (e.g., swept_low = liquidity grab → bullish reversal while evaluating SHORT)
+                # Does NOT require pre-detected opposite setup — that's the whole point of this gate.
                 _counter_gate = (
                     _counter_signal == _opposite_dir
-                    and _opposite_conf is not None
                     and _sonnet_conf_score <= 45  # strong rejection of primary only
                 )
 
@@ -1188,17 +1192,20 @@ class TradingMonitor:
                                                 "session": session["name"],
                                                 "reasoning": opus_result.get("reasoning", ""),
                                                 "timestamp": datetime.now().isoformat(),
-                                                "local_confidence": _opposite_conf.get("score"),
+                                                "local_confidence": (_opposite_conf or {}).get("score"),
                                                 "opus_confidence": opus_conf,
                                                 "ai_analysis": f"[OPUS OPPOSITE] {opus_result.get('reasoning', '')}",
                                                 "indicators_compact": setup.get("indicators_snapshot", {}),
                                                 "is_scalp": False,
                                             }
 
+                                            rr = opus_result.get("effective_rr", 0)
+                                            _opus_short = opus_result.get("reasoning_short") or opus_result.get("reasoning", "")[:400]
                                             logger.info(
-                                                f"Opus opposite executing: {_opposite_dir} @ {entry:.0f}, "
-                                                f"conf={opus_conf}%"
+                                                f"Opus EXECUTING {_opposite_dir} @ {entry:.0f} | "
+                                                f"SL={sl:.0f} TP={tp:.0f} RR={rr:.1f} conf={opus_conf}%"
                                             )
+                                            logger.info(f"Opus reasoning: {_opus_short}")
                                             await self.telegram.send_trade_alert(opus_alert)
                                             await self._on_trade_confirm(opus_alert)
                                             return 0
@@ -1208,8 +1215,9 @@ class TradingMonitor:
                                                 f"{validation['rejection_reason']}"
                                             )
                             else:
+                                _opus_short = opus_result.get("reasoning_short") or opus_result.get("reasoning", "")[:400]
                                 logger.info(
-                                    f"Opus opposite confidence {opus_conf}% below threshold {min_conf_opus}%"
+                                    f"Opus opposite conf {opus_conf}% < threshold {min_conf_opus}% — {_opus_short}"
                                 )
                                 self.storage.save_opus_decision({
                                     "direction": _opposite_dir,
@@ -1219,9 +1227,9 @@ class TradingMonitor:
                                     "timestamp": datetime.now().isoformat(),
                                 })
                         else:
+                            _opus_short = opus_result.get("reasoning_short") or opus_result.get("reasoning", "")[:400]
                             logger.info(
-                                f"Opus opposite: no {_opposite_dir} setup found — "
-                                f"{opus_result.get('reasoning', '')[:150]}"
+                                f"Opus opposite: no {_opposite_dir} setup — {_opus_short}"
                             )
                             self.storage.save_opus_decision({
                                 "direction": _opposite_dir,

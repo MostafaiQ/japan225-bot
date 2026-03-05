@@ -14,13 +14,12 @@ _cost always 0.0. _tokens always zeros. Kept for interface compat with save_scan
 ## class AIAnalyzer
 __init__(): total_cost=0.0 (subscription, always zero)
 
-_run_claude(model, system_prompt, user_prompt, use_opus_agent=False, timeout=180) -> (str, dict)
+_run_claude(model, system_prompt, user_prompt, timeout=180) -> (str, dict)
   # subprocess.run([CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions",
-  #   "--no-session-persistence", "--effort", "low", "--tools", "", ...agents_json...])
+  #   "--no-session-persistence", "--effort", "low", "--tools", ""])
   # --effort low: disables adaptive thinking. --tools "": no file access, pure prompt analysis.
   # NOTE: --fast and --max-tokens DO NOT EXIST as CLI flags (tested v2.1.63).
-  # If use_opus_agent=True: agents_json defines "opus_reviewer" sub-agent (model=OPUS_MODEL)
-  # If use_opus_agent=False: no --agents flag, standard Sonnet run only
+  # No --agents flag. Opus reviewer sub-agent REMOVED (was unused, logged "NOT loaded" every scan).
   # Strips ANTHROPIC_API_KEY from env to force OAuth.
   # Returns (stdout_string, token_estimates). Returns ("", zeros) on timeout or binary not found.
 
@@ -34,8 +33,7 @@ _analyze(model, indicators, recent_scans, market_context, web_research,
          prescreen_direction=None, local_confidence=None, live_edge_block=None,
          failed_criteria=None) -> dict
   # Builds prompt via build_scan_prompt() + JSON schema trailer
-  # Conditional Opus: if local_confidence in 60-86% range → use_opus_agent=True, calls _run_claude with Opus
-  # Parse failure auto-retry: on first parse failure, retries once without Opus (use_opus_agent=False)
+  # Parse failure auto-retry: on first parse failure, retries once with effort="medium"
   # Calls _run_claude() → _parse_json() → returns dict + _model, _cost, _tokens
   # Safe default on parse failure after retry: {setup_found: False, confidence: 0, ...}
 
