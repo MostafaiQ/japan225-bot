@@ -192,10 +192,6 @@ WARNING SEVERITY RULE:
 QUICK REJECT: If ≥4 technical criteria fail AND volume is LOW AND no macro catalyst → set setup_found=false immediately.
   Do not spend analysis time on junk setups. Volume=LOW alone is NOT a reject (Tokyo session inherently lower).
 
-OPUS REVIEW: If an opus_reviewer agent is available AND your confidence lands in 72-86%,
-  use it to challenge your case. If no agent available, do your own devil's advocate check.
-  If confidence >=87% (clear approve) or <=71% (clear reject), skip extra review.
-
 EXIT: +150pts → SL to BE+10. TP=400pts. 75%TP in <2h → trail@150pts.
 EMA50_bounce setup: DISABLED — do not approve.
 
@@ -203,7 +199,13 @@ COUNTER SIGNAL: When you reject the primary setup, check if the OPPOSITE directi
   Example: evaluating SHORT bear_flag_breakdown but 5M swept_low = liquidity grab suggesting bullish reversal → set counter_signal="LONG".
   Example: evaluating LONG bounce but swept_high + bearish engulfing = distribution → set counter_signal="SHORT".
   Only set counter_signal if you see concrete structural evidence for the opposite direction, not just absence of a bear move.
-  Leave counter_signal null if the rejection is purely "setup quality too low" or "no trade conditions"."""
+  Leave counter_signal null if the rejection is purely "setup quality too low" or "no trade conditions".
+
+REASONING_SHORT: After full analysis, fill reasoning_short with a compact punchy paragraph (~3-5 sentences, ~400-500 chars).
+  Cover: verdict + structure summary + decisive setup signal + key risk or confirmation + final call.
+  Format: "[APPROVE/REJECT] [direction]. [Structure in 1 sentence]. [Setup signal that decided it]. [Key risk or edge]. [Final call]."
+  Example: "REJECT SHORT. D1/4H/15M bearish aligned but CRASH DAY 1794pts overrides continuation logic — crash rules require bounce short not breakdown chase. 15M swept_low + bullish_engulfing at lows signals reversal, not continuation. 4H RSI 41 near oversold = short squeeze risk. Wait for dead-cat bounce then re-evaluate SHORT from higher level."
+  This is the log summary only. reasoning field still contains your full analysis."""
 
 
 def _fmt_indicators(indicators: dict) -> str:
@@ -214,6 +216,14 @@ def _fmt_indicators(indicators: dict) -> str:
         ("15M", ["15m", "tf_15m", "15min", "m15"]),
         ("5M",  ["5m", "tf_5m", "5min", "m5"]),
     ]
+    # Extract live price from 15M or 5M for D1 EMA50 comparison
+    _live_price = None
+    for _k in ("m15", "15m", "tf_15m", "15min", "m5", "5m", "tf_5m", "5min"):
+        _tf = indicators.get(_k)
+        if isinstance(_tf, dict) and _tf.get("price"):
+            _live_price = _tf["price"]
+            break
+
     lines = []
     for label, keys in TF_KEYS:
         tf = {}
@@ -253,6 +263,14 @@ def _fmt_indicators(indicators: dict) -> str:
         pdl = tf.get("prev_candle_low")
 
         parts = [f"{label}: p={p} rsi={rsi} ema50={e50}"]
+        # D1 special: annotate with live price vs D1 EMA50 (D1 p= is PREV CLOSE, not current price)
+        if label == "D1" and _live_price and e50 and e50 != "?":
+            try:
+                live_vs_ema50 = float(_live_price) - float(e50)
+                side = "ABOVE" if live_vs_ema50 >= 0 else "BELOW"
+                parts[0] += f"(PREV_CLOSE) | LIVE={_live_price:.0f}({side} D1EMA50 by {abs(live_vs_ema50):.0f}pts)"
+            except (TypeError, ValueError):
+                pass
         if e200:
             parts.append(f"ema200={e200}")
         parts.append(f"bb={bbl}/{bbm}/{bbu}")
@@ -365,7 +383,7 @@ def _fmt_indicators(indicators: dict) -> str:
 
     # ── Market Structure Block ────────────────────────────────────────────────
     # Pull from 15M timeframe (most relevant for entry context)
-    tf15 = indicators.get("tf_15m") or indicators.get("15m") or indicators.get("15M") or {}
+    tf15 = indicators.get("m15") or indicators.get("tf_15m") or indicators.get("15m") or indicators.get("15M") or {}
 
     ms_lines = []
 
@@ -575,9 +593,8 @@ def build_scan_prompt(
         "  2. SETUP QUALITY: Is the technical trigger clean? (price distance, volume, HA, FVG)\n"
         "  3. RISK: What specific scenario causes a 150pt loss? (be concrete)\n"
         "  4. EDGE: Given live edge stats, does this setup type have positive EV now?\n"
-        "  5. OPUS REVIEW (if borderline 72-86%): Spawn the opus_reviewer agent.\n"
-        "     Pass it your analysis and ask it to find risks you missed.\n"
-        "     Incorporate its feedback before outputting final JSON.\n"
+        "  5. DEVIL'S ADVOCATE: Challenge your own case. Find risks you may have missed.\n"
+        "     If borderline (72-86%), be extra rigorous — only approve if you still believe after scrutiny.\n"
     )
 
     # Inject prompt learnings from closed trades (auto-updated feedback loop)
@@ -658,11 +675,10 @@ class AIAnalyzer:
         self.total_cost = 0.0  # Always $0 (subscription); kept for interface compat
 
     def _run_claude(self, model: str, system_prompt: str, user_prompt: str,
-                    timeout: int = 180, use_opus_agent: bool = False, **kwargs) -> tuple[str, dict]:
+                    timeout: int = 180, **kwargs) -> tuple[str, dict]:
         """
         Invoke Claude Code CLI with OAuth credentials (no API key).
         Combines system + user prompt so Claude has full context in --print mode.
-        Opus sub-agent only loaded when use_opus_agent=True (borderline 60-86% local conf).
         Returns (output_text, token_estimates) — tokens are estimates from char count.
         """
         env = {**os.environ}
@@ -675,21 +691,11 @@ class AIAnalyzer:
         # Estimate input tokens: ~4 chars/token for English/structured data
         est_input_tokens = len(full_prompt) // 4
 
-        # Build CLI command — only include Opus sub-agent when borderline confidence
         # --tools "" disables all tools → Sonnet responds directly from prompt data (no file reads/commands)
         # This cuts response time from 60-180s to 10-30s by eliminating CLAUDE.md loading + tool calls.
         effort = kwargs.get("effort", "low")
         cmd = [CLAUDE_BIN, "--model", model, "--print", "--dangerously-skip-permissions",
                "--no-session-persistence", "--effort", effort, "--tools", ""]
-        if use_opus_agent:
-            from config.settings import OPUS_MODEL
-            agents_json = json.dumps({
-                "opus_reviewer": {
-                    "description": "Devil's advocate trade setup reviewer. Challenges the analysis, finds risks, verifies technical case. Use when your confidence is 72-86% (borderline zone).",
-                    "model": OPUS_MODEL,
-                }
-            })
-            cmd.extend(["--agents", agents_json])
 
         # Write stdout to a unique temp file so the result survives bot restart.
         # With KillMode=process + start_new_session, the Claude subprocess
@@ -798,20 +804,12 @@ class AIAnalyzer:
             f'"effective_rr": 0.0, '
             f'"key_levels": {{"support": [], "resistance": []}}, '
             f'"trend_observation": "...", "warnings": [], "edge_factors": [], '
-            f'"counter_signal": null, "counter_reasoning": null}}'
+            f'"counter_signal": null, "counter_reasoning": null, '
+            f'"reasoning_short": "compact 3-5 sentence verdict covering structure + signal + risk + call"}}'
         )
 
-        # Conditional Opus: only load sub-agent when local conf in borderline zone (60-86%)
-        local_score = local_confidence.get("score", 0) if local_confidence else 0
-        use_opus = 60 <= local_score <= 86
-        if use_opus:
-            logger.info(f"Opus reviewer available to Sonnet (local conf {local_score}% in borderline 60-86%) — Sonnet decides whether to call it")
-        else:
-            logger.info(f"Opus reviewer NOT loaded (local conf {local_score}% outside 60-86%)")
-
         system_prompt = build_system_prompt()
-        raw, tokens = self._run_claude(model, system_prompt, user_prompt,
-                                       timeout=180, use_opus_agent=use_opus)
+        raw, tokens = self._run_claude(model, system_prompt, user_prompt, timeout=180)
 
         default = {
             "setup_found": False,
@@ -827,8 +825,7 @@ class AIAnalyzer:
         if not raw.strip() or (result.get("reasoning", "").startswith("Parse error") and not result.get("setup_found")):
             logger.warning("AI returned empty/unparseable output — retrying with normal effort")
             raw2, tokens2 = self._run_claude(model, system_prompt, user_prompt,
-                                             timeout=180, use_opus_agent=False,
-                                             effort="medium")
+                                             timeout=180, effort="medium")
             if raw2.strip():
                 result = _parse_json(raw2, default)
                 tokens = tokens2
@@ -943,7 +940,7 @@ class AIAnalyzer:
 
         raw, tokens = self._run_claude(
             OPUS_MODEL, system_prompt, user_prompt,
-            timeout=120, use_opus_agent=False, effort="low",
+            timeout=120, effort="low",
         )
 
         default = {
@@ -1038,19 +1035,24 @@ class AIAnalyzer:
             "WARNING SEVERITY RULE: 4+ warnings → confidence < 70%. 6+ warnings → confidence < 60%.\n\n"
             "Use Sonnet's rejection reasoning as CONTEXT — it tells you why the primary direction\n"
             "failed, which often contains the structural case FOR the opposite direction.\n"
-            "Sonnet's key levels (support/resistance) are provided — use them for SL/TP placement.\n"
+            "Sonnet's key levels (support/resistance) are provided — use them for SL/TP placement.\n\n"
+            "REASONING_SHORT: Fill reasoning_short with a compact punchy paragraph (~3-5 sentences, ~400-500 chars).\n"
+            "Cover: verdict + structure + decisive signal + SL/TP/RR summary + final call.\n"
+            "Format: '[APPROVE/REJECT] [direction]. [Structure]. [Signal that decided it]. [SL=X TP=Y RR=Z]. [Final call].'\n"
+            "Example: 'APPROVE LONG. 4H/15M swept_low + bullish_engulfing at BB lower — textbook reversal. Sonnet correctly flagged CRASH DAY bounce. SL=53500 TP=55000 RR=2.1. Entry confirmed.' "
+            "reasoning field still holds your full analysis.\n"
         )
 
         indicator_block = _fmt_indicators(indicators)
 
-        # Opposite direction local confidence breakdown
-        opp_criteria = opposite_local_conf.get("criteria", {})
+        # Opposite direction local confidence breakdown (may be None for counter-signal triggers)
+        _olc = opposite_local_conf or {}
+        opp_criteria = _olc.get("criteria", {})
         opp_passed = [k for k, v in opp_criteria.items() if v]
         opp_failed = [k for k, v in opp_criteria.items() if not v]
         opp_conf_block = (
-            f"\nOPPOSITE ({opposite_direction}) LOCAL SCORE: {opposite_local_conf.get('score', '?')}% "
-            f"({opposite_local_conf.get('passed_criteria', '?')}/{opposite_local_conf.get('total_criteria', 12)}) "
-            f"PASS:{','.join(opp_passed)} FAIL:{','.join(opp_failed)}\n"
+            f"\nOPPOSITE ({opposite_direction}) LOCAL SCORE: {_olc.get('score', 'N/A (counter-signal trigger)')} "
+            f"PASS:{','.join(opp_passed) or 'none'} FAIL:{','.join(opp_failed) or 'none'}\n"
         )
 
         # Sonnet's key levels
@@ -1121,17 +1123,19 @@ class AIAnalyzer:
             f'{{"setup_found": true, "direction": "{opposite_direction}", "confidence": 72, '
             f'"entry": 54200.0, "stop_loss": 54050.0, "take_profit": 54600.0, '
             f'"setup_type": "bb_lower_bounce", "reasoning": "...", "effective_rr": 2.1, '
-            f'"warnings": [], "edge_factors": []}}\n'
+            f'"warnings": [], "edge_factors": [], '
+            f'"reasoning_short": "APPROVE LONG — swept_low + engulfing at BB lower; SL below sweep, TP at BB mid. RR 2.1."}}\n'
             f"or if no valid setup:\n"
             f'{{"setup_found": false, "direction": null, "confidence": 0, '
             f'"entry": null, "stop_loss": null, "take_profit": null, '
             f'"setup_type": null, "reasoning": "No viable {opposite_direction} setup because...", '
-            f'"effective_rr": 0.0, "warnings": [], "edge_factors": []}}'
+            f'"effective_rr": 0.0, "warnings": [], "edge_factors": [], '
+            f'"reasoning_short": "REJECT — [key reason in one sentence]."}}'
         )
 
         raw, tokens = self._run_claude(
             OPUS_MODEL, system_prompt, user_prompt,
-            timeout=150, use_opus_agent=False, effort="medium",
+            timeout=150, effort="medium",
         )
 
         default = {
@@ -1367,7 +1371,7 @@ class AIAnalyzer:
 
         raw, tokens = self._run_claude(
             OPUS_MODEL, system_prompt, user_prompt,
-            timeout=90, use_opus_agent=False, effort="low",
+            timeout=90, effort="low",
         )
 
         default = {
