@@ -16,7 +16,9 @@ Oracle VM: monitor.py (24/7, systemd: japan225-bot)
     → NO cooldown ($0/call subscription) → compute_confidence() for BOTH directions
     → Primary = highest confidence. Secondary context passed to AI.
     → if score >= 60%: Sonnet 4.6 scan (with Opus sub-agent for borderline 72-86%)
-    → Sequential: Sonnet runs first → if rejected, Opus scalp eval with Sonnet's full analysis
+    → Sequential: Sonnet runs first → if rejected, Opus evaluates OPPOSITE direction as swing trade
+    → Gate: opposite direction must have had a detected setup + local conf >= 60% + Sonnet conf >= 30%
+    → evaluate_opposite(): Opus gets FULL context (same as Sonnet), full SL/TP freedom, same thresholds
     → Single subprocess: Sonnet analyzes, delegates to Opus sub-agent internally when needed
     → if AI confirms & risk passes: auto-execute immediately + Telegram notification
   MONITORING (position open): every 2s
@@ -50,7 +52,7 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 | `core/session.py` | get_current_session() UTC, is_no_trade_day(), is_weekend(), is_friday_blackout() |
 | `core/momentum.py` | MomentumTracker class. add_price(), should_alert(), is_stale(), milestone_alert() |
 | `core/confidence.py` | compute_confidence(direction, tf_daily, tf_4h, tf_15m, events, web) → score dict. 12-criteria proportional scoring. C1 uses EMA50 primary (not EMA200). C2 has VWAP fallback. |
-| `ai/analyzer.py` | AIAnalyzer. scan_with_sonnet() (single subprocess + Opus sub-agent). **CLI subprocess (OAuth/subscription, no API key)**. post_trade_analysis(), load_prompt_learnings(). |
+| `ai/analyzer.py` | AIAnalyzer. scan_with_sonnet() (single subprocess + Opus sub-agent). evaluate_opposite() (Opus evaluates opposite direction as swing trade after Sonnet rejection). **CLI subprocess (OAuth/subscription, no API key)**. post_trade_analysis(), load_prompt_learnings(). |
 | `ai/context_writer.py` | write_context() — writes storage/context/*.md before each AI call. market_snapshot, recent_activity, macro, live_edge. Called by monitor.py before Sonnet. |
 | `trading/risk_manager.py` | RiskManager.validate_trade() 11 checks. get_safe_lot_size() |
 | `trading/exit_manager.py` | ExitManager. evaluate_position(), execute_action(), manual_trail_update() |
@@ -83,7 +85,7 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml is outdated/unused.
 EPIC = "IX.D.NIKKEI.IFM.IP"   CONTRACT_SIZE = 1 ($1/pt)   MARGIN_FACTOR = 0.005 (0.5%)
 Lot size = margin cap only (50% of balance). AI finds the setup, you go in with conviction.
 MIN_CONFIDENCE = 70            MIN_CONFIDENCE_SHORT = 75 (BOJ risk)
-MIN_SCALP_CONFIDENCE = 60      MIN_SCALP_CONFIDENCE_SHORT = 65 (Opus scalp floor — lower because SL=85 not 150)
+MIN_SCALP_CONFIDENCE = 60      MIN_SCALP_CONFIDENCE_SHORT = 65 (Opus scalp floor — used by momentum bypass only)
 EXTREME_DAY_RANGE_PTS = 1000   EXTREME_DAY_MIN_CONFIDENCE = 85
 OVERSOLD_SHORT_BLOCK_RSI_4H = 32  OVERBOUGHT_LONG_BLOCK_RSI_4H = 68
 DEFAULT_SL_DISTANCE = 150      DEFAULT_TP_DISTANCE = 400      MIN_RR_RATIO = 1.5
@@ -157,8 +159,17 @@ Test cases to add (not yet written):
 - analyzer.py: **Overbought longing prohibition** — 4H RSI>68 + exhaustion signals = REJECT LONG.
 - analyzer.py: **Warning severity rule** — 4+ warnings → <70%, 6+ warnings → <60%. Prevents high confidence with many self-warnings.
 - monitor.py: **Extreme day logging** — logs warning when intraday range > 1000pts.
-- monitor.py: **indicators_snapshot wired** to both validate_trade() calls (Sonnet pipeline + scalp auto-execute).
-- Tests: 353/353 passing. Test fixtures updated for EMA50-primary C1.
+- monitor.py: **indicators_snapshot wired** to both validate_trade() calls (Sonnet pipeline + opposite-direction eval).
+- Tests: 395/395 passing (2026-03-05).
+
+## Architecture Change (2026-03-05)
+- **Opus scalp path → Opus opposite-direction swing path**: After Sonnet rejects primary direction, Opus now evaluates the OPPOSITE direction as a swing trade (not a scalp).
+- Gate: opposite direction must have had a detected setup + local conf >= 60% + Sonnet conf >= 30%.
+- `evaluate_opposite()` added to ai/analyzer.py: Opus gets FULL context (all TF data, web research, recent trades, Sonnet's rejection reasoning + key levels, prompt learnings). Full SL/TP freedom from structure. Same confidence thresholds: 70% LONG / 75% SHORT. effort="medium".
+- Old `evaluate_scalp()` kept: still used by momentum bypass path (no formal setup case). Not removed.
+- `_last_opus_decision` in monitor.py: replaced by `storage.save_opus_decision()` / `storage.get_recent_opus_decision()` (30-min persistence across restarts).
+- risk_manager.py extreme day gate: direction-aware (was blocking ALL directions; now only blocks COUNTER-trend at 85%).
+- storage/database.py: `save_opus_decision()` + `get_recent_opus_decision()` methods added.
 
 ## Critical Fixes Applied (2026-03-04)
 - monitor.py: **SL/TP verification after order placement** — verifies IG returned stopLevel/limitLevel in deal confirmation. If missing, immediately calls modify_position() to add SL/TP + sends CRITICAL Telegram alert. Root cause of Trade #3 losing 224pts past 102pt SL.

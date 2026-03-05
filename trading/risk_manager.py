@@ -128,21 +128,38 @@ class RiskManager:
         if not checks["risk_reward"]["pass"]:
             rejection = rejection or f"Effective R:R {effective_rr:.2f} below minimum {MIN_RR_RATIO}. Need wider TP or tighter SL."
 
-        # --- CHECK 3B: Extreme Day Volatility Gate (crash or rally) ---
+        # --- CHECK 3B: Extreme Day Volatility Gate (crash or rally, direction-aware) ---
         daily_tf = (indicators_snapshot or {}).get("daily", {})
         daily_high = daily_tf.get("high", 0)
         daily_low = daily_tf.get("low", 0)
+        daily_price = daily_tf.get("price", daily_tf.get("close", 0))
         daily_range = daily_high - daily_low if daily_high and daily_low else 0
         extreme_day = daily_range > EXTREME_DAY_RANGE_PTS
+        midpoint = (daily_high + daily_low) / 2 if daily_high and daily_low else 0
+        is_crash_day = extreme_day and daily_price and daily_price < midpoint   # price in lower half = crash
+        is_rally_day = extreme_day and daily_price and daily_price >= midpoint  # price in upper half = rally
         extreme_day_ok = True
-        if extreme_day and confidence < EXTREME_DAY_MIN_CONFIDENCE:
-            extreme_day_ok = False
+        counter_trend = False
+        if extreme_day:
+            # Only block COUNTER-trend direction at 85% confidence.
+            # With-trend trades (SHORT on crash, LONG on rally) use normal threshold.
+            counter_trend = (is_crash_day and direction == "LONG") or (is_rally_day and direction == "SHORT")
+            if counter_trend and confidence < EXTREME_DAY_MIN_CONFIDENCE:
+                extreme_day_ok = False
+        day_label = "CRASH DAY" if is_crash_day else ("RALLY DAY" if is_rally_day else "extreme day")
         checks["extreme_day"] = {
             "pass": extreme_day_ok,
-            "detail": f"Intraday range {daily_range:.0f}pts" + (f" — EXTREME DAY requires {EXTREME_DAY_MIN_CONFIDENCE}% confidence" if extreme_day else ""),
+            "detail": (
+                f"Intraday range {daily_range:.0f}pts"
+                + (f" — {day_label}, counter-trend {direction} requires {EXTREME_DAY_MIN_CONFIDENCE}% confidence" if extreme_day and counter_trend else
+                   f" — {day_label}, with-trend {direction} allowed" if extreme_day else "")
+            ),
         }
         if not extreme_day_ok:
-            rejection = rejection or f"Extreme day (range {daily_range:.0f}pts). Need {EXTREME_DAY_MIN_CONFIDENCE}% confidence, got {confidence}%."
+            rejection = rejection or (
+                f"{day_label} (range {daily_range:.0f}pts). Counter-trend {direction} needs "
+                f"{EXTREME_DAY_MIN_CONFIDENCE}% confidence, got {confidence}%."
+            )
 
         # --- CHECK 4: Max Positions ---
         state = self.storage.get_position_state()

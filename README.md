@@ -1,6 +1,6 @@
 # Japan 225 Trading Bot
 
-A fully autonomous AI-powered trading system for Japan 225 (Nikkei) Cash CFD on IG Markets. Uses a 2-tier Claude AI pipeline (Sonnet + Opus) for market analysis, auto-executes trades when confidence thresholds are met, and manages positions with a 3-phase exit strategy.
+A fully autonomous AI-powered trading system for Japan 225 (Nikkei) Cash CFD on IG Markets. Uses a 2-tier Claude AI pipeline (Sonnet + Opus) for market analysis, auto-executes trades when confidence thresholds are met, and lets the broker enforce stops and targets directly.
 
 ## How It Works
 
@@ -11,31 +11,40 @@ Every 5 minutes during market hours:
        |
   Detect setup (bidirectional: LONG + SHORT simultaneously)
        |
-  Score confidence (11 criteria, 0-100%)
+  Score confidence (12 criteria, 0-100%)
        |
   [Below 60%] -----> Skip
        |
+  [Both directions >= 80% and gap <= 5%] -----> Skip (contradictory, no edge)
+       |
   Sonnet AI analysis (full system prompt + indicators)
        |
-  [Approved, conf >= 70/75%] -----> Risk validation -----> Auto-execute
+  [Approved, conf >= 70% LONG / 75% SHORT] --> Risk validation --> Auto-execute
        |
-  [Rejected, conf >= 50%] -----> Opus scalp evaluation (both directions)
-       |                              |
-  [Rejected, conf < 50%] -> Skip     |--- Opus conf >= 60% + direction valid
-                                      |       -----> Risk validation -----> Auto-execute
-                                      |--- Otherwise -> Skip
+  [Rejected] --> Is opposite direction setup detected with local conf >= 60%?
+       |                         |
+  [No] --> Skip           [Yes] --> Opus evaluates opposite direction (full swing trade)
+                                         |
+                                 [Approved, >= 70% / 75%] --> Risk validation --> Auto-execute
+                                         |
+                                 [Rejected] --> Skip
 ```
 
 ## Features
 
 - **Fully autonomous execution** -- auto-executes when AI confidence meets thresholds (70% LONG, 75% SHORT)
-- **2-tier sequential AI pipeline** -- Sonnet analyzes first, Opus evaluates rejected setups for scalp opportunities
+- **2-tier sequential AI pipeline** -- Sonnet analyzes first; if rejected and opposite direction has a setup, Opus evaluates it as a full swing trade
 - **Bidirectional scanning** -- evaluates both LONG and SHORT setups every cycle
-- **11-criteria confidence scoring** -- filters noise before AI evaluation
+- **12-criteria confidence scoring** -- filters noise before AI evaluation
+- **Contradictory signal gate** -- skips when both directions score >= 80% with gap <= 5% (no clear edge)
 - **Mandatory R:R enforcement** -- AI computes effective R:R (must be >= 1.5 after spread), code double-checks
-- **Direction-flip guards** -- Opus cannot flip bounce setups to SHORT or breakdown setups to LONG
+- **Fixed SL/TP at entry** -- AI determines stop and target from market structure; no mechanical post-entry modifications
+- **Real-time Lightstreamer streaming** -- price ticks (BID/OFR mid) during position monitoring; REST fallback on disconnect
+- **Proper pivot point detection** -- identifies most recent actual swing highs/lows (3-neighbour confirmation, unlimited lookback)
+- **Extreme day detection** -- direction-aware gate on crash/rally days (only counter-trend trades require 85% confidence)
+- **Tokyo session volatility mode** -- forces minimum lots (0.01) for the entire Tokyo session; higher loss tolerance
+- **ATR-based AI guidance** -- ATR(14) provided to AI on all timeframes; AI widens SL/TP on high-volatility days
 - **SL/TP verification** -- verifies IG set stop/limit after order; auto-repairs via modify_position if missing
-- **3-phase exit management** -- Initial SL/TP, breakeven lock at +150pts, trailing runner at 75% TP
 - **Telegram notifications** -- trade alerts, position management, full command set
 - **Web dashboard** -- real-time monitoring, config, trade history, logs, Claude chat
 - **Risk management** -- 11 independent pre-trade checks for both Sonnet and Opus trades
@@ -52,12 +61,14 @@ Oracle VM (24/7, systemd):
     +-- Scanning (no position): every 5min active sessions
     |     Fetch 15M+5M parallel, Daily+4H sequential
     |     Bidirectional detect_setup() + compute_confidence()
-    |     Sonnet analysis (sequential) -> Opus scalp eval if rejected
+    |     Contradictory signal gate (both >= 80%, gap <= 5% -> skip)
+    |     Sonnet analysis -> if rejected, Opus evaluates opposite direction
     |     Risk validation -> Auto-execute
     |
     +-- Monitoring (position open): every 2s
-    |     Price tracking, adverse move detection
-    |     Exit manager: Initial -> Breakeven -> Runner phases
+    |     Lightstreamer price ticks (real-time, ~0 REST calls for price)
+    |     REST fallback if streaming stale; background reconnect after 60s
+    |     Adverse move detection (60/120/175pt tiers); alerts only
     |
     +-- Telegram: always-on polling, commands + alerts
     |
@@ -72,17 +83,17 @@ japan225-bot/
 +-- config/
 |   +-- settings.py             # All constants -- single source of truth
 +-- core/
-|   +-- ig_client.py            # IG Markets REST API (candle caching, delta fetches)
-|   +-- indicators.py           # BB, EMA, RSI, VWAP, Heiken Ashi, FVG, Fib, pivots, 12 candlestick patterns
+|   +-- ig_client.py            # IG Markets REST API + Lightstreamer streaming
+|   +-- indicators.py           # BB, EMA, RSI, VWAP, Heiken Ashi, FVG, Fib, pivots, ATR, 12 candlestick patterns
 |   +-- session.py              # Session hours (Tokyo/London/NY), no-trade days, blackouts
 |   +-- momentum.py             # MomentumTracker, adverse move tier detection
-|   +-- confidence.py           # 11-criteria proportional scoring (LONG + SHORT aware)
+|   +-- confidence.py           # 12-criteria proportional scoring (LONG + SHORT aware)
 +-- ai/
 |   +-- analyzer.py             # Sonnet -> Opus 2-tier pipeline (Claude CLI subprocess)
 |   +-- context_writer.py       # Market context file writer (snapshot, macro, live edge)
 +-- trading/
 |   +-- risk_manager.py         # 11-point pre-trade validation (both pipelines)
-|   +-- exit_manager.py         # 3-phase exit (Initial -> Breakeven -> Runner)
+|   +-- exit_manager.py         # Position phase tracking
 +-- notifications/
 |   +-- telegram_bot.py         # Alerts, inline buttons, trade confirmation
 +-- storage/
@@ -91,7 +102,7 @@ japan225-bot/
 |   +-- data/                   # Runtime data (never committed)
 +-- dashboard/                  # FastAPI web dashboard + ngrok tunnel
 +-- backtest.py                 # Strategy backtester with real AI evaluation
-+-- tests/                      # 338+ tests (all passing)
++-- tests/                      # 395+ tests (all passing)
 +-- DEPLOY.md                   # Full deployment guide
 ```
 
@@ -123,19 +134,19 @@ japan225-bot/
 ## AI Pipeline
 
 ### Sonnet (Primary Analyzer)
-- Full system prompt with setup-specific rules (bounce, breakdown, momentum)
-- 50+ indicators across D1, 4H, 15M timeframes
+- Full system prompt with setup-specific rules (bounce, breakdown, momentum, crash/rally day rules)
+- 50+ indicators across D1, 4H, 15M, 5M timeframes including ATR, pivot levels, FVG, Heiken Ashi
 - Mandatory R:R computation: `(TP_dist - 7) / (SL_dist + 7) >= 1.5`
-- Confidence breakdown across 11 criteria
+- Confidence breakdown across 12 criteria
+- Opus sub-agent available for borderline setups (60-86% local confidence)
 - Auto-executes when confidence >= 70% (LONG) or 75% (SHORT)
 
-### Opus (Scalp Evaluator)
-- Runs only when Sonnet rejects with confidence >= 50%
-- Evaluates BOTH directions for scalp opportunities
-- Gets Sonnet's full reasoning as context
-- Structure-based SL (60-120pts) and TP (150-300pts)
-- Direction-flip guards: cannot short a bounce setup or long a breakdown setup
-- Minimum 60% confidence required to execute
+### Opus (Opposite-Direction Swing Evaluator)
+- Runs only when Sonnet rejects AND opposite direction has a detected setup with local conf >= 60%
+- Evaluates ONLY the opposite direction as a full swing trade (same SL/TP freedom as Sonnet)
+- Receives Sonnet's rejection reasoning and key levels as context
+- Same confidence thresholds: 70% LONG / 75% SHORT
+- Consistency guard: recent Opus decisions tracked to prevent direction flip-flopping
 - Full risk validation before execution
 
 ## Risk Management
@@ -144,7 +155,7 @@ All 11 checks must pass before any trade (Sonnet or Opus):
 
 | Check | Rule |
 |-------|------|
-| Confidence | LONG >= 70%, SHORT >= 75% (Sonnet) |
+| Confidence | LONG >= 70%, SHORT >= 75% |
 | Margin | Must not exceed 50% of account balance |
 | Risk/Reward | >= 1.5:1 after 7pt spread adjustment |
 | Max Positions | 1 open position at a time |
@@ -152,22 +163,19 @@ All 11 checks must pass before any trade (Sonnet or Opus):
 | Daily Loss Limit | Configurable % of balance |
 | Event Blackout | No trades within 60 min of high-impact events |
 | Calendar Block | No Friday PPI/CPI/NFP/BOJ, no month-end |
+| Extreme Day Gate | Counter-trend trades require 85% confidence on crash/rally days |
 | System Active | System must not be paused |
 | SL/TP Verified | Post-execution: verify IG set stops, auto-repair if missing |
 
-## Exit Strategy (3 Phases)
+## Trade Management
 
-| Phase | Trigger | Action |
-|-------|---------|--------|
-| Initial | Trade opened | SL at 150pts, TP at 400pts |
-| Breakeven | +150pts profit | Move SL to entry + 10pt buffer |
-| Runner | 75% of TP in < 2hrs | Remove TP, trailing stop at 150pts |
+SL and TP are determined by AI at entry based on market structure and ATR volatility. The broker enforces them directly. No mechanical post-entry modifications (no breakeven lock, no trailing stop).
 
 ## Active Sessions (UTC)
 
 | Hours | Session |
 |-------|---------|
-| 00:00-06:00 | Tokyo |
+| 00:00-06:00 | Tokyo (volatile; minimum lots enforced) |
 | 08:00-16:00 | London |
 | 16:00-21:00 | New York |
 
@@ -195,7 +203,7 @@ Monday-Friday only. No trading on US/JP holidays.
 python3 -m pytest tests/ -v
 ```
 
-338+ tests covering indicators, confidence scoring, risk management, exit strategy, storage, and recovery.
+395+ tests covering indicators, confidence scoring, risk management, exit strategy, storage, and recovery.
 
 ## Safety
 

@@ -1,4 +1,4 @@
-# ai/analyzer.py — DIGEST (updated 2026-03-03)
+# ai/analyzer.py — DIGEST (updated 2026-03-05)
 # Single-subprocess pipeline: Sonnet 4.6 primary, Opus 4.6 sub-agent for borderline/oversold setups.
 # --effort low on ALL CLI calls (disables adaptive thinking: 105s→9s, quality unchanged for JSON).
 # Haiku pre-gate REMOVED. Separate Opus subprocess REMOVED. All in one `claude` invocation with --agents flag.
@@ -83,23 +83,27 @@ Key formatters:
   _fmt_recent_scans(scans)      → 1-line per scan summary
   _fmt_web_research(web)        → 3 lines, HIGH-impact calendar only
 
-## evaluate_scalp — confidence floor fix (2026-03-04)
-Opus scalp confidence floor: 60% LONG / 65% SHORT (was incorrectly using 70%/75% swing floor).
-validate_trade() now accepts is_scalp=True → uses MIN_SCALP_CONFIDENCE / MIN_SCALP_CONFIDENCE_SHORT.
-_execute_scalp in monitor.py passes is_scalp=True. Settings: MIN_SCALP_CONFIDENCE=60, MIN_SCALP_CONFIDENCE_SHORT=65.
+## evaluate_opposite (NEW 2026-03-05)
+evaluate_opposite(indicators, opposite_direction, opposite_local_conf, sonnet_rejection_reasoning,
+                  sonnet_key_levels, recent_scans, market_context, web_research,
+                  recent_trades=None, live_edge_block=None, recent_opus_decision=None) -> dict
+  # Called after Sonnet rejects primary direction. Opus evaluates OPPOSITE direction as a SWING trade.
+  # Gate (checked in monitor.py before calling): opposite direction must have a detected setup + local conf >= 60%.
+  # Full context (same as Sonnet): all TF indicators, web research, recent trades, Sonnet's rejection reasoning.
+  # Sonnet's key_levels (support/resistance) injected for SL/TP placement.
+  # Full SL/TP freedom from structure — NO scalp bounds (was 60-120pt / 150-300pt in old evaluate_scalp).
+  # Same confidence thresholds: MIN_CONFIDENCE (70%) for LONG, MIN_CONFIDENCE_SHORT (75%) for SHORT.
+  # Direction validation: if result direction != opposite_direction → setup_found=False (safety guard).
+  # Includes consistency block (recent_opus_decision) to prevent flip-flopping.
+  # Uses OPUS_MODEL, timeout=150s, effort="medium".
+  # Returns: {setup_found, direction, confidence, entry, stop_loss, take_profit, setup_type, reasoning, effective_rr, warnings, edge_factors}
 
-## evaluate_scalp(indicators, primary_direction, setup_type, local_confidence, ai_confidence, ai_reasoning, parallel_mode=False) -> dict
-  # BIDIRECTIONAL Opus scalp evaluation. Evaluates BOTH directions in single call.
-  # Two modes:
-  #   parallel_mode=True:  launched simultaneously with Sonnet. ai_reasoning = local pre-screen context.
-  #   parallel_mode=False: launched after Sonnet rejection. ai_reasoning = Sonnet's rejection reasoning.
-  # Key insight: Sonnet's rejection reasoning contains the opposite thesis
-  #   (e.g. "too oversold, bounce likely" → LONG case; "overbought, distribution" → SHORT case).
-  # Opus receives full context: primary setup, reasoning (Sonnet or pre-screen), all indicators.
-  # Opus picks the BEST direction (may differ from primary_direction) or rejects both.
-  # Uses OPUS_MODEL directly (no sub-agent), timeout=90s.
-  # SL (60-120pts, structure-based: swing lows, BB, pivots, fib) and TP (150-300pts, nearest target).
-  # Enforces effective R:R >= 1.5 after spread (7pts). Clamps SL to [60,120], TP to [150,300].
+## evaluate_scalp (RETAINED for momentum bypass only)
+evaluate_scalp(indicators, primary_direction, setup_type, local_confidence, ai_confidence, ai_reasoning,
+               recent_opus_decision=None) -> dict
+  # BIDIRECTIONAL Opus scalp. Called ONLY by momentum bypass path (no formal setup detected).
+  # NOT called after Sonnet rejection anymore (replaced by evaluate_opposite).
+  # SL (60-120pts), TP (150-300pts), clamped. Enforces R:R >= 1.5 after spread.
   # Returns: {scalp_viable: bool, direction: str, tp_distance: int, sl_distance: int, effective_rr: float, reasoning: str, confidence: int}
 
 ## load_prompt_learnings(data_dir=None) -> str

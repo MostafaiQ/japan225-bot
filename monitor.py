@@ -1025,130 +1025,170 @@ class TradingMonitor:
             )
             self._last_scan_detail = {"outcome": "ai_rejected", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
 
-            # --- Sequential Opus scalp eval (Sonnet rejected → Opus gets full context) ---
-            # Gate: skip Opus for quick-rejects (Sonnet conf < 50%). Saves API cost.
-            # EXCEPTION: momentum setups always go to Opus — Sonnet may undervalue them
-            # and Opus can find a scalp even when the full TP target is unrealistic.
-            _momentum_types = {"momentum_continuation_long", "breakout_long", "vwap_bounce_long",
-                               "ema9_pullback_long", "momentum_continuation_short", "vwap_rejection_short_momentum"}
-            _is_momentum = setup.get("type") in _momentum_types
-            if final_confidence < 50 and not _is_momentum:
+            # --- Opus evaluates OPPOSITE direction as swing trade ---
+            # Gate: opposite direction must have a detected setup AND local conf >= 60%,
+            # and Sonnet must have seen something real (conf >= 30%).
+            if final_confidence < 30:
                 logger.info(
-                    f"Sonnet quick-reject (conf {final_confidence}% < 50%). "
-                    f"Skipping Opus — setup too weak."
+                    f"Sonnet quick-reject (conf {final_confidence}% < 30%). "
+                    f"Skipping Opus opposite eval — setup too weak."
                 )
-                return SCAN_INTERVAL_SECONDS
-            if _is_momentum and final_confidence < 50:
-                logger.info(
-                    f"Sonnet low-conf ({final_confidence}%) but momentum setup — sending to Opus scalper."
-                )
-            logger.info(
-                f"Sonnet rejected (conf {final_confidence}%). "
-                f"Launching Opus scalp eval with Sonnet's full analysis..."
-            )
-            try:
-                sonnet_reasoning = final_result.get("reasoning", "")
-                opus_context = (
-                    f"SONNET ANALYSIS: {sonnet_reasoning}\n"
-                    f"SONNET CONFIDENCE: {final_confidence}%\n"
-                    f"SONNET DECISION: {'APPROVED' if final_result.get('setup_found') else 'REJECTED'}\n"
-                    f"LOCAL PRE-SCREEN: {prescreen_direction} {setup.get('type', 'unknown')} "
-                    f"| local conf {local_score}%"
-                )
-                if secondary_setup:
-                    sec = secondary_setup
-                    opus_context += (
-                        f"\nSECONDARY: {sec['direction']} {sec.get('type', '?')} "
-                        f"local conf {sec.get('confidence', '?')}%: "
-                        f"{sec.get('reasoning', '')}"
+            else:
+                _opposite_dir = "SHORT" if direction == "LONG" else "LONG"
+                _opposite_conf = conf_short if direction == "LONG" else conf_long
+                _opposite_setup = setup_short if direction == "LONG" else setup_long
+                _sonnet_conf_score = final_result.get("confidence", 0)
+
+                if (
+                    _opposite_conf is not None
+                    and _opposite_conf.get("score", 0) >= 60
+                    and _opposite_setup.get("found", False)
+                    and _sonnet_conf_score >= 30
+                ):
+                    logger.info(
+                        f"Sonnet rejected {direction}. Opus evaluating {_opposite_dir} "
+                        f"(opposite local conf: {_opposite_conf.get('score')}%)"
                     )
-
-                # Recent Opus decision for consistency
-                recent_opus = None
-                if self._last_opus_decision:
-                    age_sec = (datetime.now() - datetime.fromisoformat(self._last_opus_decision["timestamp"])).total_seconds()
-                    if age_sec < 900:  # 15 min
-                        recent_opus = self._last_opus_decision
-
-                scalp_result = await loop.run_in_executor(
-                    None,
-                    lambda: self.analyzer.evaluate_scalp(
-                        indicators=indicators,
-                        primary_direction=prescreen_direction,
-                        setup_type=setup.get("type", "unknown"),
-                        local_confidence=local_score,
-                        ai_confidence=final_confidence,
-                        ai_reasoning=opus_context,
-                        recent_opus_decision=recent_opus,
-                    ),
-                )
-
-                # Track Opus decision for directional consistency
-                self._last_opus_decision = {
-                    "direction": scalp_result.get("direction", direction),
-                    "reasoning": scalp_result.get("reasoning", "")[:300],
-                    "viable": scalp_result.get("scalp_viable", False),
-                    "confidence": scalp_result.get("confidence", 0),
-                    "timestamp": datetime.now().isoformat(),
-                }
-                if scalp_result.get("scalp_viable"):
-                    opus_direction = scalp_result.get("direction", direction)
-                    opus_conf = scalp_result.get("confidence", 0)
-                    setup_type = setup.get("type", "unknown")
-
-                    # --- Guard 1: Opus must have >= 60% confidence ---
-                    if opus_conf < 60:
-                        logger.info(
-                            f"Opus scalp rejected: confidence {opus_conf}% < 60% minimum"
+                    sonnet_key_levels = final_result.get("key_levels", {"support": [], "resistance": []})
+                    try:
+                        opus_result = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: self.analyzer.evaluate_opposite(
+                                indicators=indicators,
+                                opposite_direction=_opposite_dir,
+                                opposite_local_conf=_opposite_conf,
+                                sonnet_rejection_reasoning=final_result.get("reasoning", ""),
+                                sonnet_key_levels=sonnet_key_levels,
+                                recent_scans=recent_scans,
+                                market_context=market_context,
+                                web_research=web_research,
+                                recent_trades=recent_trades_ctx,
+                                live_edge_block=live_edge,
+                                recent_opus_decision=self.storage.get_recent_opus_decision(),
+                            ),
                         )
-                        return SCAN_INTERVAL_SECONDS
 
-                    # --- Guard 2: Block direction flip on inherently-directional setups ---
-                    # Bounce setups (lower_bounce, oversold_reversal) are inherently LONG.
-                    # Breakdown setups are inherently SHORT. Opus should NOT flip these.
-                    _bounce_setups = {
-                        "bollinger_lower_bounce", "bollinger_mid_bounce", "ema50_bounce",
-                        "oversold_reversal", "extreme_oversold_reversal",
-                        "momentum_continuation_long", "breakout_long",
-                        "vwap_bounce_long", "ema9_pullback_long", "momentum_bypass",
-                    }
-                    _breakdown_setups = {
-                        "bear_flag_breakdown", "breakdown_continuation", "multi_tf_bearish",
-                        "dead_cat_bounce_short", "vwap_rejection_short",
-                        "high_volume_distribution", "lower_lows_bearish",
-                        "bollinger_upper_rejection", "ema50_rejection", "bb_mid_rejection",
-                        "overbought_reversal", "ema200_rejection", "pivot_r1_rejection",
-                        "momentum_continuation_short", "vwap_rejection_short_momentum",
-                    }
-                    if setup_type in _bounce_setups and opus_direction == "SHORT":
-                        logger.info(
-                            f"Opus scalp blocked: {setup_type} is a LONG setup, "
-                            f"Opus tried SHORT — contradicts setup thesis"
-                        )
-                        return SCAN_INTERVAL_SECONDS
-                    if setup_type in _breakdown_setups and opus_direction == "LONG":
-                        logger.info(
-                            f"Opus scalp blocked: {setup_type} is a SHORT setup, "
-                            f"Opus tried LONG — contradicts setup thesis"
-                        )
-                        return SCAN_INTERVAL_SECONDS
+                        if opus_result.get("setup_found") and opus_result.get("direction") == _opposite_dir:
+                            opus_conf = opus_result.get("confidence", 0)
+                            min_conf_opus = MIN_CONFIDENCE_SHORT if _opposite_dir == "SHORT" else MIN_CONFIDENCE
 
-                    logger.info(f"Opus scalp: {opus_direction} (pre-screen was {direction})")
-                    await self._execute_scalp(
-                        scalp_result=scalp_result,
-                        direction=opus_direction,
-                        setup=setup,
-                        session=session,
-                        current_price=current_price,
-                        local_conf=local_conf,
-                        final_confidence=final_confidence,
-                        indicators_snapshot=indicators,
-                    )
-                    return 0  # Enter monitoring immediately
+                            if opus_conf >= min_conf_opus:
+                                # Store decision for consistency tracking
+                                self.storage.save_opus_decision({
+                                    "direction": _opposite_dir,
+                                    "viable": True,
+                                    "confidence": opus_conf,
+                                    "reasoning": opus_result.get("reasoning", "")[:300],
+                                    "timestamp": datetime.now().isoformat(),
+                                })
+
+                                entry = float(opus_result.get("entry", current_price))
+                                sl = float(opus_result.get("stop_loss", 0))
+                                tp = float(opus_result.get("take_profit", 0))
+
+                                if not sl or not tp:
+                                    logger.warning("Opus opposite eval: missing SL/TP, skipping")
+                                else:
+                                    sl_distance = abs(entry - sl)
+                                    balance_info = await asyncio.get_event_loop().run_in_executor(
+                                        None, self.ig.get_account_info
+                                    )
+                                    balance = balance_info.get("balance", 0) if balance_info else 0
+                                    if balance <= 0:
+                                        logger.error("Opus opposite: could not get account balance")
+                                    else:
+                                        lots = self.risk.get_safe_lot_size(balance, current_price, sl_distance=sl_distance)
+                                        _is_tokyo_opus = get_current_session()["name"] == "tokyo"
+                                        if _is_tokyo_opus and lots > TOKYO_FORCED_LOTS:
+                                            logger.info(f"Tokyo mode: capping Opus lots {lots}→{TOKYO_FORCED_LOTS}")
+                                            lots = TOKYO_FORCED_LOTS
+
+                                        validation = self.risk.validate_trade(
+                                            direction=_opposite_dir,
+                                            lots=lots,
+                                            entry=entry,
+                                            stop_loss=sl,
+                                            take_profit=tp,
+                                            confidence=opus_conf,
+                                            balance=balance,
+                                            upcoming_events=web_research.get("economic_calendar", []),
+                                            indicators_snapshot=indicators,
+                                        )
+
+                                        if validation["approved"]:
+                                            risk_pts = abs(entry - sl)
+                                            reward_pts = abs(tp - entry)
+                                            effective_risk = risk_pts + SPREAD_ESTIMATE
+                                            effective_reward = reward_pts - SPREAD_ESTIMATE
+                                            rr = effective_reward / effective_risk if effective_risk > 0 else 0
+
+                                            opus_alert = {
+                                                "direction": _opposite_dir,
+                                                "entry": entry,
+                                                "sl": sl,
+                                                "tp": tp,
+                                                "lots": lots,
+                                                "confidence": opus_conf,
+                                                "rr_ratio": rr,
+                                                "margin": calculate_margin(lots, entry),
+                                                "free_margin": balance - calculate_margin(lots, entry),
+                                                "dollar_risk": calculate_profit(lots, risk_pts),
+                                                "dollar_reward": calculate_profit(lots, reward_pts),
+                                                "setup_type": opus_result.get("setup_type", "opus_opposite"),
+                                                "session": session["name"],
+                                                "reasoning": opus_result.get("reasoning", ""),
+                                                "timestamp": datetime.now().isoformat(),
+                                                "local_confidence": _opposite_conf.get("score"),
+                                                "opus_confidence": opus_conf,
+                                                "ai_analysis": f"[OPUS OPPOSITE] {opus_result.get('reasoning', '')}",
+                                                "indicators_compact": setup.get("indicators_snapshot", {}),
+                                                "is_scalp": False,
+                                            }
+
+                                            logger.info(
+                                                f"Opus opposite executing: {_opposite_dir} @ {entry:.0f}, "
+                                                f"conf={opus_conf}%"
+                                            )
+                                            await self.telegram.send_trade_alert(opus_alert)
+                                            await self._on_trade_confirm(opus_alert)
+                                            return 0
+                                        else:
+                                            logger.info(
+                                                f"Opus opposite risk validation failed: "
+                                                f"{validation['rejection_reason']}"
+                                            )
+                            else:
+                                logger.info(
+                                    f"Opus opposite confidence {opus_conf}% below threshold {min_conf_opus}%"
+                                )
+                                self.storage.save_opus_decision({
+                                    "direction": _opposite_dir,
+                                    "viable": False,
+                                    "confidence": opus_conf,
+                                    "reasoning": opus_result.get("reasoning", "")[:300],
+                                    "timestamp": datetime.now().isoformat(),
+                                })
+                        else:
+                            logger.info(
+                                f"Opus opposite: no {_opposite_dir} setup found — "
+                                f"{opus_result.get('reasoning', '')[:150]}"
+                            )
+                            self.storage.save_opus_decision({
+                                "direction": _opposite_dir,
+                                "viable": False,
+                                "confidence": 0,
+                                "reasoning": opus_result.get("reasoning", "")[:300],
+                                "timestamp": datetime.now().isoformat(),
+                            })
+                    except Exception as e:
+                        logger.warning(f"Opus opposite evaluation failed: {e}")
                 else:
-                    logger.info(f"Opus rejected both directions: {scalp_result.get('reasoning', '')[:150]}")
-            except Exception as e:
-                logger.warning(f"Opus scalp evaluation failed: {e}")
+                    logger.info(
+                        f"Opus opposite skipped: opposite setup not found or conf too low "
+                        f"(opposite_found={_opposite_setup.get('found', False)}, "
+                        f"opposite_conf={_opposite_conf.get('score', 0) if _opposite_conf else 'N/A'}%, "
+                        f"sonnet_conf={_sonnet_conf_score}%)"
+                    )
 
             # --- Force Open: 100% local confidence, AI rejected → user decides ---
             if local_score >= 100:

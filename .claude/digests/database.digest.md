@@ -70,3 +70,11 @@ get_ai_context_block(n_trades=20) -> str
   # Includes: streak count, last win time, cold-streak warnings vs backtest baselines.
   # Returns "" if fewer than 3 closed trades (insufficient data).
   # Baselines: bb_mid_bounce=47% | bb_lower_bounce=45% | Tokyo=49% | London=44% | NY=48%
+
+## Opus decision persistence (added 2026-03-05)
+save_opus_decision(decision: dict) -> None
+  # Writes storage/data/opus_last_decision.json. Used for Opus opposite-direction consistency tracking.
+  # dict: {direction, viable, confidence, reasoning[:300], timestamp (ISO)}
+get_recent_opus_decision() -> dict | None
+  # Returns last Opus decision if timestamp < 30 minutes ago, else None.
+  # Called before each evaluate_opposite() call to inject consistency context.

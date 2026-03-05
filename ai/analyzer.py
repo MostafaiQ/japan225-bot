@@ -718,6 +718,10 @@ class AIAnalyzer:
         # Conditional Opus: only load sub-agent when local conf in borderline zone (60-86%)
         local_score = local_confidence.get("score", 0) if local_confidence else 0
         use_opus = 60 <= local_score <= 86
+        if use_opus:
+            logger.info(f"Opus reviewer available to Sonnet (local conf {local_score}% in borderline 60-86%) — Sonnet decides whether to call it")
+        else:
+            logger.info(f"Opus reviewer NOT loaded (local conf {local_score}% outside 60-86%)")
 
         system_prompt = build_system_prompt()
         raw, tokens = self._run_claude(model, system_prompt, user_prompt,
@@ -891,6 +895,189 @@ class AIAnalyzer:
             f"sl={result.get('sl_distance', 'N/A')}, tp={result.get('tp_distance', 'N/A')}, "
             f"rr={result.get('effective_rr', 'N/A')}, "
             f"reason={result.get('reasoning', '')[:100]}"
+        )
+        return result
+
+
+    def evaluate_opposite(
+        self,
+        indicators: dict,
+        opposite_direction: str,
+        opposite_local_conf: dict,
+        sonnet_rejection_reasoning: str,
+        sonnet_key_levels: dict,
+        recent_scans: list,
+        market_context: dict,
+        web_research: dict,
+        recent_trades: list = None,
+        live_edge_block: str = None,
+        recent_opus_decision: dict = None,
+    ) -> dict:
+        """
+        Opus evaluates the OPPOSITE direction as a SWING trade after Sonnet rejected primary.
+        Full context (same as Sonnet scan), full SL/TP freedom, same confidence thresholds.
+
+        Gate: only called when opposite direction had a detected setup AND local conf >= 60%.
+
+        Returns: {setup_found, direction, confidence, entry, stop_loss, take_profit,
+                  setup_type, reasoning, effective_rr, warnings, edge_factors}
+        """
+        primary_direction = "LONG" if opposite_direction == "SHORT" else "SHORT"
+
+        system_prompt = (
+            "You are a swing-trade evaluator for Japan 225 Cash CFD ($1/pt, spread ~7pts).\n"
+            "The primary AI (Sonnet) evaluated the market and rejected the "
+            f"{primary_direction} direction.\n"
+            f"Your job: evaluate the OPPOSITE direction ({opposite_direction}) as a SWING trade.\n\n"
+            f"CRITICAL: You are evaluating {opposite_direction} ONLY. Do NOT evaluate {primary_direction}.\n"
+            "This is a full swing trade evaluation — NOT a scalp. Use proper swing SL/TP from structure.\n\n"
+            "SL/TP PLACEMENT FROM STRUCTURE:\n"
+            "- SL: Place at the nearest structural invalidation (swing low for LONG, swing high for SHORT).\n"
+            "  Use BB bands, pivot S/R levels, fib levels, PDH/PDL, EMA50. No bounds — AI picks from chart.\n"
+            "- TP: Place at the next structural obstacle (BB upper for LONG, BB lower for SHORT).\n"
+            "  Use pivots R1/R2 for LONG, S1/S2 for SHORT, swing highs/lows, VWAP, EMA50.\n\n"
+            "ATR VOLATILITY RULE: ATR14 is shown for each timeframe. If 15M ATR14 > 120pts,\n"
+            "  market is VOLATILE. SL must be at least 1× ATR from entry to survive noise.\n"
+            "  Tokyo session regularly shows ATR 140-220pts — set SL accordingly.\n\n"
+            f"CONFIDENCE THRESHOLDS: LONG requires >= {MIN_CONFIDENCE}%. SHORT requires >= {MIN_CONFIDENCE_SHORT}%.\n"
+            "R:R REQUIREMENT: (TP_dist - 7) / (SL_dist + 7) >= 1.5  (7pt spread adjustment)\n\n"
+            "MEAN-REVERSION BOUNCE RULES (if evaluating LONG bounce):\n"
+            "  Bearish HA streak, price below EMA50, 4H bearish = EXPECTED for bounce setups.\n"
+            "  Evaluate bounce QUALITY: wick rejection, pattern, sweep, volume surge, RSI divergence.\n\n"
+            "BREAKDOWN / MOMENTUM SHORT RULES (if evaluating SHORT breakdown):\n"
+            "  Daily still 'bullish' is EXPECTED during breakdowns — daily EMA lags big selloffs.\n"
+            "  4H+15M aligned bearish (HA streak ≤-2, below EMA50, RSI<50) = approve breakdown SHORT.\n\n"
+            "OVERSOLD SHORTING PROHIBITION: If 4H RSI < 32, do NOT approve SHORT.\n"
+            "OVERBOUGHT LONGING PROHIBITION: If 4H RSI > 68, do NOT approve LONG.\n\n"
+            "WARNING SEVERITY RULE: 4+ warnings → confidence < 70%. 6+ warnings → confidence < 60%.\n\n"
+            "Use Sonnet's rejection reasoning as CONTEXT — it tells you why the primary direction\n"
+            "failed, which often contains the structural case FOR the opposite direction.\n"
+            "Sonnet's key levels (support/resistance) are provided — use them for SL/TP placement.\n"
+        )
+
+        indicator_block = _fmt_indicators(indicators)
+
+        # Opposite direction local confidence breakdown
+        opp_criteria = opposite_local_conf.get("criteria", {})
+        opp_passed = [k for k, v in opp_criteria.items() if v]
+        opp_failed = [k for k, v in opp_criteria.items() if not v]
+        opp_conf_block = (
+            f"\nOPPOSITE ({opposite_direction}) LOCAL SCORE: {opposite_local_conf.get('score', '?')}% "
+            f"({opposite_local_conf.get('passed_criteria', '?')}/{opposite_local_conf.get('total_criteria', 12)}) "
+            f"PASS:{','.join(opp_passed)} FAIL:{','.join(opp_failed)}\n"
+        )
+
+        # Sonnet's key levels
+        support_levels = sonnet_key_levels.get("support", [])
+        resistance_levels = sonnet_key_levels.get("resistance", [])
+        key_levels_block = (
+            f"\nSONNET KEY LEVELS:\n"
+            f"  Support: {support_levels}\n"
+            f"  Resistance: {resistance_levels}\n"
+        )
+
+        # Directional consistency: show recent Opus decision to prevent flip-flopping
+        consistency_block = ""
+        if recent_opus_decision:
+            prev_dir = recent_opus_decision.get("direction", "?")
+            prev_viable = recent_opus_decision.get("viable", False)
+            prev_reason = recent_opus_decision.get("reasoning", "")[:200]
+            prev_conf = recent_opus_decision.get("confidence", 0)
+            try:
+                prev_ts = datetime.fromisoformat(recent_opus_decision["timestamp"])
+                elapsed_min = int((datetime.now() - prev_ts).total_seconds() / 60)
+            except Exception:
+                elapsed_min = 0
+            if prev_viable:
+                consistency_block = (
+                    f"\nYOUR PREVIOUS CALL ({elapsed_min} min ago): {prev_dir} swing, {prev_conf}% confidence.\n"
+                    f"Reasoning: {prev_reason}\n"
+                    f"CONSISTENCY RULE: Only flip direction if there is a CLEAR structural shift "
+                    f"(broken support/resistance, new candle pattern, RSI divergence crossing threshold). "
+                    f"Do NOT flip just because indicators moved a few points. Conviction matters.\n\n"
+                )
+            else:
+                consistency_block = (
+                    f"\nYOUR PREVIOUS CALL ({elapsed_min} min ago): No viable setup found.\n"
+                    f"Reasoning: {prev_reason}\n"
+                    f"Only approve now if conditions MATERIALLY changed.\n\n"
+                )
+
+        # Prompt learnings from closed trades
+        learnings_block = load_prompt_learnings()
+        learnings_str = f"\n{learnings_block}\n" if learnings_block else ""
+
+        # Web research summary
+        web_str = _fmt_web_research(web_research)
+        recent_trades_str = _fmt_recent_trades(recent_trades or [])
+        recent_scans_str = _fmt_recent_scans(recent_scans)
+
+        from config.settings import display_now, DISPLAY_TZ_LABEL
+        now = display_now().strftime(f"%Y-%m-%d %H:%M {DISPLAY_TZ_LABEL}")
+
+        user_prompt = (
+            f"Japan 225 CFD analysis — {now}\n\n"
+            f"TASK: Evaluate {opposite_direction} swing trade (Sonnet rejected {primary_direction}).\n\n"
+            f"SONNET REJECTION REASONING:\n{sonnet_rejection_reasoning}\n"
+            f"{opp_conf_block}"
+            f"{key_levels_block}"
+            f"{consistency_block}"
+            f"\nTIMEFRAME SNAPSHOT:\n{indicator_block}\n"
+            f"\nRECENT SCANS (last 5):\n{recent_scans_str}\n"
+            f"\nRECENT TRADES (last 5):\n{recent_trades_str}\n"
+            f"\nMARKET CONTEXT: session={market_context.get('session_name', '?')} | "
+            f"trading_mode={market_context.get('trading_mode', '?')}\n"
+            f"\nWEB RESEARCH:\n{web_str}\n"
+            + (("\n" + live_edge_block) if live_edge_block else "")
+            + learnings_str
+            + f"\nEvaluate ONLY {opposite_direction}. Do NOT evaluate {primary_direction}.\n"
+            f"Output ONLY valid JSON:\n"
+            f'{{"setup_found": true, "direction": "{opposite_direction}", "confidence": 72, '
+            f'"entry": 54200.0, "stop_loss": 54050.0, "take_profit": 54600.0, '
+            f'"setup_type": "bb_lower_bounce", "reasoning": "...", "effective_rr": 2.1, '
+            f'"warnings": [], "edge_factors": []}}\n'
+            f"or if no valid setup:\n"
+            f'{{"setup_found": false, "direction": null, "confidence": 0, '
+            f'"entry": null, "stop_loss": null, "take_profit": null, '
+            f'"setup_type": null, "reasoning": "No viable {opposite_direction} setup because...", '
+            f'"effective_rr": 0.0, "warnings": [], "edge_factors": []}}'
+        )
+
+        raw, tokens = self._run_claude(
+            OPUS_MODEL, system_prompt, user_prompt,
+            timeout=150, use_opus_agent=False, effort="medium",
+        )
+
+        default = {
+            "setup_found": False,
+            "direction": None,
+            "confidence": 0,
+            "reasoning": "Opus opposite eval returned unparseable output",
+            "warnings": [],
+            "edge_factors": [],
+        }
+        result = _parse_json(raw, default)
+
+        # Validate direction match
+        if result.get("setup_found") and result.get("direction") != opposite_direction:
+            logger.warning(
+                f"Opus opposite eval returned wrong direction: "
+                f"expected {opposite_direction}, got {result.get('direction')} — setting setup_found=False"
+            )
+            result["setup_found"] = False
+            result["reasoning"] = (
+                f"Direction mismatch: expected {opposite_direction}, got {result.get('direction')}. "
+                + result.get("reasoning", "")
+            )
+
+        result["_model"] = OPUS_MODEL
+        result["_cost"] = 0.0
+        result["_tokens"] = tokens
+
+        logger.info(
+            f"Opus opposite eval ({opposite_direction}): found={result.get('setup_found')}, "
+            f"conf={result.get('confidence', 'N/A')}%, "
+            f"reason={result.get('reasoning', '')[:120]}"
         )
         return result
 

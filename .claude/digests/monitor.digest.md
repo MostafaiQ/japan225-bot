@@ -1,4 +1,4 @@
-# monitor.py — DIGEST (updated 2026-03-04 streaming)
+# monitor.py — DIGEST (updated 2026-03-05)
 # Purpose: Main VM process. Entry point. async event loop. Handles scan + monitor + Telegram.
 
 ## class TradingMonitor
@@ -61,16 +61,17 @@ _scanning_cycle() -> int (sleep seconds):
   8b. HARD BLOCKS: C7(no_event_1hr) + C8(no_friday_monthend) fail → skip immediately
   8c. if score < HAIKU_MIN_SCORE (60%) → skip (true technical junk)
   8d. market_context["prescreen_setup"] + market_context["secondary_setup"] — injected before Sonnet
-  9. PARALLEL AI LAUNCH (via run_in_executor):
-      9a. Sonnet scan always launches (single subprocess, Sonnet 4.6 + Opus sub-agent)
-      9b. If local_score >= min_conf: Opus scalp eval launches SIMULTANEOUSLY (parallel_mode=True)
-          → Opus gets local pre-screen context (not Sonnet reasoning, since Sonnet hasn't finished)
-          → Both run as concurrent subprocesses. ~10s total vs ~19s sequential.
-      9c. await Sonnet result first
-      9d. If Sonnet approves → discard Opus result, proceed to risk validation
-      9e. If Sonnet rejects (near-miss, not QUICK REJECT) → await Opus result (already done/nearly done)
-          → If scalp_viable → auto-execute via _execute_scalp()
-      9f. If not near-miss → Opus result discarded ($0 cost, no waste)
+  9. SEQUENTIAL AI LAUNCH (via run_in_executor):
+      9a. Sonnet scan launches (single subprocess, Sonnet 4.6 + Opus sub-agent)
+      9b. await Sonnet result
+      9c. If Sonnet approves → proceed to risk validation + execute
+      9d. If Sonnet rejects (conf >= 30%) → check if OPPOSITE direction has detected setup + conf >= 60%
+          → If yes: evaluate_opposite() — Opus evaluates opposite direction as SWING trade (full context)
+          → Gate: _opposite_conf.score >= 60 AND _opposite_setup.found AND sonnet_conf >= 30
+          → If Opus approves opposite at >= 70%/75%: risk validate + execute via send_trade_alert + _on_trade_confirm
+          → Consistency tracking: storage.save_opus_decision() / storage.get_recent_opus_decision() (30-min persistence)
+      9e. If Sonnet conf < 30% → skip Opus entirely (clear reject)
+      NOTE: momentum bypass (no formal setup) still uses evaluate_scalp() → _execute_scalp() path (separate)
   12. save_scan(), action_taken = pending_* (if confirmed) or ai_rejected_* (if not)
   13. risk.validate_trade(), set_pending_alert(), telegram.send_trade_alert()
 

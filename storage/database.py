@@ -749,3 +749,25 @@ class Storage:
             lines.append(f"  ⚠ Cold: {' | '.join(warnings)}")
 
         return "\n".join(lines)
+
+    def save_opus_decision(self, decision: dict) -> None:
+        """Persist latest Opus opposite-direction decision for consistency tracking."""
+        path = self.data_dir / "opus_last_decision.json"
+        try:
+            path.write_text(json.dumps(decision))
+        except Exception as e:
+            logger.warning(f"Failed to save Opus decision: {e}")
+
+    def get_recent_opus_decision(self) -> dict | None:
+        """Return last Opus decision if within 30 minutes, else None."""
+        path = self.data_dir / "opus_last_decision.json"
+        try:
+            if not path.exists():
+                return None
+            data = json.loads(path.read_text())
+            ts = datetime.fromisoformat(data.get("timestamp", ""))
+            if (datetime.now() - ts).total_seconds() < 1800:  # 30 min
+                return data
+            return None
+        except Exception:
+            return None

@@ -300,7 +300,6 @@ Checks services, test suite, git status, trades, config, and recent errors.
 - [ ] Scans run every 5 min during active sessions (check logs)
 - [ ] Set `IG_ENV=live` in `.env`
 - [ ] Start with minimum lots (0.01-0.02)
-- [ ] Confirm exit phases work: breakeven at +150pts, runner at 75% TP
 - [ ] Test `/close` and `/kill` commands
 - [ ] Test alert auto-expiry (15 min timeout)
 
@@ -317,7 +316,7 @@ Checks services, test suite, git status, trades, config, and recent errors.
    CONTRACT_SIZE = 1           # Check IG's contract spec
    MARGIN_FACTOR = 0.005       # Check IG's margin requirement for your instrument
    ```
-3. Adjust `DEFAULT_SL_DISTANCE`, `DEFAULT_TP_DISTANCE`, and `BREAKEVEN_TRIGGER` for your instrument's volatility
+3. Adjust `DEFAULT_SL_DISTANCE` and `DEFAULT_TP_DISTANCE` for your instrument's volatility
 4. Update `SESSION_HOURS_UTC` for your instrument's active hours
 5. Update the AI system prompt in `ai/analyzer.py` to reference your instrument
 
