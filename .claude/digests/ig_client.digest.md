@@ -1,4 +1,4 @@
-# core/ig_client.py — DIGEST (updated 2026-03-04)
+# core/ig_client.py — DIGEST (updated 2026-03-05)
 # Purpose: IG Markets REST API wrapper. Auth, price data, order management.
 # CANDLE CACHING: delta fetches after first full fetch. Disk-backed cache survives restarts.
 # DEAL CONFIRMATION: trading_ig may return full dict or string from open/close. Handles both.
@@ -45,6 +45,13 @@ stop_streaming() -> None
 get_streaming_price() -> float | None
   # Returns mid-price if last tick was < STREAMING_STALE_SECONDS (10s) ago, else None.
   # Callers use None as signal to fall back to REST get_market_info().
+  # Edge cases (all tested in tests/test_streaming.py):
+  #   fresh price: _streaming_price=100.0, _ts=now → returns 100.0
+  #   stale price: _ts=now-20 (>10s) → returns None (REST fallback)
+  #   no price: _streaming_price=None → returns None always
+  #   stop_streaming noop: _ls_client=None → no exception, clears state
+  #   no endpoint: _lightstreamer_endpoint=None → start_streaming() returns False
+  #   no tokens: ig.session.headers={} → start_streaming() returns False
 
 connect() -> bool
   # POST /session, sets CST + X-SECURITY-TOKEN. Returns True on success.
