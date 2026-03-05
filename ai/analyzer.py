@@ -226,7 +226,7 @@ def _fmt_indicators(indicators: dict) -> str:
         bbl  = tf.get("bollinger_lower", tf.get("bb_lower", "?"))
         vol  = tf.get("volume_signal", "")
         vrat = tf.get("volume_ratio", "")
-        sh   = tf.get("swing_high_20", "")
+        sh   = tf.get("swing_high_20", "")   # kept for bounce_starting logic
         sl   = tf.get("swing_low_20", "")
         bnc  = tf.get("bounce_starting", "")
         # New indicators
@@ -297,12 +297,19 @@ def _fmt_indicators(indicators: dict) -> str:
             parts.append(f"ATR14={atr_val:.0f}pts")
         if swlo or swhi:
             parts.append(f"sweep={'low' if swlo else 'high'}")
-        # 24h day high/low — key horizontal S/R (catches levels >5hrs ago that swing_20 misses)
-        dh = tf.get("day_high_96")
-        dl = tf.get("day_low_96")
-        if dh and dl and p and p != "?":
+        # Most recent swing pivot high/low — the last real price reversal on the chart
+        # Shows: level, how many candles ago it formed, distance from current price
+        ph = tf.get("pivot_high")
+        ph_age = tf.get("pivot_high_age")
+        pl = tf.get("pivot_low")
+        pl_age = tf.get("pivot_low_age")
+        if ph and pl and p and p != "?":
             try:
-                parts.append(f"day_SR=H{dh:.0f}(+{float(dh)-float(p):.0f})/L{dl:.0f}(-{float(p)-float(dl):.0f})")
+                fp = float(p)
+                parts.append(
+                    f"last_pivot=H{ph:.0f}({ph_age}c,+{ph-fp:.0f}pts)"
+                    f"/L{pl:.0f}({pl_age}c,-{fp-pl:.0f}pts)"
+                )
             except (TypeError, ValueError):
                 pass
         # Candlestick pattern

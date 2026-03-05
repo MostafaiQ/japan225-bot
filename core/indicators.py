@@ -475,24 +475,33 @@ def analyze_timeframe(candles: list[dict]) -> dict:
         result["volume_ratio"] = None
         result["volume_signal"] = None
 
-    # Recent swing high/low (20-candle lookback) — nearest resistance and support (~5hrs on 15M)
-    n_sw = min(20, len(highs))
-    swing_h = max(highs[-n_sw:])
-    swing_l = min(lows[-n_sw:])
-    result["swing_high_20"] = round(swing_h, 1)
-    result["swing_low_20"]  = round(swing_l, 1)
-    result["dist_to_swing_high"] = round(swing_h - current_price, 1)
-    result["dist_to_swing_low"]  = round(current_price - swing_l, 1)
-
-    # Day swing high/low (96-candle lookback = 24hrs on 15M) — key daily S/R levels
-    # Lets AI see yesterday's swing levels, double bottoms, multi-hour support/resistance
-    n_day = min(96, len(highs))
-    day_swing_h = max(highs[-n_day:])
-    day_swing_l = min(lows[-n_day:])
-    result["day_high_96"]  = round(day_swing_h, 1)
-    result["day_low_96"]   = round(day_swing_l, 1)
-    result["dist_to_day_high"] = round(day_swing_h - current_price, 1)
-    result["dist_to_day_low"]  = round(current_price - day_swing_l, 1)
+    # Most recent swing pivot high/low — the last real price reversal point,
+    # regardless of how many candles ago. A pivot high = candle whose high is
+    # higher than the 3 candles on each side. Same for pivot low.
+    # This is what humans actually see as "the last high" or "the last low" on a chart.
+    _N = 3  # neighbours on each side required to confirm a pivot
+    recent_pivot_high = None
+    recent_pivot_high_age = None
+    recent_pivot_low = None
+    recent_pivot_low_age = None
+    if len(highs) > _N * 2 + 1:
+        for i in range(len(highs) - _N - 1, _N - 1, -1):
+            if recent_pivot_high is None and highs[i] == max(highs[i - _N: i + _N + 1]):
+                recent_pivot_high = highs[i]
+                recent_pivot_high_age = len(highs) - 1 - i  # candles ago
+            if recent_pivot_low is None and lows[i] == min(lows[i - _N: i + _N + 1]):
+                recent_pivot_low = lows[i]
+                recent_pivot_low_age = len(lows) - 1 - i
+            if recent_pivot_high is not None and recent_pivot_low is not None:
+                break
+    if recent_pivot_high is not None:
+        result["pivot_high"] = round(recent_pivot_high, 1)
+        result["pivot_high_age"] = recent_pivot_high_age
+        result["dist_to_pivot_high"] = round(recent_pivot_high - current_price, 1)
+    if recent_pivot_low is not None:
+        result["pivot_low"] = round(recent_pivot_low, 1)
+        result["pivot_low_age"] = recent_pivot_low_age
+        result["dist_to_pivot_low"] = round(current_price - recent_pivot_low, 1)
 
     # ── Heiken Ashi ───────────────────────────────────────────────────────────
     ha_open_v, ha_high_v, ha_low_v, ha_close_v = heiken_ashi(opens, highs, lows, closes)
