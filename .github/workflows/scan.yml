@@ -1,22 +1,7 @@
 name: Japan 225 Scan
 
 on:
-  schedule:
-    # Every 2 hours during market hours (UTC times, Kuwait = UTC+3)
-    # 00:00 UTC = 03:00 Kuwait (Tokyo Open)
-    # 02:00 UTC = 05:00 Kuwait (Mid Tokyo)
-    # 04:00 UTC = 07:00 Kuwait (Late Tokyo)
-    # 06:00 UTC = 09:00 Kuwait (Tokyo Close)
-    # 08:00 UTC = 11:00 Kuwait (London Open)
-    # 10:00 UTC = 13:00 Kuwait (Mid London)
-    # 12:00 UTC = 15:00 Kuwait (Late London)
-    # 14:30 UTC = 17:30 Kuwait (NY Open)
-    # 16:30 UTC = 19:30 Kuwait (Mid NY)
-    # 18:30 UTC = 21:30 Kuwait (Late NY)
-    # 20:30 UTC = 23:30 Kuwait (NY Close)
-    - cron: '0 0,2,4,6,8,10,12 * * 1-5'
-    - cron: '30 14,16,18,20 * * 1-5'
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:  # Manual trigger only — bot runs on VM via systemd
 
 env:
   IG_API_KEY: ${{ secrets.IG_API_KEY }}
