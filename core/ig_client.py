@@ -419,7 +419,7 @@ class IGClient:
             "MINUTE_30": 1740,
             "HOUR_2": 7000,
             "HOUR_4": 14000,
-            "DAY": 86400,        # once per day
+            "DAY": 3600,         # hourly — current candle H/L must update intraday
         }
         if self._cache_full_fetch_done.get(resolution):
             min_interval = _MIN_DELTA_SECS.get(resolution, 300)
