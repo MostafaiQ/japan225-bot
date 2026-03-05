@@ -9,6 +9,7 @@ Tracks price history and detects adverse moves in three tiers:
 Also detects stale data (10+ identical readings during an active session).
 """
 import logging
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -46,6 +47,7 @@ class MomentumTracker:
         self.entry_price = entry_price
         self._prices: list[dict] = []  # [{price, timestamp}]
         self._last_alerted_tier = TIER_NONE
+        self._last_alert_time: float = 0.0  # epoch seconds
 
     def add_price(self, price: float):
         """Record a new price reading."""
@@ -123,9 +125,11 @@ class MomentumTracker:
         current_rank = tier_order.index(current_tier)
         last_rank = tier_order.index(self._last_alerted_tier)
 
-        if current_rank <= last_rank and current_tier != TIER_SEVERE:
-            # Tier hasn't worsened (or is recovering) — don't repeat alert
-            return False, current_tier, ""
+        now = time.monotonic()
+        cooldown_secs = 600  # 10 minutes between repeated alerts at same tier
+        if current_rank <= last_rank:
+            if current_tier == TIER_NONE or (now - self._last_alert_time) < cooldown_secs:
+                return False, current_tier, ""
 
         if current_tier == TIER_NONE:
             # Reset tracker when conditions improve
@@ -133,6 +137,7 @@ class MomentumTracker:
             return False, TIER_NONE, ""
 
         self._last_alerted_tier = current_tier
+        self._last_alert_time = time.monotonic()
         direction_word = "dropped" if self.direction == "LONG" else "risen"
 
         if current_tier == TIER_MILD:
@@ -171,6 +176,7 @@ class MomentumTracker:
     def reset_alert_state(self):
         """Reset alert tier tracking (e.g., after a position phase change)."""
         self._last_alerted_tier = TIER_NONE
+        self._last_alert_time = 0.0
 
     def milestone_alert(self) -> Optional[str]:
         """
