@@ -297,6 +297,14 @@ def _fmt_indicators(indicators: dict) -> str:
             parts.append(f"ATR14={atr_val:.0f}pts")
         if swlo or swhi:
             parts.append(f"sweep={'low' if swlo else 'high'}")
+        # 24h day high/low — key horizontal S/R (catches levels >5hrs ago that swing_20 misses)
+        dh = tf.get("day_high_96")
+        dl = tf.get("day_low_96")
+        if dh and dl and p and p != "?":
+            try:
+                parts.append(f"day_SR=H{dh:.0f}(+{float(dh)-float(p):.0f})/L{dl:.0f}(-{float(p)-float(dl):.0f})")
+            except (TypeError, ValueError):
+                pass
         # Candlestick pattern
         cp_name = tf.get("candlestick_pattern")
         cp_dir  = tf.get("candlestick_direction")

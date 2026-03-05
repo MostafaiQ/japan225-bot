@@ -475,7 +475,7 @@ def analyze_timeframe(candles: list[dict]) -> dict:
         result["volume_ratio"] = None
         result["volume_signal"] = None
 
-    # Recent swing high/low (20-candle lookback) — nearest resistance and support
+    # Recent swing high/low (20-candle lookback) — nearest resistance and support (~5hrs on 15M)
     n_sw = min(20, len(highs))
     swing_h = max(highs[-n_sw:])
     swing_l = min(lows[-n_sw:])
@@ -483,6 +483,16 @@ def analyze_timeframe(candles: list[dict]) -> dict:
     result["swing_low_20"]  = round(swing_l, 1)
     result["dist_to_swing_high"] = round(swing_h - current_price, 1)
     result["dist_to_swing_low"]  = round(current_price - swing_l, 1)
+
+    # Day swing high/low (96-candle lookback = 24hrs on 15M) — key daily S/R levels
+    # Lets AI see yesterday's swing levels, double bottoms, multi-hour support/resistance
+    n_day = min(96, len(highs))
+    day_swing_h = max(highs[-n_day:])
+    day_swing_l = min(lows[-n_day:])
+    result["day_high_96"]  = round(day_swing_h, 1)
+    result["day_low_96"]   = round(day_swing_l, 1)
+    result["dist_to_day_high"] = round(day_swing_h - current_price, 1)
+    result["dist_to_day_low"]  = round(current_price - day_swing_l, 1)
 
     # ── Heiken Ashi ───────────────────────────────────────────────────────────
     ha_open_v, ha_high_v, ha_low_v, ha_close_v = heiken_ashi(opens, highs, lows, closes)

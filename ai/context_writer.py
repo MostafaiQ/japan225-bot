@@ -117,6 +117,10 @@ def _write_market_snapshot(
         ("prev_candle_low",  "PDL"),
         ("swept_low",        "Swept Low"),
         ("swept_high",       "Swept High"),
+        ("day_high_96",      "Day High (24h)"),
+        ("day_low_96",       "Day Low (24h)"),
+        ("dist_to_day_high", "Dist to Day High"),
+        ("dist_to_day_low",  "Dist to Day Low"),
     ]
 
     for tf_label, tf_keys in TF_KEYS:
