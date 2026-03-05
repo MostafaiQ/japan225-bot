@@ -168,13 +168,14 @@ class TestSafeLotSize:
 class TestExitManager:
     """Test the 3-phase exit strategy logic."""
 
-    def test_phase1_to_breakeven(self):
+    def test_no_breakeven_at_plus_160(self):
+        """Breakeven removed: SL must NOT move when +160pts in profit."""
         em = ExitManager(ig_client=None, storage=MockStorage())
         position = {
             "deal_id": "TEST1",
             "direction": "BUY",
             "entry": 59500,
-            "current_price": 59660,  # +160 pts (above BREAKEVEN_TRIGGER=150)
+            "current_price": 59660,  # +160 pts
             "size": 0.03,
             "stop_level": 59300,
             "limit_level": 59900,
@@ -182,8 +183,7 @@ class TestExitManager:
             "phase": ExitPhase.INITIAL,
         }
         action = em.evaluate_position(position)
-        assert action["action"] == "move_be"
-        assert action["new_stop"] > 59500  # Stop should be above entry
+        assert action["action"] == "none", "SL must not move — breakeven step removed"
 
     def test_no_action_below_trigger(self):
         em = ExitManager(ig_client=None, storage=MockStorage())
@@ -267,7 +267,8 @@ class TestExitManager:
 class TestExitManagerShort:
     """Test exit logic for SHORT positions."""
 
-    def test_short_breakeven(self):
+    def test_short_no_breakeven(self):
+        """Breakeven removed: SL must NOT move for shorts at +160pts."""
         em = ExitManager(ig_client=None, storage=MockStorage())
         position = {
             "deal_id": "SHORT1",
@@ -281,8 +282,24 @@ class TestExitManagerShort:
             "phase": ExitPhase.INITIAL,
         }
         action = em.evaluate_position(position)
-        assert action["action"] == "move_be"
-        assert action["new_stop"] < 59500  # Stop below entry for shorts
+        assert action["action"] == "none", "SL must not move — breakeven step removed"
+
+    def test_short_runner_from_initial(self):
+        """Runner activates directly from INITIAL phase (no breakeven step)."""
+        em = ExitManager(ig_client=None, storage=MockStorage())
+        position = {
+            "deal_id": "SHORT2",
+            "direction": "SELL",
+            "entry": 59500,
+            "current_price": 59200,  # 300pts of 400pt TP = 75% → runner
+            "size": 0.03,
+            "stop_level": 59700,
+            "limit_level": 59100,
+            "opened_at": datetime.now().isoformat(),
+            "phase": ExitPhase.INITIAL,
+        }
+        action = em.evaluate_position(position)
+        assert action["action"] == "activate_runner"
 
 
 if __name__ == "__main__":

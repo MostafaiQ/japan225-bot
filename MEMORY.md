@@ -23,12 +23,12 @@ Oracle VM: monitor.py (24/7, systemd: japan225-bot)
     → Lightstreamer streaming price ticks (BID/OFR mid) — real-time, ~0 REST calls for price
     → REST fallback if streaming stale >10s. Background reconnect after 30 stale cycles (60s).
     → Position existence REST check every N cycles unchanged (SAFETY_CONSECUTIVE_EMPTY=2)
-    → MomentumTracker.add_price() → SEVERE adverse tier → auto-breakeven safety net
+    → MomentumTracker.add_price() → SEVERE adverse tier → Telegram alert only (no auto-SL moves)
     → MILD/MODERATE adverse alerts REMOVED — replaced by Opus position evaluator
     → Opus position eval every 60 cycles (120s): evaluate_open_position() → send_position_eval()
        CLOSE_NOW + conf >= 70% → auto-close. TIGHTEN_SL → Telegram alert only.
-    → exit_manager.evaluate_position() → execute_action()
-    → ExitPhase: INITIAL → BREAKEVEN (at +150pts) → RUNNER (75% TP in <2hrs)
+    → SL and TP fixed at entry (set by AI). No mechanical modifications after open.
+    → ExitPhase class kept for state tracking only — no phase transitions fire.
   TELEGRAM: always-on polling, callbacks: on_trade_confirm, on_force_scan
 
 Dashboard: FastAPI (systemd: japan225-dashboard, port 8080)

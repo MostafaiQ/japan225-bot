@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Optional
 
 from config.settings import (
-    BREAKEVEN_TRIGGER, BREAKEVEN_BUFFER, SPREAD_ESTIMATE,
+    SPREAD_ESTIMATE,
     RUNNER_VELOCITY_THRESHOLD, TRAILING_STOP_DISTANCE,
     TRAILING_STOP_INCREMENT, DEFAULT_TP_DISTANCE,
 )
@@ -87,27 +87,10 @@ class ExitManager:
             except ValueError:
                 pass
         
-        # ---- PHASE 1 -> PHASE 2: Breakeven Lock ----
-        if phase == ExitPhase.INITIAL and pnl_points >= BREAKEVEN_TRIGGER:
-            if direction == "BUY":
-                new_stop = entry + BREAKEVEN_BUFFER  # Buffer for spread
-            else:
-                new_stop = entry - BREAKEVEN_BUFFER
-            
-            result.update({
-                "action": "move_be",
-                "details": (
-                    f"Price +{pnl_points:.0f}pts. Moving SL to breakeven "
-                    f"({new_stop:.0f}, +{BREAKEVEN_BUFFER}pt buffer for spread)."
-                ),
-                "new_stop": new_stop,
-                "new_limit": limit_level,  # Keep TP unchanged
-                "trailing": False,
-            })
-            return result
-        
-        # ---- PHASE 2 -> PHASE 3: Runner Detection ----
-        if phase == ExitPhase.BREAKEVEN and limit_level:
+        # ---- PHASE 1 -> PHASE 3: Runner Detection (no breakeven stop) ----
+        # SL stays fixed at entry SL until trade becomes a runner (75% of TP).
+        # Then TP is removed and a trailing stop activates at 150pts behind price.
+        if phase in (ExitPhase.INITIAL, ExitPhase.BREAKEVEN) and limit_level:
             tp_distance = abs(limit_level - entry)
             progress = pnl_points / tp_distance if tp_distance > 0 else 0
             

@@ -35,7 +35,7 @@ from config.settings import (
     SCAN_INTERVAL_SECONDS, OFFHOURS_INTERVAL_SECONDS,
     AI_COOLDOWN_MINUTES, HAIKU_MIN_SCORE, PRICE_DRIFT_ABORT_PTS, SAFETY_CONSECUTIVE_EMPTY,
     calculate_margin, calculate_profit, SPREAD_ESTIMATE, DEFAULT_SL_DISTANCE,
-    MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, BREAKEVEN_BUFFER,
+    MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT,
     DAILY_EMA200_CANDLES, PRE_SCREEN_CANDLES, AI_ESCALATION_CANDLES,
     MINUTE_5_CANDLES, DISPLAY_TZ, display_now,
     EXTREME_DAY_RANGE_PTS, MOMENTUM_SCAN_BYPASS_SIGNALS,
@@ -1376,21 +1376,7 @@ class TradingMonitor:
         should_alert, tier, alert_msg = self.momentum_tracker.should_alert()
         if should_alert and tier == TIER_SEVERE:
             await self.telegram.send_adverse_alert(alert_msg, tier, deal_id)
-            # SEVERE: auto-move SL to breakeven to protect
-            if phase == ExitPhase.INITIAL:
-                logger.warning(f"SEVERE adverse move. Auto-protecting with breakeven SL.")
-                if logical_direction == "LONG":
-                    be_stop = entry + BREAKEVEN_BUFFER
-                else:
-                    be_stop = entry - BREAKEVEN_BUFFER
-                success = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self.ig.modify_position(deal_id=deal_id, stop_level=be_stop)
-                )
-                if success:
-                    self.storage.update_position_levels(stop_level=be_stop)
-                    self.storage.update_position_phase(deal_id, ExitPhase.BREAKEVEN)
-                    logger.info(f"Auto-protected: SL moved to {be_stop:.0f}")
+            # SEVERE: alert only — SL stays fixed at original level (no auto-breakeven)
 
         # --- Opus position evaluator (every 2 minutes, or on-demand via dashboard/telegram) ---
         self._position_price_buffer.append(current_price)
@@ -1493,32 +1479,7 @@ class TradingMonitor:
             "phase": phase,
         }
 
-        action = self.exit_manager.evaluate_position(position_data)
-        if action["action"] != "none":
-            logger.info(f"Exit action: {action['action']} — {action['details']}")
-            success = await self.exit_manager.execute_action(position_data, action)
-            if success and action.get("new_stop") is not None:
-                self.storage.update_position_levels(
-                    stop_level=action.get("new_stop"),
-                    limit_level=action.get("new_limit"),
-                )
-                if action["action"] == "move_be":
-                    self.momentum_tracker.reset_alert_state()
-
-        # Manual trailing (if API trailing not available)
-        if phase == ExitPhase.RUNNER:
-            trail_action = self.exit_manager.manual_trail_update(position_data)
-            if trail_action:
-                success = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self.ig.modify_position(
-                        deal_id=deal_id,
-                        stop_level=trail_action["new_stop"],
-                    )
-                )
-                if success:
-                    self.storage.update_position_levels(stop_level=trail_action["new_stop"])
-                    logger.info(trail_action["details"])
+        # SL and TP are fixed at entry — IG manages them. No mechanical modifications.
 
     async def _handle_position_closed(self, pos_state: dict):
         """Handle position closure detected by monitor."""
