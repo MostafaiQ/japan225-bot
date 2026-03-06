@@ -29,6 +29,7 @@ BOLLINGER_PERIOD=20  BOLLINGER_STD=2.0  EMA_FAST=50  EMA_SLOW=200  RSI_PERIOD=14
 RSI_OVERSOLD=30  RSI_OVERBOUGHT=70  RSI_ENTRY_LOW=35  RSI_ENTRY_HIGH=55
 RSI_ENTRY_HIGH_BOUNCE=55   # RSI upper gate for BB mid bounce (backtest: RSI 55-65 LONG WR=38%, cut off)
 MOMENTUM_RSI_HIGH=75       # RSI upper gate for momentum LONG setups (was 70, widened 2026-03-04)
+# NOTE: TOKYO_FORCED_LOTS / TOKYO_RR_TARGET / TOKYO_MAX_CONSECUTIVE_LOSSES removed 2026-03-06
 # NOTE: RSI thresholds for confidence scoring (30, 35, etc.) are now in confidence.py/indicators.py, not settings.py
 
 ## Confidence

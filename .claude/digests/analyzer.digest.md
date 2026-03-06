@@ -129,7 +129,7 @@ evaluate_opposite(indicators, opposite_direction, opposite_local_conf, sonnet_re
   # Same confidence thresholds: MIN_CONFIDENCE (70%) for LONG, MIN_CONFIDENCE_SHORT (75%) for SHORT.
   # Direction validation: if result direction != opposite_direction → setup_found=False (safety guard).
   # Includes consistency block (recent_opus_decision) to prevent flip-flopping.
-  # Uses OPUS_MODEL, timeout=150s, effort="medium".
+  # Uses OPUS_MODEL, timeout=150s, effort="low".
   # Returns: {setup_found, direction, confidence, entry, stop_loss, take_profit, setup_type, reasoning, effective_rr, warnings, edge_factors}
 
 ## evaluate_scalp (RETAINED for momentum bypass only)

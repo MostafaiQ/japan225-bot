@@ -39,7 +39,6 @@ from config.settings import (
     DAILY_EMA200_CANDLES, PRE_SCREEN_CANDLES, AI_ESCALATION_CANDLES,
     MINUTE_5_CANDLES, DISPLAY_TZ, display_now,
     EXTREME_DAY_RANGE_PTS, MOMENTUM_SCAN_BYPASS_SIGNALS,
-    TOKYO_FORCED_LOTS, TOKYO_MAX_CONSECUTIVE_LOSSES,
     CONTRADICTORY_SIGNAL_MIN_SCORE, CONTRADICTORY_SIGNAL_MAX_GAP,
 )
 from core.ig_client import IGClient, POSITIONS_API_ERROR
@@ -453,10 +452,6 @@ class TradingMonitor:
                 sl = float(data.get("sl", 0))
                 sl_dist = abs(entry - sl) if sl else DEFAULT_SL_DISTANCE
                 data["lots"] = self.risk.get_safe_lot_size(balance, entry, sl_distance=sl_dist)
-                # Apply Tokyo lot cap so notification shows correct size
-                if get_current_session()["name"] == "tokyo" and data["lots"] > TOKYO_FORCED_LOTS:
-                    logger.info(f"Tokyo mode: capping force-open lots {data['lots']}→{TOKYO_FORCED_LOTS}")
-                    data["lots"] = TOKYO_FORCED_LOTS
             else:
                 data["lots"] = 0.01
 
@@ -1156,10 +1151,6 @@ class TradingMonitor:
                                         logger.error("Opus opposite: could not get account balance")
                                     else:
                                         lots = self.risk.get_safe_lot_size(balance, current_price, sl_distance=sl_distance)
-                                        _is_tokyo_opus = get_current_session()["name"] == "tokyo"
-                                        if _is_tokyo_opus and lots > TOKYO_FORCED_LOTS:
-                                            logger.info(f"Tokyo mode: capping Opus lots {lots}→{TOKYO_FORCED_LOTS}")
-                                            lots = TOKYO_FORCED_LOTS
 
                                         validation = self.risk.validate_trade(
                                             direction=_opposite_dir,
@@ -1307,11 +1298,6 @@ class TradingMonitor:
 
         sl_distance = abs(entry - sl)
         lots = self.risk.get_safe_lot_size(balance, current_price, sl_distance=sl_distance)
-        # Apply Tokyo lot cap here so Telegram notification shows correct size
-        _is_tokyo_scan = get_current_session()["name"] == "tokyo"
-        if _is_tokyo_scan and lots > TOKYO_FORCED_LOTS:
-            logger.info(f"Tokyo mode: capping lots {lots}→{TOKYO_FORCED_LOTS}")
-            lots = TOKYO_FORCED_LOTS
         logger.info(f"Lot size: {lots} (balance=${balance:.2f}, SL={sl_distance:.0f}pts)")
 
         validation = self.risk.validate_trade(
@@ -1825,15 +1811,12 @@ class TradingMonitor:
         ig_direction = "BUY" if direction == "LONG" else "SELL"
         analyzed_entry = float(alert_data.get("entry", 0))
 
-        # Session-specific rules (Tokyo: minimum lots, tighter TP, higher loss tolerance)
-        _is_tokyo = get_current_session()["name"] == "tokyo"
-
         # --- C2/C3 fix: Lightweight risk re-validation ---
         account = self.storage.get_account_state()
         consec_losses = account.get("consecutive_losses", 0)
         last_loss_time = account.get("last_loss_time")
         from config.settings import MAX_CONSECUTIVE_LOSSES, COOLDOWN_HOURS
-        _max_consec = TOKYO_MAX_CONSECUTIVE_LOSSES if _is_tokyo else MAX_CONSECUTIVE_LOSSES
+        _max_consec = MAX_CONSECUTIVE_LOSSES
         if consec_losses >= _max_consec and last_loss_time:
             cooldown_end = datetime.fromisoformat(last_loss_time) + timedelta(hours=COOLDOWN_HOURS)
             if datetime.now() < cooldown_end:
@@ -1907,11 +1890,7 @@ class TradingMonitor:
             sl_distance = int(DEFAULT_SL_DISTANCE)
             tp_distance = 400
 
-        # --- Tokyo session mode: minimum lots (AI still decides SL/TP based on volatility) ---
         _final_lots = alert_data.get("lots", 0.01)
-        if _is_tokyo and _final_lots > TOKYO_FORCED_LOTS:
-            logger.info(f"Tokyo mode: capping lots {_final_lots}→{TOKYO_FORCED_LOTS} (min-risk, AI sets SL/TP)")
-            _final_lots = TOKYO_FORCED_LOTS
 
         # --- Place order with distance-based SL/TP ---
         try:

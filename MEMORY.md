@@ -77,7 +77,6 @@ POSITION_CHECK_EVERY_N_CYCLES = 5   ADVERSE_LOOKBACK_READINGS = 150   STREAMING_
 AI_COOLDOWN_MINUTES = 15       PRICE_DRIFT_ABORT_PTS = 20    SAFETY_CONSECUTIVE_EMPTY = 2
 SONNET_MODEL = "claude-sonnet-4-6"   OPUS_MODEL = "claude-opus-4-6"
 DISPLAY_TZ = UTC+3 (Kuwait). display_now() helper. All user-facing timestamps in Kuwait time.
-TOKYO_FORCED_LOTS=0.01   TOKYO_MAX_CONSECUTIVE_LOSSES=5
 MOMENTUM_RSI_HIGH = 75   RSI_ENTRY_HIGH_BOUNCE = 55   ENABLE_EMA50_BOUNCE_SETUP = False
 ```
 Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, ≤180s) | Opus (code fixes, ≤600s).
@@ -92,12 +91,10 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 
 ---
 
-## Tokyo Volatility Mode
-All trades during Tokyo session (00:00-06:00 UTC) auto-apply in _on_trade_confirm_inner():
-- TOKYO_FORCED_LOTS=0.01 (cap lots at minimum — tiny loss if SL hits, gather data freely)
-- TOKYO_MAX_CONSECUTIVE_LOSSES=5 (vs 2 for other sessions — each loss only ~$1.50)
-- AI (Sonnet + Opus) receives ATR14 value in prompt: explicit rule to widen SL/TP when ATR > 120pts
-- compute_atr(candles, period) in core/indicators.py. Called in analyze_timeframe() → result["atr"].
+## Tokyo Session
+Tokyo (00:00-06:00 UTC) uses same lot sizing and consecutive-loss rules as other sessions.
+AI (Sonnet + Opus) receives ATR14 value in prompt: explicit rule to widen SL/TP when ATR > 120pts.
+compute_atr(candles, period) in core/indicators.py. Called in analyze_timeframe() → result["atr"].
 
 ---
 
@@ -174,4 +171,4 @@ Force Open: when local conf 100% (12/12) but AI rejects → Telegram alert. Forc
 DB: `storage/data/trading.db` — Oracle VM only. WAL mode. Never commit.
 Digests: `.claude/digests/` — settings · monitor · database · indicators · session · momentum ·
          confidence · ig_client · risk_manager · exit_manager · analyzer · telegram_bot · dashboard · claude_client
-Tests: **444/444 passing** (2026-03-05). Added test_streaming.py (+7 streaming tests).
+Tests: **428/428 passing** (2026-03-06). Removed Tokyo lot-capping tests (feature removed).

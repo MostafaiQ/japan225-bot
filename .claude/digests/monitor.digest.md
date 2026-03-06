@@ -132,8 +132,7 @@ _on_trade_confirm(alert_data): protected by _trade_execution_lock (asyncio.Lock)
   Re-checks position-open under lock. Validates: loss cooldown, daily loss limit, system paused.
   Re-fetches live price, checks drift. Uses stop_distance/limit_distance (not absolute levels).
   ATR GATE: compute_atr(15M_cache, 14) == 0 → abort (market just opened, <15 candles). All sessions.
-  TOKYO MODE (session=="tokyo"): _final_lots capped at TOKYO_FORCED_LOTS=0.01, tp_distance = sl×TOKYO_RR_TARGET=1.5.
-  CONSECUTIVE LOSSES: uses TOKYO_MAX_CONSECUTIVE_LOSSES=5 during Tokyo, MAX_CONSECUTIVE_LOSSES=2 elsewhere.
+  CONSECUTIVE LOSSES: uses MAX_CONSECUTIVE_LOSSES=2 for all sessions (Tokyo no longer has special threshold).
   calls ig.open_position(size=_final_lots), open_trade_atomic(), inits MomentumTracker
 
 _on_force_scan(): sends alert + sets _force_scan_event (wakes scanning sleep immediately)

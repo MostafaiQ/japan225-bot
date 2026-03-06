@@ -1147,7 +1147,7 @@ class AIAnalyzer:
 
         raw, tokens = self._run_claude(
             OPUS_MODEL, system_prompt, user_prompt,
-            timeout=150, effort="medium",
+            timeout=150, effort="low",
         )
 
         default = {
