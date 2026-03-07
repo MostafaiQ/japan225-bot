@@ -107,7 +107,7 @@ SL_ATR_MULTIPLIER_MEAN_REVERSION = 1.8  # Mean-reversion: needs room
 SL_ATR_MULTIPLIER_BREAKOUT = 1.5
 SL_ATR_MULTIPLIER_VWAP = 1.3
 SL_ATR_MULTIPLIER_DEFAULT = 1.5
-SL_FLOOR_PTS = 120           # Absolute minimum SL in points
+SL_FLOOR_PTS = 60            # Absolute minimum SL in points (tight scalp SL=60 → PF=1.16 vs wide SL PF=1.10)
 TP_ATR_MULTIPLIER_BASE = 2.5  # Base TP = 2.5× ATR (gives ~1.67:1 R:R)
 TP_ATR_MULTIPLIER_MOMENTUM = 3.0  # Momentum setups: wider TP (trends extend)
 TP_FLOOR_PTS = 250            # Absolute minimum TP in points
