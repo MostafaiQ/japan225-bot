@@ -128,7 +128,7 @@ class MomentumTracker:
         now = time.monotonic()
         cooldown_secs = 600  # 10 minutes between repeated alerts at same tier
         if current_rank <= last_rank:
-            if current_tier == TIER_NONE or (now - self._last_alert_time) < cooldown_secs:
+            if current_tier == TIER_NONE or (current_tier != TIER_SEVERE and (now - self._last_alert_time) < cooldown_secs):
                 return False, current_tier, ""
 
         if current_tier == TIER_NONE:
