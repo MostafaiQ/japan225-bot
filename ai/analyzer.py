@@ -47,6 +47,7 @@ LONG MOMENTUM:       momentum_continuation_long(>EMA50+VWAP,HA≥2,RSI45-75) | b
 SHORT MEAN-REV(75%): bb_upper_rejection(±150 BB_up,RSI55-75) | ema50_rejection(≤EMA50+150,RSI50-70) | bb_mid_rejection(±150 BB_mid,RSI40-65) | overbought_reversal(RSI>70,daily bearish) | high_volume_distribution(±200 BB_up/swept_hi,vol≥1.4x)
 SHORT BREAKDOWN:     breakdown_continuation(>100 below BB_mid,RSI25-45,HA≤-2) | dead_cat_bounce_short(at BB_mid/EMA9 from below,RSI43-62) | bear_flag_breakdown(RSI35-52,vol flag,HA≤-1) | multi_tf_bearish(≥4/5: rsi15m<48,rsi4h<48,daily bear,<EMA50,<VWAP,HA bear)
 SHORT MOMENTUM:      momentum_continuation_short(<EMA50+VWAP,HA≤-2,RSI30-55) | vwap_rejection_short_momentum(±120 VWAP from below,<EMA50,RSI35-60)
+SESSION SETUPS:      tokyo_gap_fill(±100pt gap from prev close,Tokyo 00-02UTC,RSI30-70) | london_orb(break Asia range,London 08-10UTC,vol≠LOW)
 DISABLED: ema50_bounce — do not approve.
 
 ━━ WYCKOFF PHASE — detect and trade WITH the phase ━━
@@ -187,9 +188,8 @@ def _fmt_indicators(indicators: dict) -> str:
         bbl  = tf.get("bollinger_lower", tf.get("bb_lower", "?"))
         vol  = tf.get("volume_signal", "")
         vrat = tf.get("volume_ratio", "")
-        sh   = tf.get("swing_high_20", "")   # kept for bounce_starting logic
+        sh   = tf.get("swing_high_20", "")
         sl   = tf.get("swing_low_20", "")
-        bnc  = tf.get("bounce_starting", "")
         # New indicators
         ha   = tf.get("ha_bullish")
         hast = tf.get("ha_streak")
@@ -216,7 +216,8 @@ def _fmt_indicators(indicators: dict) -> str:
                 parts[0] += f"(PREV_CLOSE) | LIVE={_live_price:.0f}({side} D1EMA50 by {abs(live_vs_ema50):.0f}pts)"
             except (TypeError, ValueError):
                 pass
-        if e200:
+        # EMA200 only useful for D1 and 4H (15M/5M: EMA200 on short TF is just noise)
+        if e200 and label in ("D1", "4H"):
             parts.append(f"ema200={e200}")
         parts.append(f"bb={bbl}/{bbm}/{bbu}")
         if vwap_val is not None:
@@ -231,26 +232,32 @@ def _fmt_indicators(indicators: dict) -> str:
                 parts.append(f"swing=+{float(sh)-float(p):.0f}/-{float(p)-float(sl):.0f}pts")
             except (TypeError, ValueError):
                 pass
-        if bnc != "":
-            parts.append(f"bounce={'T' if bnc else 'F'}")
         if ha is not None:
             parts.append(f"ha={'bull' if ha else 'bear'}({hast})")
         if fvg_bull or fvg_bear:
             fvg_type = "bull" if fvg_bull else "bear"
             parts.append(f"fvg={fvg_type}" + (f"@{fvg_lvl}" if fvg_lvl else ""))
-        # Full fibonacci grid with distances from price
+        # Fibonacci: show 2 nearest levels only (1 sup below, 1 res above) — full grid is noise
         fib_data = tf.get("fibonacci", {})
         if fib_data and p != "?":
             try:
                 fp = float(p)
-                fib_parts = []
+                fib_above, fib_below = None, None
                 for lvl in ("fib_236", "fib_382", "fib_500", "fib_618", "fib_786"):
                     val = fib_data.get(lvl)
-                    if val:
-                        dist = val - fp
-                        fib_parts.append(f"{lvl.split('_')[1]}={val:.0f}({dist:+.0f})")
+                    if not val:
+                        continue
+                    if val > fp and (fib_above is None or val < fib_above[0]):
+                        fib_above = (val, lvl.split("_")[1])
+                    elif val < fp and (fib_below is None or val > fib_below[0]):
+                        fib_below = (val, lvl.split("_")[1])
+                fib_parts = []
+                if fib_below:
+                    fib_parts.append(f"SUP:{fib_below[1]}={fib_below[0]:.0f}({fib_below[0]-fp:+.0f})")
+                if fib_above:
+                    fib_parts.append(f"RES:{fib_above[1]}={fib_above[0]:.0f}({fib_above[0]-fp:+.0f})")
                 if fib_parts:
-                    parts.append(f"fibs=[{','.join(fib_parts)}]")
+                    parts.append(f"fib=[{','.join(fib_parts)}]")
             except (TypeError, ValueError):
                 if fibn:
                     parts.append(f"fib={fibn}")
@@ -287,15 +294,6 @@ def _fmt_indicators(indicators: dict) -> str:
         cp_str  = tf.get("candlestick_strength")
         if cp_name:
             parts.append(f"candle={cp_name}({cp_dir},{cp_str})")
-        # Body trend
-        bt = tf.get("body_trend")
-        consec = tf.get("consecutive_direction")
-        wr = tf.get("wick_ratio")
-        if bt and bt != "neutral":
-            parts.append(f"bodies={bt}(consec={consec})")
-        if wr and isinstance(wr, (int, float)) and wr > 1.5:
-            parts.append(f"wick_ratio={wr:.1f}")
-
         lines.append(" | ".join(parts))
 
     # Pivot points — top-level key, rendered once (from 15M detect_setup snapshot)
@@ -364,14 +362,6 @@ def _fmt_indicators(indicators: dict) -> str:
         pdl_str = f"{pdl_d:.0f}{'↓SWEPT' if pdl_swept else ''}" if pdl_d else "n/a"
         ms_lines.append(f"  PDH/PDL (Daily): {pdh_str} / {pdl_str}")
 
-    # Prev Week H/L
-    pwh = snap.get("prev_week_high")
-    pwl = snap.get("prev_week_low")
-    if pwh or pwl:
-        pwh_str = f"{pwh:.0f}" if pwh else "n/a"
-        pwl_str = f"{pwl:.0f}" if pwl else "n/a"
-        ms_lines.append(f"  Prev Week: H={pwh_str} | L={pwl_str}")
-
     # Session Open + Asia Range + Gap
     sess_open = snap.get("session_open")
     asia_h = snap.get("asia_high")
@@ -394,12 +384,6 @@ def _fmt_indicators(indicators: dict) -> str:
         ms_lines.append(f"  Equal Highs (liquidity): {', '.join(f'{z:.0f}' for z in eq_highs[:3])}")
     if eq_lows:
         ms_lines.append(f"  Equal Lows  (liquidity): {', '.join(f'{z:.0f}' for z in eq_lows[:3])}")
-
-    # Order flow / Tick density (from ig_client streaming, if available)
-    tick_density = snap.get("tick_density_signal")
-    tick_latest  = snap.get("tick_density_latest")
-    if tick_density:
-        ms_lines.append(f"  Tick Density: {tick_density} (latest={tick_latest:.1f} ticks/pt)" if tick_latest else f"  Tick Density: {tick_density}")
 
     if ms_lines:
         lines.append("\nMARKET STRUCTURE:")
@@ -456,7 +440,7 @@ def _fmt_web_research(web: dict) -> str:
     high_cal = [e for e in cal if isinstance(e, dict) and e.get("impact") == "HIGH"][:3]
     med_cal  = [e for e in cal if isinstance(e, dict) and e.get("impact") == "MEDIUM"][:3]
     news_str = " | ".join(str(n)[:70] for n in (news[:2] if news else []))
-    lines = [f"USD/JPY: {jpy}{jpy_hint} | VIX: {vix}" + (f" | Fear&Greed: {fg}" if fg else "")]
+    lines = [f"USD/JPY: {jpy}{jpy_hint} | VIX: {vix}"]
     if news_str:
         lines.append(f"News: {news_str}")
     lines.append(f"Calendar HIGH: {high_cal if high_cal else 'none next 8h'}")
