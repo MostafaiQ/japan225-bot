@@ -5,52 +5,56 @@ A fully autonomous AI-powered trading system for Japan 225 (Nikkei) Cash CFD on 
 ## How It Works
 
 ```
-Every 5 minutes during market hours:
+Every 5 minutes during active sessions (Tokyo / London / New York):
 
-  Fetch candles (15M + 5M + 4H + Daily)
+  Fetch candles (15M + 5M parallel, 4H + Daily sequential)
        |
-  Detect setup (bidirectional: LONG + SHORT simultaneously)
+  Detect setup — BIDIRECTIONAL (LONG and SHORT independently)
+  Session-specific setups: tokyo_gap_fill (00-02 UTC), london_orb (08-10 UTC)
        |
-  Score confidence (12 criteria, 0-100%)
+  Score confidence (9-criteria weighted scoring, 0-100%)
+       |
+  [Both dirs >= 80% and gap <= 5%] -----> Skip (contradictory signal, no edge)
        |
   [Below 60%] -----> Skip
        |
-  [Both directions >= 80% and gap <= 5%] -----> Skip (contradictory, no edge)
+  Sonnet 4.6 analysis
+  (full indicators: D1 + 4H + 15M + 5M, Wyckoff/SMC/VP framework,
+   portfolio state, USD/JPY direction, calendar events)
        |
-  Sonnet AI analysis (full system prompt + indicators)
+  [Approved, conf >= 70% LONG / 75% SHORT] --> 12-point risk validation --> Auto-execute
        |
-  [Approved, conf >= 70% LONG / 75% SHORT] --> Risk validation --> Auto-execute
+  [Rejected + opposite direction has setup + local conf >= 60%]
        |
-  [Rejected] --> Is opposite direction setup detected with local conf >= 60%?
-       |                         |
-  [No] --> Skip           [Yes] --> Opus evaluates opposite direction (full swing trade)
-                                         |
-                                 [Approved, >= 70% / 75%] --> Risk validation --> Auto-execute
-                                         |
-                                 [Rejected] --> Skip
+  Opus 4.6 evaluates opposite direction as swing trade
+       |
+  [Approved, >= 70% / 75%] --> Risk validation --> Auto-execute
+       |
+  [Rejected] --> Skip
+
+  Open position: monitored every 2s via Lightstreamer real-time ticks.
+  SL and TP enforced directly by broker. Opus position evaluator every 2min.
 ```
 
 ## Features
 
-- **Fully autonomous execution** -- auto-executes when AI confidence meets thresholds (70% LONG, 75% SHORT)
-- **2-tier sequential AI pipeline** -- Sonnet analyzes first; if rejected and opposite direction has a setup, Opus evaluates it as a full swing trade
-- **Bidirectional scanning** -- evaluates both LONG and SHORT setups every cycle
-- **12-criteria confidence scoring** -- filters noise before AI evaluation
-- **Contradictory signal gate** -- skips when both directions score >= 80% with gap <= 5% (no clear edge)
-- **Mandatory R:R enforcement** -- AI computes effective R:R (must be >= 1.5 after spread), code double-checks
-- **Fixed SL/TP at entry** -- AI determines stop and target from market structure; no mechanical post-entry modifications
-- **Real-time Lightstreamer streaming** -- price ticks (BID/OFR mid) during position monitoring; REST fallback on disconnect
-- **Proper pivot point detection** -- identifies most recent actual swing highs/lows (3-neighbour confirmation, unlimited lookback)
-- **Extreme day detection** -- direction-aware gate on crash/rally days (only counter-trend trades require 85% confidence)
-- **Tokyo session volatility mode** -- forces minimum lots (0.01) for the entire Tokyo session; higher loss tolerance
-- **ATR-based AI guidance** -- ATR(14) provided to AI on all timeframes; AI widens SL/TP on high-volatility days
-- **SL/TP verification** -- verifies IG set stop/limit after order; auto-repairs via modify_position if missing
-- **Telegram notifications** -- trade alerts, position management, full command set
-- **Web dashboard** -- real-time monitoring, config, trade history, logs, Claude chat
-- **Risk management** -- 11 independent pre-trade checks for both Sonnet and Opus trades
-- **Adverse move detection** -- tiered alerts at 60/120/175pts against position
-- **High-confidence cooldown bypass** -- local 100%, Sonnet >= 85%, or Opus >= 80% skip loss cooldown
-- **Backtest with real AI** -- backtester uses Anthropic API with the same prompts as the live bot
+- **Fully autonomous execution** — auto-executes when AI confidence meets thresholds (70% LONG, 75% SHORT)
+- **2-tier sequential AI pipeline** — Sonnet analyzes first; if rejected and opposite direction has a setup, Opus evaluates as a full swing trade
+- **Bidirectional scanning** — evaluates both LONG and SHORT setups every 5 minutes, independently
+- **9-criteria weighted confidence scoring** — filters technical noise before AI evaluation
+- **Session-specific setups** — `tokyo_gap_fill` (gap fills at Tokyo open) and `london_orb` (Asia range breakouts at London open)
+- **Contradictory signal gate** — skips when both directions score >= 80% with gap <= 5% (no clear edge)
+- **Wyckoff / SMC / Volume Profile AI framework** — AI reasons about market phase, liquidity sweeps, order blocks, FVGs
+- **AI portfolio context** — AI sees open positions, directions, and daily P&L before approving new trades
+- **ATR-based dynamic SL/TP** — SL floored at 60pts (tight scalp), TP floored at 250pts. Risk-based lot sizing (2% of balance)
+- **Real-time Lightstreamer streaming** — price ticks (BID/OFR mid) during monitoring; REST fallback on disconnect
+- **Extreme day detection** — crash/rally days (range > 1000pts) require 85% confidence
+- **12-point risk validation** — portfolio risk cap, dollar risk, margin cap, position count, drawdown protection
+- **SL/TP verification** — verifies IG set stops after order; auto-repairs if missing
+- **Prompt learnings feedback loop** — post-trade rules written to `prompt_learnings.json`; Brier score calibration tracking
+- **Telegram notifications** — trade alerts with entry/SL/TP, position management, full command set
+- **Web dashboard** — real-time monitoring, config, trade history, logs, Claude chat assistant
+- **428 tests passing** — indicators, confidence, risk, exit, storage, streaming, recovery
 
 ## Architecture
 
@@ -108,68 +112,84 @@ japan225-bot/
 
 ## Setup Types
 
-### LONG Setups
-| Setup | Trigger | RSI Range |
-|-------|---------|-----------|
-| `bollinger_mid_bounce` | Price near BB mid from below | 30-65 |
-| `bollinger_lower_bounce` | Price near BB lower band | 20-40 |
-| `ema50_bounce` | Price bouncing off EMA50 | 30-55 |
+### LONG (Mean-Reversion)
+| Setup | Trigger | RSI |
+|-------|---------|-----|
+| `bollinger_mid_bounce` | ±80pts from BB mid, bounce confirm | 30-55 |
 | `oversold_reversal` | RSI < 30 + daily bullish + reversal confirm | < 30 |
 | `extreme_oversold_reversal` | RSI < 28 + 4H near BB lower | < 28 |
 
-### SHORT Setups
-| Setup | Trigger | RSI Range |
-|-------|---------|-----------|
-| `bollinger_upper_rejection` | Price near BB upper band | 55-75 |
-| `ema50_rejection` | Price rejected at EMA50 from below | 50-70 |
-| `bb_mid_rejection` | Price rejected at BB mid from below | 40-65 |
+### LONG (Momentum)
+| Setup | Trigger | RSI |
+|-------|---------|-----|
+| `ema9_pullback_long` | ±100pts from EMA9 + above EMA50 + HA bullish | 40-65 |
+
+### SHORT (Mean-Reversion)
+| Setup | Trigger | RSI |
+|-------|---------|-----|
+| `bb_upper_rejection` | ±150pts from BB upper, reversal confirm | 55-75 |
 | `overbought_reversal` | RSI > 70 + daily bearish + reversal confirm | > 70 |
-| `breakdown_continuation` | Below BB mid, RSI 25-45, HA bearish | 25-45 |
-| `bear_flag_breakdown` | Flag consolidation in downtrend | 35-52 |
-| `dead_cat_bounce_short` | Weak bounce to BB mid/EMA9 in downtrend | 43-62 |
-| `multi_tf_bearish` | 4+ bearish factors across timeframes | < 48 |
-| `high_volume_distribution` | High vol rejection at BB upper | 55-75 |
-| `vwap_rejection_short` | Rejection at VWAP in downtrend | 40-60 |
+| `breakdown_continuation` | Below BB mid + HA ≤ -2 | 25-45 |
+| `dead_cat_bounce_short` | Bounce to BB mid/EMA9 in downtrend | 43-62 |
+| `bear_flag_breakdown` | Flag pattern in downtrend | 35-52 |
+| `high_volume_distribution` | High-vol rejection at BB upper | 55-75 |
+| `ema200_rejection` | Rejection at EMA200 in downtrend | 45-65 |
+| `lower_lows_bearish` | New lows + HA bearish streak | 30-55 |
+| `pivot_r1_rejection` | Rejection at R1 pivot | 50-70 |
+
+### Session-Specific
+| Setup | Trigger | Session |
+|-------|---------|---------|
+| `tokyo_gap_fill` | Overnight gap ≥ 100pts, fill reversal | Tokyo 00-02 UTC |
+| `london_orb` | Break above/below Asia range | London 08-10 UTC |
+
+> **Disabled** (below breakeven WR): `breakout_long`, `momentum_continuation_long`, `bollinger_lower_bounce`, `vwap_bounce_long`, `multi_tf_bearish`, `momentum_continuation_short`, `bb_mid_rejection`, `ema50_rejection`, `vwap_rejection_short`, `vwap_rejection_short_momentum`, `ema9_pullback_short`
 
 ## AI Pipeline
 
-### Sonnet (Primary Analyzer)
-- Full system prompt with setup-specific rules (bounce, breakdown, momentum, crash/rally day rules)
-- 50+ indicators across D1, 4H, 15M, 5M timeframes including ATR, pivot levels, FVG, Heiken Ashi
-- Mandatory R:R computation: `(TP_dist - 7) / (SL_dist + 7) >= 1.5`
-- Confidence breakdown across 12 criteria
-- Opus sub-agent available for borderline setups (60-86% local confidence)
+### Sonnet 4.6 (Primary Analyzer)
+- System prompt: Wyckoff phase detection, SMC (sweeps/FVGs/order blocks), Volume Profile (POC/VAH/VAL), setup-class rules
+- Indicators: D1 + 4H + 15M + 5M — RSI, BB, EMA9/50/200, VWAP, HA streak, FVG, pivot highs/lows, sweeps, ATR
+- Context injected: portfolio state (open count + directions + daily P&L), USD/JPY directional hint, calendar events
+- Confidence framing: local score is criteria-based (not win probability); historical WR ranges shown explicitly
+- Mandatory R:R: `(TP_dist - 7) / (SL_dist + 7) >= 1.5`
 - Auto-executes when confidence >= 70% (LONG) or 75% (SHORT)
+- Subscription billing ($0/call via Claude Code CLI OAuth)
 
-### Opus (Opposite-Direction Swing Evaluator)
-- Runs only when Sonnet rejects AND opposite direction has a detected setup with local conf >= 60%
-- Evaluates ONLY the opposite direction as a full swing trade (same SL/TP freedom as Sonnet)
+### Opus 4.6 (Opposite-Direction Swing Evaluator)
+- Triggered when Sonnet rejects AND opposite direction has a setup with local conf >= 60%
 - Receives Sonnet's rejection reasoning and key levels as context
+- Full SL/TP freedom from market structure (no scalp bounds)
+- Consistency guard: recent Opus decisions tracked to prevent flip-flopping
 - Same confidence thresholds: 70% LONG / 75% SHORT
-- Consistency guard: recent Opus decisions tracked to prevent direction flip-flopping
-- Full risk validation before execution
 
 ## Risk Management
 
-All 11 checks must pass before any trade (Sonnet or Opus):
+All 12 checks must pass before any trade:
 
 | Check | Rule |
 |-------|------|
 | Confidence | LONG >= 70%, SHORT >= 75% |
-| Margin | Must not exceed 50% of account balance |
+| Margin per position | Max 5% of account balance |
+| Portfolio risk cap | Total open risk <= 8% of balance |
+| Dollar risk | Risk per trade capped at 3% of balance |
 | Risk/Reward | >= 1.5:1 after 7pt spread adjustment |
-| Max Positions | 1 open position at a time |
-| Consecutive Losses | 2 losses = 1-hour cooldown (bypassed at high confidence) |
-| Daily Loss Limit | Configurable % of balance |
+| Max Positions | Up to 3 concurrent open positions |
+| Consecutive Losses | 2 losses = 1-hour cooldown |
+| Drawdown protection | -10% → halve size; -15% → quarter size; -20% → stop trading |
 | Event Blackout | No trades within 60 min of high-impact events |
 | Calendar Block | No Friday PPI/CPI/NFP/BOJ, no month-end |
-| Extreme Day Gate | Counter-trend trades require 85% confidence on crash/rally days |
-| System Active | System must not be paused |
+| Extreme Day Gate | Crash/rally days (range > 1000pts) require 85% confidence |
 | SL/TP Verified | Post-execution: verify IG set stops, auto-repair if missing |
+
+**Lot sizing:** Risk-based. `lots = (balance × 2%) / (SL_pts × $1/pt)`. ATR-based SL (1.2-1.8× ATR14). SL floored at 60pts.
 
 ## Trade Management
 
-SL and TP are determined by AI at entry based on market structure and ATR volatility. The broker enforces them directly. No mechanical post-entry modifications (no breakeven lock, no trailing stop).
+SL and TP are set by AI at entry from market structure + ATR. The broker enforces them directly. After entry:
+- **Every 2s**: Lightstreamer streaming price tick. Adverse move tiers: 60pts (alert), 120pts (alert), 175pts (severity tier)
+- **Every 2 min**: Opus evaluates open position — can recommend `CLOSE_NOW` (auto-executes at >= 70%) or `TIGHTEN_SL` (Telegram alert only)
+- No mechanical breakeven lock or trailing stop (removed — Opus does this more intelligently)
 
 ## Active Sessions (UTC)
 
@@ -203,7 +223,7 @@ Monday-Friday only. No trading on US/JP holidays.
 python3 -m pytest tests/ -v
 ```
 
-395+ tests covering indicators, confidence scoring, risk management, exit strategy, storage, and recovery.
+428 tests covering indicators, confidence scoring, risk management, exit strategy, storage, streaming state machine, and startup recovery.
 
 ## Safety
 
