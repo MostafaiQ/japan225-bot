@@ -1082,6 +1082,7 @@ def detect_setup(
     tf_15m: dict,
     tf_5m: Optional[dict] = None,
     exclude_direction: Optional[str] = None,
+    session_context: Optional[dict] = None,
 ) -> dict:
     """
     Detect trading setup across multiple timeframes. Bidirectional (LONG + SHORT).
@@ -2397,6 +2398,92 @@ def detect_setup(
                 "reasoning": reasoning,
             })
             return result
+
+    # ============================================================
+    # SESSION-SPECIFIC SETUPS (require session context: gap_pts, asia range)
+    # ============================================================
+    if session_context is not None and price and rsi_15m:
+        gap_pts_sc = session_context.get("gap_pts")
+        asia_high_sc = session_context.get("asia_high")
+        asia_low_sc  = session_context.get("asia_low")
+        _now_utc = datetime.now(timezone.utc)
+
+        # --- Tokyo Gap Fill ---
+        # Fires in early Tokyo (00:00-01:59 UTC) when there is a significant overnight gap (>=100pts).
+        # Theory: Nikkei cash tends to fill the gap in the first 1-2 hours of Tokyo trading.
+        if "tokyo_gap_fill" not in DISABLED_SETUP_TYPES and gap_pts_sc is not None and abs(gap_pts_sc) >= 100:
+            if 0 <= _now_utc.hour < 2:
+                if not _skip_long and gap_pts_sc < -100 and 30 <= rsi_15m <= 62:
+                    entry = price
+                    sl = round(entry - DEFAULT_SL_DISTANCE, 1)
+                    tp = round(entry + DEFAULT_TP_DISTANCE, 1)
+                    result.update({
+                        "found": True, "type": "tokyo_gap_fill", "direction": "LONG",
+                        "entry": entry, "sl": sl, "tp": tp,
+                        "reasoning": (
+                            f"LONG: Tokyo gap fill. {gap_pts_sc:.0f}pt gap down from prev close. "
+                            f"RSI {rsi_15m:.1f}. Price expected to retrace toward yesterday's close. {daily_str}."
+                        ),
+                    })
+                    return result
+                elif not _skip_short and gap_pts_sc > 100 and 42 <= rsi_15m <= 70:
+                    entry = price
+                    sl = round(entry + DEFAULT_SL_DISTANCE, 1)
+                    tp = round(entry - DEFAULT_TP_DISTANCE, 1)
+                    result.update({
+                        "found": True, "type": "tokyo_gap_fill", "direction": "SHORT",
+                        "entry": entry, "sl": sl, "tp": tp,
+                        "reasoning": (
+                            f"SHORT: Tokyo gap fill. +{gap_pts_sc:.0f}pt gap up from prev close. "
+                            f"RSI {rsi_15m:.1f}. Price expected to retrace toward yesterday's close. {daily_str}."
+                        ),
+                    })
+                    return result
+
+        # --- London Opening Range Breakout (ORB) ---
+        # Uses Tokyo/Asia session range (00:00–05:59 UTC) as the pre-open reference.
+        # Fires at London open (08:00–09:59 UTC) when price breaks the Asia range with volume.
+        if "london_orb" not in DISABLED_SETUP_TYPES and asia_high_sc and asia_low_sc:
+            if 8 <= _now_utc.hour < 10:
+                asia_range_sc = asia_high_sc - asia_low_sc
+                if asia_range_sc >= 50:
+                    vol_ok_orb = tf_15m.get("volume_signal") != "LOW"
+                    conf_list_orb, counter_list_orb = _build_confluence(tf_15m, "LONG", pivots=pivots)
+                    if not _skip_long and price > asia_high_sc and 45 <= rsi_15m <= 72 and vol_ok_orb:
+                        entry = price
+                        sl = round(asia_low_sc)
+                        tp = round(entry + asia_range_sc * 1.5)
+                        conf_list_orb, _ = _build_confluence(tf_15m, "LONG", pivots=pivots)
+                        reasoning = (
+                            f"LONG: London ORB. Broke above Asia high={asia_high_sc:.0f} "
+                            f"(Asia range={asia_range_sc:.0f}pts). RSI {rsi_15m:.1f}. {daily_str}."
+                        )
+                        if conf_list_orb:
+                            reasoning += f" Confluence: {', '.join(conf_list_orb)}."
+                        result.update({
+                            "found": True, "type": "london_orb", "direction": "LONG",
+                            "entry": round(entry, 1), "sl": sl, "tp": tp,
+                            "reasoning": reasoning,
+                        })
+                        return result
+                    elif not _skip_short and price < asia_low_sc and 32 <= rsi_15m <= 58 and vol_ok_orb:
+                        entry = price
+                        sl = round(asia_high_sc)
+                        tp = round(entry - asia_range_sc * 1.5)
+                        _, counter_list_orb = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+                        conf_list_orb_s, _ = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+                        reasoning = (
+                            f"SHORT: London ORB. Broke below Asia low={asia_low_sc:.0f} "
+                            f"(Asia range={asia_range_sc:.0f}pts). RSI {rsi_15m:.1f}. {daily_str}."
+                        )
+                        if conf_list_orb_s:
+                            reasoning += f" Confluence: {', '.join(conf_list_orb_s)}."
+                        result.update({
+                            "found": True, "type": "london_orb", "direction": "SHORT",
+                            "entry": round(entry, 1), "sl": sl, "tp": tp,
+                            "reasoning": reasoning,
+                        })
+                        return result
 
     diag_parts = []
     if bb_mid is not None:
