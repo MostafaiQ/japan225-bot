@@ -257,12 +257,11 @@ class TestShortEma50Rejection:
         )
         return tf_daily, tf_4h, tf_15m
 
-    def test_detects_ema50_rejection(self):
+    def test_ema50_rejection_disabled(self):
+        """ema50_rejection is in DISABLED_SETUP_TYPES — must never fire."""
         tf_daily, tf_4h, tf_15m = self._make_short_ema50()
         result = detect_setup(tf_daily, tf_4h, tf_15m)
-        assert result["found"] is True
-        assert result["direction"] == "SHORT"
-        assert result["type"] == "ema50_rejection"
+        assert result.get("type") != "ema50_rejection", "ema50_rejection is disabled"
 
     def test_price_above_ema50_blocks_rejection(self):
         """If price is well above EMA50, it can't be a rejection."""

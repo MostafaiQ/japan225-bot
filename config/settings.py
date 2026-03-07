@@ -38,6 +38,30 @@ DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
 ENABLE_EMA50_BOUNCE_SETUP = False  # Disabled: median EMA50 dist=325pts, entries unvalidated
 
+# Setup types permanently disabled in both live and backtest.
+# Reason for each:
+#   breakout_long            — 28% WR, chasing price at extension
+#   momentum_continuation_long — 28% WR, same issue as breakout
+#   bollinger_lower_bounce   — 35% WR, below breakeven; touching band ≠ reversal
+#   vwap_bounce_long         — 38% WR, -$6.26; near-breakeven but consistently below
+#   multi_tf_bearish         — condition (bearish alignment), not entry signal; no price level
+DISABLED_SETUP_TYPES: set = {
+    # --- LONG (cut: below breakeven WR) ---
+    "breakout_long",              # 28% WR — chasing extension
+    "momentum_continuation_long", # 28% WR — same problem
+    "bollinger_lower_bounce",     # 35% WR — touching band ≠ reversal
+    "vwap_bounce_long",           # 38% WR — consistently below breakeven
+    # --- SHORT condition (not entry) ---
+    "multi_tf_bearish",           # condition, not signal; no price level
+    # --- SHORT (losing; keep only bear_flag_breakdown + bollinger_upper_rejection) ---
+    "momentum_continuation_short",    # 33% WR — too broad, fires on any downtrend
+    "bb_mid_rejection",               # 33% WR — false positives
+    "ema50_rejection",                # 25% WR — catching falling knife shorts
+    "vwap_rejection_short",           # 0% WR — structurally broken
+    "vwap_rejection_short_momentum",  # 24% WR — broken momentum short
+    "ema9_pullback_short",            # 29% WR — structural loser in non-crash periods
+}
+
 # ============================================
 # IG MARKETS - INSTRUMENT
 # ============================================
@@ -50,8 +74,9 @@ MARGIN_FACTOR = 0.005  # 0.5% Tier 1 (0-95 contracts)
 # ============================================
 # RISK MANAGEMENT - NON-NEGOTIABLE
 # ============================================
-MAX_MARGIN_PERCENT = 0.50  # Margin must NEVER exceed 50% of balance
-MAX_OPEN_POSITIONS = 1  # One trade at a time
+MAX_MARGIN_PERCENT = 0.05   # Hard ceiling: 5% of balance in margin per position (replaces 50%)
+MAX_OPEN_POSITIONS = 3      # Allow up to 3 concurrent positions (up from 1)
+MAX_PORTFOLIO_RISK_PERCENT = 0.08  # Total open risk across all positions ≤ 8% of balance
 MAX_CONSECUTIVE_LOSSES = 2  # 2 losses = 1-hour cooldown
 COOLDOWN_HOURS = 1
 DAILY_LOSS_LIMIT_PERCENT = 1.0  # Effectively disabled — AI finds the setups, user manages risk
@@ -67,6 +92,27 @@ EVENT_BLACKOUT_MINUTES = 60  # No trades within 60 min of high-impact events
 TRADE_EXPIRY_MINUTES = 15  # Unconfirmed alerts expire after 15 min
 
 # ============================================
+# POSITION SIZING — RISK-BASED (replaces margin-cap approach)
+# ============================================
+RISK_PERCENT = 2.0          # % of balance risked per trade (base rate)
+MAX_RISK_PERCENT = 3.0      # Hard ceiling on risk per trade
+# Drawdown-triggered reductions:
+DRAWDOWN_REDUCE_10PCT = 0.5    # Reduce to 0.5% risk when balance 10% below peak
+DRAWDOWN_REDUCE_15PCT = 0.25   # Reduce to 0.25% risk when balance 15% below peak
+DRAWDOWN_STOP_20PCT = True     # Stop trading when balance 20% below peak
+
+# --- Dynamic SL ATR multipliers (replaces hardcoded 150pt) ---
+SL_ATR_MULTIPLIER_MOMENTUM = 1.2      # Momentum setups: tighter SL
+SL_ATR_MULTIPLIER_MEAN_REVERSION = 1.8  # Mean-reversion: needs room
+SL_ATR_MULTIPLIER_BREAKOUT = 1.5
+SL_ATR_MULTIPLIER_VWAP = 1.3
+SL_ATR_MULTIPLIER_DEFAULT = 1.5
+SL_FLOOR_PTS = 120           # Absolute minimum SL in points
+TP_ATR_MULTIPLIER_BASE = 2.5  # Base TP = 2.5× ATR (gives ~1.67:1 R:R)
+TP_ATR_MULTIPLIER_MOMENTUM = 3.0  # Momentum setups: wider TP (trends extend)
+TP_FLOOR_PTS = 250            # Absolute minimum TP in points
+
+# ============================================
 # TRADING PARAMETERS
 # ============================================
 MIN_LOT_SIZE = 0.01
@@ -74,8 +120,8 @@ SPREAD_ESTIMATE = 7  # Points during main hours (live spread used at execution)
 
 # --- Exit Strategy (3-Phase) ---
 # Phase 1: Initial protection
-DEFAULT_SL_DISTANCE = 150  # Points (WFO-validated: PF=3.67 vs SL=200 PF=2.56)
-DEFAULT_TP_DISTANCE = 400  # Points (1:2 R:R base)
+DEFAULT_SL_DISTANCE = 150  # Points — fallback only (ATR-based used when ATR available)
+DEFAULT_TP_DISTANCE = 400  # Points — fallback only
 MIN_RR_RATIO = 1.5  # Minimum acceptable R:R
 
 # Phase 2: Breakeven lock
@@ -105,7 +151,6 @@ SWING_HIGH_PROXIMITY_PTS = 100  # Points from swing high for breakout detection
 VWAP_PROXIMITY_PTS = 120      # Points from VWAP for VWAP bounce detection
 EMA9_PROXIMITY_PTS = 100      # Points from EMA9 for pullback detection
 MOMENTUM_HA_STREAK_MIN = 2    # Minimum HA bullish streak for momentum continuation
-MOMENTUM_SCAN_BYPASS_SIGNALS = 4  # Min signals (of 5) to bypass no_setup to Opus
 
 # ============================================
 # SESSION HOURS (UTC) — backtest + monitor

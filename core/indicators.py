@@ -19,7 +19,7 @@ from config.settings import (
     EMA9_PULLBACK_RSI_LOW, EMA9_PULLBACK_RSI_HIGH,
     BB_UPPER_PROXIMITY_PTS, SWING_HIGH_PROXIMITY_PTS,
     VWAP_PROXIMITY_PTS, EMA9_PROXIMITY_PTS,
-    MOMENTUM_HA_STREAK_MIN,
+    MOMENTUM_HA_STREAK_MIN, DISABLED_SETUP_TYPES,
 )
 
 logger = logging.getLogger(__name__)
@@ -1240,10 +1240,11 @@ def detect_setup(
 
     # --- LONG Setup 1: Bollinger Mid Bounce ---
     if not _skip_long and bb_mid and rsi_15m:
-        near_mid_pts = abs(price - bb_mid) <= 150
+        near_mid_pts = abs(price - bb_mid) <= 80  # tightened from 150: higher WR, fewer marginal entries
         rsi_ok_long = 30 <= rsi_15m <= RSI_ENTRY_HIGH_BOUNCE  # widened from 35 to 30 (captures RSI 30-35 near BB mid)
         above_ema50 = tf_15m.get("above_ema50")
         prev_close = tf_15m.get("prev_close")
+        swept_low_bm = tf_15m.get("swept_low", False)  # bullish liquidity sweep: dipped below level, closed back above
         bounce_starting = prev_close is not None and price > prev_close
         # Relaxed bounce gate for oversold: if RSI<40, accept alternative reversal signals
         if not bounce_starting and rsi_15m < 40:
@@ -1254,8 +1255,10 @@ def detect_setup(
             candle_patterns = tf_15m.get("candlestick_patterns", [])
             bullish_pattern = any(p.get("direction") == "bullish" for p in candle_patterns) if candle_patterns else False
             bounce_starting = lower_wick_b >= 20 or ha_bull or bullish_pattern
+        # Liquidity sweep counts as strongest bounce confirmation (price swept below BB mid and closed back above)
+        bounce_confirmed = bounce_starting or swept_low_bm
 
-        if near_mid_pts and rsi_ok_long and bounce_starting and not _strong_bearish_momentum:
+        if near_mid_pts and rsi_ok_long and bounce_confirmed and not _strong_bearish_momentum:
             entry = price
             sl = entry - DEFAULT_SL_DISTANCE
             if ema50_15m:
@@ -1286,17 +1289,19 @@ def detect_setup(
 
     # --- LONG Setup 2: Bollinger Lower Band Bounce ---
     # Deeply oversold — strongest mean-reversion signal.
-    # No above_ema50 gate: price may be below EMA50 at the lower band (expected).
+    # Entry requires that the candle wick actually PENETRATED the BB lower band and closed back above.
+    # This is the institutional sweep: push below BB lower to trigger stops, then reverse.
+    # The old "within 150pts + 15pt wick" fired on random candles nowhere near the band — too loose.
     if not _skip_long and bb_lower and rsi_15m:
-        near_lower_pts = abs(price - bb_lower) <= 150  # widened from 80 to match BB mid threshold
+        near_lower_pts = abs(price - bb_lower) <= 80  # tightened: must be genuinely near the band
         rsi_ok_lower = 20 <= rsi_15m <= 40
         candle_open_l = tf_15m.get("open")
         candle_low_l  = tf_15m.get("low")
-        if candle_open_l is not None and candle_low_l is not None:
-            lower_wick_l = min(candle_open_l, price) - candle_low_l
-            rejection_l = lower_wick_l >= 15
-        else:
-            rejection_l = False
+        swept_low_bl = tf_15m.get("swept_low", False)
+        # BB lower sweep: wick actually touched or pierced the band (within 10pts), close back above
+        # This is the post-hunt entry — the sweep below the band already happened this candle
+        bb_lower_wick_test = candle_low_l is not None and candle_low_l <= bb_lower + 10
+        rejection_l = bb_lower_wick_test or swept_low_bl  # band wick OR broader swing-low sweep
 
         if near_lower_pts and rsi_ok_lower and rejection_l and not _strong_bearish_momentum:
             entry = price
@@ -1311,7 +1316,7 @@ def detect_setup(
                 f"LONG: BB lower band bounce on 15M. "
                 f"Price {abs(price - bb_lower):.0f}pts from lower ({bb_lower:.0f}). "
                 f"RSI {rsi_15m:.1f} deeply oversold. "
-                f"Lower wick {lower_wick_l:.0f}pts rejection. "
+                f"{'Swing-low sweep' if swept_low_bl else 'BB lower band wick'} rejection. "
                 f"{daily_str}.{macro_note}"
             )
             if conf_list:
@@ -1532,16 +1537,17 @@ def detect_setup(
 
     # --- LONG Setup 7: VWAP Bounce Long ---
     # Price pulled back to VWAP in an uptrend and bouncing — intraday fair value re-entry.
-    if not _skip_long and vwap_15m and rsi_15m and ema50_15m and above_ema50:
+    if "vwap_bounce_long" not in DISABLED_SETUP_TYPES and not _skip_long and vwap_15m and rsi_15m and ema50_15m and above_ema50:
         near_vwap = abs(price - vwap_15m) <= VWAP_PROXIMITY_PTS
         rsi_ok_vwap = VWAP_BOUNCE_RSI_LOW <= rsi_15m <= VWAP_BOUNCE_RSI_HIGH
-        # Bounce confirmation: HA bullish/turning, or candle pattern, or lower wick
+        # Bounce confirmation: HA bullish/turning, or candle pattern, or lower wick, or liquidity sweep
+        swept_low_vb = tf_15m.get("swept_low", False)  # price dipped through VWAP and closed back above
         candle_open_vb = tf_15m.get("open")
         candle_low_vb = tf_15m.get("low")
         lower_wick_vb = (min(candle_open_vb, price) - candle_low_vb) if (candle_open_vb is not None and candle_low_vb is not None) else 0
         candle_patterns_vb = tf_15m.get("candlestick_patterns", [])
         bullish_pattern_vb = any(p.get("direction") == "bullish" for p in candle_patterns_vb) if candle_patterns_vb else False
-        bounce_confirm_vb = ha_bullish is True or lower_wick_vb >= 15 or bullish_pattern_vb
+        bounce_confirm_vb = ha_bullish is True or lower_wick_vb >= 25 or bullish_pattern_vb or swept_low_vb  # wick tightened 15→25pts
 
         if near_vwap and rsi_ok_vwap and bounce_confirm_vb:
             entry = price
@@ -1578,10 +1584,13 @@ def detect_setup(
 
     # --- LONG Setup 8: EMA9 Pullback Long ---
     # Price pulled back to fast EMA9 in a strong uptrend — shallow dip re-entry.
+    # Entry requires HA bullish confirmation OR a bullish liquidity sweep (price dipped below EMA9, closed back above).
+    # The loose ha_streak >= -1 path is removed — it allowed entries mid-reversal before bounce confirmed.
     if not _skip_long and ema9_15m and rsi_15m and ema50_15m and above_ema50:
         near_ema9 = abs(price - ema9_15m) <= EMA9_PROXIMITY_PTS
         rsi_ok_ema9 = EMA9_PULLBACK_RSI_LOW <= rsi_15m <= EMA9_PULLBACK_RSI_HIGH
-        ha_ok_ema9 = ha_bullish is True or (ha_streak is not None and ha_streak >= -1)
+        swept_low_e9 = tf_15m.get("swept_low", False)  # price swept below EMA9 and closed back above = post-sweep entry
+        ha_ok_ema9 = (ha_bullish is True) or swept_low_e9  # tightened: HA must be bullish OR sweep confirmed
 
         if near_ema9 and rsi_ok_ema9 and ha_ok_ema9:
             entry = price
@@ -1684,7 +1693,7 @@ def detect_setup(
             return result
 
     # --- SHORT Setup 2: EMA50 Rejection (rallied up to EMA50, getting turned away) ---
-    if not _skip_short and ema50_15m and rsi_15m:
+    if "ema50_rejection" not in DISABLED_SETUP_TYPES and not _skip_short and ema50_15m and rsi_15m:
         dist_ema50 = abs(price - ema50_15m)
         at_ema50_from_below = price <= ema50_15m + 2 and dist_ema50 <= 150
         if at_ema50_from_below and 50 <= rsi_15m <= 70:
@@ -1714,7 +1723,7 @@ def detect_setup(
 
     # --- SHORT Setup 3: BB Mid Rejection (mirror of bb_mid_bounce LONG) ---
     # Price rallied up to BB mid as resistance and got rejected — heading back down.
-    if not _skip_short and bb_mid and rsi_15m:
+    if "bb_mid_rejection" not in DISABLED_SETUP_TYPES and not _skip_short and bb_mid and rsi_15m:
         near_mid_pts = abs(price - bb_mid) <= 150
         rsi_ok_short_mid = 40 <= rsi_15m <= 65
         prev_close_s = tf_15m.get("prev_close")
@@ -1818,7 +1827,11 @@ def detect_setup(
         vol_signal_bd = tf_15m.get("volume_signal", "NORMAL")
         vol_ok_bd = vol_signal_bd != "LOW"
 
-        if below_mid_significant and rsi_ok_breakdown and below_ema50_bd and ha_bearish_momentum and vol_ok_bd:
+        # Require bearish liquidity sweep: price spiked above a swing high (fake move) then closed back below.
+        # Without this, the setup fires mid-move and gets caught in short-covering rallies.
+        swept_high_bd = tf_15m.get("swept_high", False)
+
+        if below_mid_significant and rsi_ok_breakdown and below_ema50_bd and ha_bearish_momentum and vol_ok_bd and swept_high_bd:
             entry = price
             sl = entry + DEFAULT_SL_DISTANCE
             tp = entry - DEFAULT_TP_DISTANCE
@@ -1828,7 +1841,7 @@ def detect_setup(
                 f"SHORT: Breakdown continuation on 15M. "
                 f"Price {abs(dist_below_mid):.0f}pts below BB mid ({bb_mid:.0f}). "
                 f"RSI {rsi_15m:.1f}, HA streak {ha_streak_bd}. "
-                f"Below EMA50, vol={vol_signal_bd}. {short_daily_str}."
+                f"Below EMA50, vol={vol_signal_bd}. Bearish sweep confirmed. {short_daily_str}."
             )
             if conf_list:
                 reasoning += f" Confluence: {', '.join(conf_list)}."
@@ -1952,7 +1965,7 @@ def detect_setup(
     # In a downtrend, price rallies back to VWAP (intraday fair value) and fails.
     # No daily requirement — VWAP is intraday, useful in any bear session.
     vwap_15m = tf_15m.get("vwap")
-    if not _skip_short and vwap_15m and rsi_15m and ema50_15m:
+    if "vwap_rejection_short" not in DISABLED_SETUP_TYPES and not _skip_short and vwap_15m and rsi_15m and ema50_15m:
         near_vwap_short = abs(price - vwap_15m) <= 120
         rsi_ok_vwap = 43 <= rsi_15m <= 60
         below_ema50_vwap = not tf_15m.get("above_ema50")
@@ -2058,7 +2071,7 @@ def detect_setup(
     # All timeframes pointing down simultaneously — bear market momentum confirmation.
     # No specific level required: it's about full-stack alignment.
     # Works in pre-screen (rsi_4h=None): uses 4 local factors; rsi_4h is bonus when available.
-    if not _skip_short and rsi_15m:
+    if "multi_tf_bearish" not in DISABLED_SETUP_TYPES and not _skip_short and rsi_15m:
         rsi_15m_bear = rsi_15m < 48
         rsi_4h_bear = rsi_4h is not None and rsi_4h < 48
         daily_bear_mta = daily_bullish is False
@@ -2258,6 +2271,47 @@ def detect_setup(
     # Mirror of LONG momentum setups. Catch strong downtrend continuation.
     # ============================================================
 
+    # --- SHORT Momentum: EMA9 Pullback Short ---
+    # Mirror of ema9_pullback_long. Price bounced to EMA9 in a confirmed downtrend — shallow dead-cat rejection.
+    # Entry requires HA bearish OR a bearish sweep (price spiked above EMA9, closed back below).
+    # Placed BEFORE momentum_continuation_short so near-EMA9 bounces are captured with tight entry.
+    below_ema50_s = not tf_15m.get("above_ema50")
+    ha_streak_s = tf_15m.get("ha_streak")
+    vol_signal_s = tf_15m.get("volume_signal", "NORMAL")
+
+    if "ema9_pullback_short" not in DISABLED_SETUP_TYPES and not _skip_short and ema9_15m and rsi_15m and ema50_15m and below_ema50_s:
+        near_ema9_s = abs(price - ema9_15m) <= EMA9_PROXIMITY_PTS
+        ema9_below_ema50_s = ema9_15m < ema50_15m  # EMA9 < EMA50 confirms downtrend alignment
+        rsi_ok_e9s = 35 <= rsi_15m <= 60  # bearish momentum: wide enough to catch pullback RSI
+        swept_high_e9s = tf_15m.get("swept_high", False)  # price spiked above EMA9, closed back below
+        ha_ok_e9s = (ha_bullish is False) or swept_high_e9s  # HA must be bearish OR sweep confirmed
+
+        if near_ema9_s and ema9_below_ema50_s and rsi_ok_e9s and ha_ok_e9s:
+            entry = price
+            sl = entry + DEFAULT_SL_DISTANCE
+            tp = entry - DEFAULT_TP_DISTANCE
+            conf_list, counter_list = _build_confluence(tf_15m, "SHORT", pivots=pivots)
+            reasoning = (
+                f"SHORT: EMA9 pullback on 15M. "
+                f"Price {abs(price - ema9_15m):.0f}pts from EMA9 ({ema9_15m:.0f}). "
+                f"RSI {rsi_15m:.1f}. {'Bearish sweep rejection' if swept_high_e9s else 'HA bearish'}. "
+                f"Below EMA50. {short_daily_str}."
+            )
+            if conf_list:
+                reasoning += f" Confluence: {', '.join(conf_list)}."
+            if counter_list:
+                reasoning += f" Caution: {', '.join(counter_list)}."
+            result.update({
+                "found": True,
+                "type": "ema9_pullback_short",
+                "direction": "SHORT",
+                "entry": round(entry, 1),
+                "sl": round(sl, 1),
+                "tp": round(tp, 1),
+                "reasoning": reasoning,
+            })
+            return result
+
     # --- SHORT Momentum: Momentum Continuation Short ---
     # Broadest catch-all for trending SHORT markets. Below EMA50 + below VWAP + HA bearish streak.
     below_ema50_s = not tf_15m.get("above_ema50")
@@ -2266,7 +2320,7 @@ def detect_setup(
     ha_streak_s = tf_15m.get("ha_streak")
     vol_signal_s = tf_15m.get("volume_signal", "NORMAL")
 
-    if not _skip_short and ema50_15m and rsi_15m and below_ema50_s:
+    if "momentum_continuation_short" not in DISABLED_SETUP_TYPES and not _skip_short and ema50_15m and rsi_15m and below_ema50_s:
         rsi_ok_mom_s = 30 <= rsi_15m <= 55
         ha_streak_ok_s = ha_streak_s is not None and ha_streak_s <= -MOMENTUM_HA_STREAK_MIN
         # Volume: IG CFD volume unreliable. Lenient when HA streak confirms strong trend (<=−4).
@@ -2300,7 +2354,7 @@ def detect_setup(
 
     # --- SHORT Momentum: VWAP Rejection Short ---
     # Price rallied to VWAP from below in a downtrend and got rejected.
-    if not _skip_short and vwap_15m and rsi_15m and ema50_15m and below_ema50_s:
+    if "vwap_rejection_short_momentum" not in DISABLED_SETUP_TYPES and not _skip_short and vwap_15m and rsi_15m and ema50_15m and below_ema50_s:
         near_vwap_s = abs(price - vwap_15m) <= VWAP_PROXIMITY_PTS
         rsi_ok_vwap_s = 35 <= rsi_15m <= 60
         # Rejection confirmation: HA bearish/turning, or bearish candle pattern, or upper wick

@@ -841,16 +841,15 @@ class TestMomentumLongSetups:
             assert result["type"] != "breakout_long"
 
     # --- VWAP Bounce Long ---
-    def test_vwap_bounce_long_fires(self):
+    def test_vwap_bounce_long_disabled(self):
+        """vwap_bounce_long is in DISABLED_SETUP_TYPES — must never fire."""
         tf_15m = self._momentum_tf_15m(
             price=55150, rsi=50, vwap=55100, above_vwap=True,
-            ha_bullish=True, ha_streak=1,  # no momentum_continuation (streak < 2)
-            bollinger_upper=55800,  # far from BB upper (no breakout)
+            ha_bullish=True, ha_streak=1,
+            bollinger_upper=55800,
         )
         result = detect_setup(self._base_tf_daily(), self._base_tf_4h(), tf_15m, exclude_direction="SHORT")
-        assert result["found"]
-        assert result["type"] == "vwap_bounce_long"
-        assert "VWAP bounce" in result["reasoning"]
+        assert result.get("type") != "vwap_bounce_long", "vwap_bounce_long is disabled — should not fire"
 
     # --- EMA9 Pullback Long ---
     def test_ema9_pullback_long_fires(self):

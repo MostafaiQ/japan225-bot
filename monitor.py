@@ -35,10 +35,10 @@ from config.settings import (
     SCAN_INTERVAL_SECONDS, OFFHOURS_INTERVAL_SECONDS,
     AI_COOLDOWN_MINUTES, HAIKU_MIN_SCORE, PRICE_DRIFT_ABORT_PTS, SAFETY_CONSECUTIVE_EMPTY,
     calculate_margin, calculate_profit, SPREAD_ESTIMATE, DEFAULT_SL_DISTANCE,
-    MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT,
+    MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, MAX_OPEN_POSITIONS,
     DAILY_EMA200_CANDLES, PRE_SCREEN_CANDLES, AI_ESCALATION_CANDLES,
     MINUTE_5_CANDLES, DISPLAY_TZ, display_now,
-    EXTREME_DAY_RANGE_PTS, MOMENTUM_SCAN_BYPASS_SIGNALS,
+    EXTREME_DAY_RANGE_PTS,
     CONTRADICTORY_SIGNAL_MIN_SCORE, CONTRADICTORY_SIGNAL_MAX_GAP,
 )
 from core.ig_client import IGClient, POSITIONS_API_ERROR
@@ -103,6 +103,8 @@ class TradingMonitor:
         self._opus_pos_eval_counter = 0          # Counts monitoring cycles; eval fires every OPUS_POSITION_EVAL_EVERY_N
         self._position_price_buffer: list = []   # Rolling price buffer for Opus position evaluator
         self._streaming_reconnect_counter = 0    # Consecutive cycles without streaming price → triggers reconnect
+        self._concurrent_scan_running: bool = False  # Guard: prevents overlapping background scans
+        self._last_concurrent_scan_at: datetime | None = None  # Last time a concurrent scan ran
         # Paths for dashboard integration
         self._state_path   = Path(__file__).parent / "storage" / "data" / "bot_state.json"
         self._overrides_path = Path(__file__).parent / "storage" / "data" / "dashboard_overrides.json"
@@ -368,7 +370,7 @@ class TradingMonitor:
             state = {
                 "session":        self._current_session or "—",
                 "phase":          phase or (
-                    "MONITORING" if self.storage.get_position_state().get("has_open")
+                    "MONITORING" if self.storage.get_open_positions_count() > 0
                     else "COOLDOWN" if self.storage.is_ai_on_cooldown(AI_COOLDOWN_MINUTES)
                     else "SCANNING"
                 ),
@@ -490,9 +492,20 @@ class TradingMonitor:
                 self._ig_fail_count = 0
 
             pos_state = self.storage.get_position_state()
+            open_count = self.storage.get_open_positions_count()
 
             if pos_state.get("has_open"):
                 await self._monitoring_cycle(pos_state)
+                # If below position cap: also scan for new entries in background
+                if open_count < MAX_OPEN_POSITIONS and not self._concurrent_scan_running:
+                    now_utc = datetime.now(timezone.utc)
+                    scan_due = (
+                        self._last_concurrent_scan_at is None
+                        or (now_utc - self._last_concurrent_scan_at).total_seconds() >= SCAN_INTERVAL_SECONDS
+                    )
+                    if scan_due:
+                        self._concurrent_scan_running = True
+                        asyncio.create_task(self._run_concurrent_scan())
                 await asyncio.sleep(MONITOR_INTERVAL_SECONDS)
             else:
                 interval = await self._scanning_cycle()
@@ -679,91 +692,6 @@ class TradingMonitor:
 
         # Neither direction found a setup
         if not setup_long["found"] and not setup_short["found"]:
-            # --- Momentum scan bypass: if indicators overwhelmingly bullish, skip to Opus ---
-            # 5 signals: above EMA50, above VWAP, HA streak >= 2, RSI 45-72, 4H above EMA50
-            _mom_signals = 0
-            if tf_15m.get("above_ema50"):
-                _mom_signals += 1
-            if tf_15m.get("above_vwap"):
-                _mom_signals += 1
-            _ha_st = tf_15m.get("ha_streak")
-            if _ha_st is not None and _ha_st >= 2:
-                _mom_signals += 1
-            _rsi_15 = tf_15m.get("rsi")
-            if _rsi_15 is not None and 45 <= _rsi_15 <= 72:
-                _mom_signals += 1
-            if tf_4h.get("above_ema50"):
-                _mom_signals += 1
-
-            if _mom_signals >= MOMENTUM_SCAN_BYPASS_SIGNALS:
-                logger.info(
-                    f"MOMENTUM BYPASS: {_mom_signals}/5 bullish signals, no formal setup. "
-                    f"Sending to Opus for evaluation."
-                )
-                indicators = {"m15": tf_15m, "h4": tf_4h, "daily": tf_daily}
-                if tf_5m:
-                    indicators["m5"] = tf_5m
-                _mom_sess_ctx = compute_session_context(candles_15m, candles_daily)
-                _mom_tick = self.ig.get_tick_density()
-                indicators["indicators_snapshot"] = {
-                    "session_open": _mom_sess_ctx.get("session_open"),
-                    "asia_high": _mom_sess_ctx.get("asia_high"),
-                    "asia_low": _mom_sess_ctx.get("asia_low"),
-                    "pdh_daily": _mom_sess_ctx.get("pdh"),
-                    "pdl_daily": _mom_sess_ctx.get("pdl"),
-                    "gap_pts": _mom_sess_ctx.get("gap_pts"),
-                    "tick_density_signal": _mom_tick.get("signal"),
-                    "tick_density_latest": _mom_tick.get("latest"),
-                }
-                try:
-                    _mom_opus_result = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: self.analyzer.evaluate_scalp(
-                            indicators=indicators,
-                            primary_direction="LONG",
-                            setup_type="momentum_bypass",
-                            local_confidence=65,
-                            ai_confidence=0,
-                            ai_reasoning=(
-                                f"MOMENTUM BYPASS: No formal setup fired, but {_mom_signals}/5 bullish signals active. "
-                                f"RSI={_rsi_15}, HA streak={_ha_st}, above EMA50+VWAP. "
-                                f"Market is strongly trending — evaluate for trend-following LONG entry."
-                            ),
-                        ),
-                    )
-                    if _mom_opus_result.get("scalp_viable"):
-                        _mom_conf = _mom_opus_result.get("confidence", 0)
-                        if _mom_conf >= 60:
-                            logger.info(
-                                f"Momentum bypass: Opus approved LONG scalp, conf={_mom_conf}%"
-                            )
-                            self._last_scan_detail = {
-                                "outcome": "momentum_bypass",
-                                "direction": "LONG",
-                                "confidence": _mom_conf,
-                                "price": current_price,
-                            }
-                            # Build minimal local_conf for _execute_scalp
-                            _mom_local_conf = {"score": 65, "criteria": {}, "reasons": {}}
-                            await self._execute_scalp(
-                                scalp_result=_mom_opus_result,
-                                direction=_mom_opus_result.get("direction", "LONG"),
-                                setup={"type": "momentum_bypass", "direction": "LONG",
-                                       "reasoning": f"Momentum bypass ({_mom_signals}/5 signals)"},
-                                session=session,
-                                current_price=current_price,
-                                local_conf=_mom_local_conf,
-                                final_confidence=_mom_conf,
-                                indicators_snapshot=indicators,
-                            )
-                            return 0
-                        else:
-                            logger.info(f"Momentum bypass: Opus conf {_mom_conf}% < 60%, skipping")
-                    else:
-                        logger.info(f"Momentum bypass: Opus rejected — {_mom_opus_result.get('reasoning', '')[:100]}")
-                except Exception as e:
-                    logger.warning(f"Momentum bypass Opus eval failed: {e}")
-
             reasoning = setup_long.get("reasoning", "") or setup_short.get("reasoning", "")
             logger.info(f"Pre-screen: no setup (both dirs). {reasoning[:200]}")
             self._last_scan_detail = {"outcome": "no_setup", "price": current_price, "details": reasoning[:200]}
@@ -972,6 +900,20 @@ class TradingMonitor:
 
         recent_trades_ctx = self.storage.get_recent_trades(10)
 
+        # Build open-position context for AI — lets Sonnet know existing exposure and daily P&L
+        _open_pos_list = self.storage.get_open_positions()
+        _today_str = display_now().strftime("%Y-%m-%d")
+        _daily_pnl = sum(
+            (t.get("pnl") or 0)
+            for t in recent_trades_ctx
+            if str(t.get("opened_at", ""))[:10] == _today_str
+        )
+        open_positions_ctx = {
+            "count": len(_open_pos_list),
+            "directions": [p.get("direction", "?") for p in _open_pos_list],
+            "daily_pnl": _daily_pnl,
+        }
+
         logger.info(
             f"Volume signals → 5M: {tf_5m.get('volume_signal')}({tf_5m.get('volume_ratio')}) "
             f"| 15M: {tf_15m.get('volume_signal')}({tf_15m.get('volume_ratio')}) "
@@ -1014,6 +956,7 @@ class TradingMonitor:
                 live_edge_block=live_edge,
                 failed_criteria=failed_criteria,
                 recent_trades=recent_trades_ctx,
+                open_positions_context=open_positions_ctx,
             ),
         )
 
@@ -1297,7 +1240,9 @@ class TradingMonitor:
             return SCAN_INTERVAL_SECONDS
 
         sl_distance = abs(entry - sl)
-        lots = self.risk.get_safe_lot_size(balance, current_price, sl_distance=sl_distance)
+        lots = self.risk.get_safe_lot_size(
+            balance, current_price, sl_distance=sl_distance, confidence=final_confidence
+        )
         logger.info(f"Lot size: {lots} (balance=${balance:.2f}, SL={sl_distance:.0f}pts)")
 
         validation = self.risk.validate_trade(
@@ -1800,11 +1745,11 @@ class TradingMonitor:
         """Inner execution logic — always called under _trade_execution_lock."""
         logger.info("Trade execution started...")
 
-        # --- C1 fix: Re-check position state under lock ---
-        pos = self.storage.get_position_state()
-        if pos.get("has_open"):
-            logger.warning("Trade aborted: position already open (race condition prevented)")
-            await self.telegram.send_alert("Trade skipped — position already open.")
+        # --- C1 fix: Re-check position count under lock ---
+        _current_open = self.storage.get_open_positions_count()
+        if _current_open >= MAX_OPEN_POSITIONS:
+            logger.warning(f"Trade aborted: at max positions {_current_open}/{MAX_OPEN_POSITIONS} (race condition prevented)")
+            await self.telegram.send_alert(f"Trade skipped — at max positions ({_current_open}/{MAX_OPEN_POSITIONS}).")
             return
 
         direction = alert_data.get("direction", "LONG")
@@ -2178,6 +2123,20 @@ class TradingMonitor:
         except Exception as e:
             logger.warning(f"_fetch_current_indicators failed: {e}")
             return {}
+
+    async def _run_concurrent_scan(self):
+        """Background scan that runs while a position is open and below position cap.
+        Fires every SCAN_INTERVAL_SECONDS from the monitoring loop.
+        Protected by _concurrent_scan_running flag to prevent overlapping scans.
+        """
+        try:
+            logger.info("Concurrent scan started (position open, capacity available)")
+            await self._scanning_cycle()
+            self._last_concurrent_scan_at = datetime.now(timezone.utc)
+        except Exception as e:
+            logger.error(f"Concurrent scan error: {e}", exc_info=True)
+        finally:
+            self._concurrent_scan_running = False
 
     async def _on_force_scan(self):
         """Triggered by /force command. Wakes the main loop immediately."""

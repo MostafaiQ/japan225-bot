@@ -118,18 +118,19 @@ class TestScoreComputation:
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         assert result["score"] <= 100
 
-    def test_total_criteria_is_12(self):
+    def test_total_criteria_is_9(self):
+        # Weighted system uses 9 scored criteria (C7/C8 are hard gates, C11/C12 merged)
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
-        assert result["total_criteria"] == 12
+        assert result["total_criteria"] == 9
 
     def test_passed_criteria_matches_score(self):
+        # Weighted scoring: score = round(sum of weights * 100 for passing criteria)
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
-        n = result["passed_criteria"]
-        total = result["total_criteria"]
-        expected_score = min(BASE_SCORE + int(n * (100 - BASE_SCORE) / total), 100)
-        assert result["score"] == expected_score
+        # All 9 pass → score == 100
+        assert result["score"] == 100
+        assert result["passed_criteria"] == result["total_criteria"]
 
 
 # ── LONG Criteria ─────────────────────────────────────────────────────────────
@@ -431,11 +432,14 @@ class TestHaAlignedC11:
         assert result["criteria"]["ha_aligned"] is False
 
     def test_ha_affects_score(self):
-        """C11 failure should reduce score by ~6 points (70/11 ≈ 6.36)."""
+        """entry_timing (C11+C12 OR) failing should reduce score.
+        Must clear both C11 (ha_bullish=False) and C12 (pullback=chase) to flip entry_timing."""
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
         tf_15m["ha_bullish"] = True
+        tf_15m["pullback_depth"] = -50  # C12 passes
         result_pass = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         tf_15m["ha_bullish"] = False
+        tf_15m["pullback_depth"] = 50  # C12 also fails (chase, not dip)
         result_fail = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         assert result_pass["score"] > result_fail["score"]
 
@@ -664,11 +668,14 @@ class TestEntryQualityC12:
         assert result["criteria"]["entry_quality"] is False
 
     def test_c12_affects_score(self):
-        """C12 failure should reduce score by ~6 points (70/12 ≈ 5.83)."""
+        """entry_timing (C11+C12 OR) failing should reduce score.
+        Must clear both C12 (pullback=chase) and C11 (ha_bullish=False) to flip entry_timing."""
         tf_daily, tf_4h, tf_15m = ideal_long_setup()
         tf_15m["pullback_depth"] = -80
+        tf_15m["ha_bullish"] = True  # C11 also passes
         result_pass = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
-        tf_15m["pullback_depth"] = 50
+        tf_15m["pullback_depth"] = 50   # C12 fails (chase)
+        tf_15m["ha_bullish"] = False    # C11 also fails
         result_fail = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
         assert result_pass["score"] > result_fail["score"]
 

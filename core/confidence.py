@@ -1,28 +1,33 @@
 """
-Local confidence scorer — bidirectional 12-criteria system.
+Local confidence scorer — bidirectional 9-criteria weighted system.
 
 Computes a confidence score LOCALLY from indicator data before any AI call.
 Acts as a gate: only escalate to Sonnet/Opus if local score >= HAIKU_MIN_SCORE (60%).
 
-Scoring (proportional):
-  score = min(30 + int(passed * 70 / total_criteria), 100)
-  12/12=100%, 11/12=94%, 10/12=88%, 9/12=82%, 8/12=76%, 7/12=70%,
-  6/12=65% (fails 70 gate), 5/12=59% (below 60% gate)
-  LONG needs 7/12 (70%≥70), SHORT needs 8/12 (76%≥75).
+Scoring (weighted, 9 criteria):
+  score = sum(weight_i × 100) for passing criteria
+  Weights (normalized to sum=1.0): daily_trend=15.5%, entry_level=15.5%,
+           rsi_15m=11.8%, structure=11.8%, tp_viable=10%, macro=10%,
+           trend_4h=9.1%, volume=8.2%, entry_timing=8.2%
 
-Criteria (12 total):
-  C1  daily_trend       — daily EMA200 agrees with direction (oversold exempt)
-  C2  entry_level       — price at BB/EMA technical level
-  C3  rsi_15m           — 15M RSI in valid entry zone
-  C4  tp_viable         — price below/above BB mid (room for TP)
-  C5  structure         — 15M EMA50 or reversal signals (setup-type-aware)
-  C6  macro             — 4H RSI in healthy range
-  C7  no_event_1hr      — no HIGH-impact event within 60 min
-  C8  no_friday_monthend— not Friday blackout / month-end
-  C9  volume            — 15M volume not critically low (signal != LOW)
-  C10 trend_4h          — 4H EMA50 or oversold reversal (setup-type-aware)
-  C11 ha_aligned        — 15M HA or reversal signals (setup-type-aware)
-  C12 entry_quality     — pullback depth + volatility regime (data-backed filter)
+  100% = all 9 pass. Thresholds: LONG≥70%, SHORT≥75%.
+  C7(event) and C8(friday) are hard pre-gates — not scored.
+  C11(ha_aligned) + C12(entry_quality) merged into entry_timing (OR logic).
+
+Criteria (9 scored):
+  daily_trend  — daily EMA50 agrees with direction (oversold exempt)
+  entry_level  — price at BB/EMA/VWAP technical level
+  rsi_15m      — 15M RSI in valid entry zone
+  tp_viable    — price below/above BB mid (room for TP)
+  structure    — 15M EMA50 or reversal signals (setup-type-aware)
+  macro        — 4H RSI in healthy range
+  volume       — 15M volume not critically low
+  trend_4h     — 4H EMA50 or oversold reversal (setup-type-aware)
+  entry_timing — HA aligned OR entry quality (either is sufficient)
+
+Hard gates (not scored):
+  no_event_1hr      — checked before AI escalation
+  no_friday_monthend — checked before AI escalation
 """
 import logging
 from datetime import datetime, timezone
@@ -103,10 +108,11 @@ def compute_confidence(
         "breakdown_continuation", "bear_flag_breakdown", "multi_tf_bearish"
     )
     _momentum_setup = setup_type in (
-        "momentum_continuation_long", "breakout_long", "vwap_bounce_long", "ema9_pullback_long"
+        "momentum_continuation_long", "breakout_long", "vwap_bounce_long", "ema9_pullback_long",
     )
     _momentum_short_setup = setup_type in (
-        "momentum_continuation_short", "vwap_rejection_short_momentum"
+        "momentum_continuation_short", "vwap_rejection_short_momentum",
+        "ema9_pullback_short",
     )
     # ---- Criterion 1: Daily Trend Aligned (oversold-exempt) ----
     # Uses EMA50 as PRIMARY (more responsive to recent trend changes).
@@ -509,22 +515,56 @@ def compute_confidence(
         reasons["entry_quality"] = f"Pre-entry {pullback:+.0f}pts ({'rally' if c12 else 'falling — no rally'}), vol={avg_range:.0f}pts"
     criteria["entry_quality"] = c12
 
-    # ---- Compute final score (proportional, 12 criteria) ----
-    passed = sum(1 for v in criteria.values() if v)
-    total = len(criteria)
-    score = min(BASE_SCORE + int(passed * (MAX_SCORE - BASE_SCORE) / total), MAX_SCORE)
+    # Weighted scoring: C7 (no_event_1hr) and C8 (no_friday_monthend) are hard gates
+    # that run BEFORE AI escalation — they do not contribute to setup quality score.
+    # C11 (ha_aligned) and C12 (entry_quality) merged into entry_timing.
+    # Weights are normalized so all-9-pass = exactly 100.
+    # Relative order preserved from spec (daily_trend/entry_level highest,
+    # volume/entry_timing lowest). Raw spec values summed to 1.10; divided by 1.10.
+    CRITERIA_WEIGHTS = {
+        "daily_trend":  0.1545,
+        "entry_level":  0.1545,
+        "rsi_15m":      0.1182,
+        "tp_viable":    0.1000,
+        "structure":    0.1182,
+        "macro":        0.1000,
+        "volume":       0.0818,
+        "trend_4h":     0.0909,
+        "entry_timing": 0.0818,
+    }
+
+    # Map existing criteria names to weighted names
+    # C11 (ha_aligned) + C12 (entry_quality) → entry_timing (both must pass for True)
+    weighted_criteria = {
+        "daily_trend":  criteria.get("daily_trend", False),
+        "entry_level":  criteria.get("entry_level", False),
+        "rsi_15m":      criteria.get("rsi_15m", False),
+        "tp_viable":    criteria.get("tp_viable", False),
+        "structure":    criteria.get("structure", False),
+        "macro":        criteria.get("macro", False),
+        "volume":       criteria.get("volume", False),
+        "trend_4h":     criteria.get("trend_4h", False),
+        # entry_timing = either HA aligned OR entry quality (either confirmation is sufficient)
+        "entry_timing": criteria.get("ha_aligned", False) or criteria.get("entry_quality", False),
+    }
+
+    score = round(sum(CRITERIA_WEIGHTS[k] * 100 for k, v in weighted_criteria.items() if v))
+    score = min(score, MAX_SCORE)
+
+    passed_count = sum(1 for v in weighted_criteria.values() if v)
+    total = len(weighted_criteria)
 
     min_threshold = MIN_CONFIDENCE_SHORT if direction == "SHORT" else MIN_CONFIDENCE_LONG
-    meets_threshold = score >= min_threshold
-
+    meets = score >= min_threshold
     return {
         "score": score,
-        "passed_criteria": passed,
-        "total_criteria": len(criteria),
-        "criteria": criteria,
+        "criteria": criteria,           # keep original 12-criteria dict for logging/diagnostics
+        "weighted_criteria": weighted_criteria,  # the 9-criteria weighted view
         "reasons": reasons,
         "direction": direction,
-        "meets_threshold": meets_threshold,
+        "meets_threshold": meets,
+        "passed_criteria": passed_count,
+        "total_criteria": total,
         "min_threshold": min_threshold,
     }
 
