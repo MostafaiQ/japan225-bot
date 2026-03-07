@@ -17,6 +17,7 @@ from config.settings import (
 def make_storage(has_position=False, consec_losses=0, last_loss_time=None,
                  daily_loss=0, weekly_loss=0, system_active=True):
     """Create a mock storage object returning safe defaults."""
+    from config.settings import MAX_OPEN_POSITIONS
     storage = MagicMock()
     storage.get_position_state.return_value = {"has_open": has_position}
     storage.get_account_state.return_value = {
@@ -26,6 +27,9 @@ def make_storage(has_position=False, consec_losses=0, last_loss_time=None,
         "weekly_loss": weekly_loss,
         "system_active": system_active,
     }
+    # Multi-position support: at_max when has_position=True (tests "blocked by existing")
+    storage.get_open_positions_count.return_value = MAX_OPEN_POSITIONS if has_position else 0
+    storage.get_open_positions.return_value = []
     return storage
 
 

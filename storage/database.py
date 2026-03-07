@@ -368,6 +368,22 @@ class Storage:
                     (limit_level, datetime.now().isoformat())
                 )
     
+    def get_open_positions_count(self) -> int:
+        """Count currently open positions (trades without a close timestamp)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM trades WHERE closed_at IS NULL"
+            ).fetchone()
+            return row[0] if row else 0
+
+    def get_open_positions(self) -> list:
+        """Return all open positions with risk data for portfolio cap calculation."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT deal_id, direction, lots, entry_price, stop_loss FROM trades WHERE closed_at IS NULL"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def set_pending_alert(self, alert_data: dict):
         """Store a pending trade alert waiting for user confirmation."""
         with self._conn() as conn:

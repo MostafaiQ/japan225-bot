@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from config.settings import (
-    MAX_MARGIN_PERCENT, MAX_OPEN_POSITIONS,
+    MAX_MARGIN_PERCENT, MAX_OPEN_POSITIONS, MAX_PORTFOLIO_RISK_PERCENT,
     MAX_CONSECUTIVE_LOSSES,
     COOLDOWN_HOURS, DAILY_LOSS_LIMIT_PERCENT, WEEKLY_LOSS_LIMIT_PERCENT,
     MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT,
@@ -17,6 +17,12 @@ from config.settings import (
     CONTRACT_SIZE, MARGIN_FACTOR, MIN_LOT_SIZE,
     FRIDAY_BLACKOUT_START_UTC, FRIDAY_BLACKOUT_END_UTC,
     EXTREME_DAY_RANGE_PTS, EXTREME_DAY_MIN_CONFIDENCE,
+    RISK_PERCENT, MAX_RISK_PERCENT,
+    DRAWDOWN_REDUCE_10PCT, DRAWDOWN_REDUCE_15PCT, DRAWDOWN_STOP_20PCT,
+    SL_ATR_MULTIPLIER_MOMENTUM, SL_ATR_MULTIPLIER_MEAN_REVERSION,
+    SL_ATR_MULTIPLIER_BREAKOUT, SL_ATR_MULTIPLIER_VWAP, SL_ATR_MULTIPLIER_DEFAULT,
+    SL_FLOOR_PTS, TP_ATR_MULTIPLIER_BASE, TP_ATR_MULTIPLIER_MOMENTUM, TP_FLOOR_PTS,
+    DEFAULT_SL_DISTANCE,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,7 +114,7 @@ class RiskManager:
         }
         if not checks["margin"]["pass"]:
             max_lots = int((balance * MAX_MARGIN_PERCENT) / (CONTRACT_SIZE * entry * MARGIN_FACTOR) * 100) / 100
-            rejection = f"Margin {margin_pct:.1%} exceeds 50%. Max lots at this price: {max_lots}"
+            rejection = f"Margin {margin_pct:.1%} exceeds {MAX_MARGIN_PERCENT:.0%}. Max lots at this price: {max_lots}"
         
         # --- CHECK 3: R:R Ratio ---
         # Spread is paid twice: widens risk on entry, reduces reward on exit.
@@ -162,14 +168,33 @@ class RiskManager:
             )
 
         # --- CHECK 4: Max Positions ---
-        state = self.storage.get_position_state()
-        open_count = 1 if state.get("has_open") else 0
+        open_count = self.storage.get_open_positions_count()
         checks["max_positions"] = {
             "pass": open_count < MAX_OPEN_POSITIONS,
-            "detail": f"{open_count} open positions (max {MAX_OPEN_POSITIONS})",
+            "detail": f"{open_count}/{MAX_OPEN_POSITIONS} positions open",
         }
         if not checks["max_positions"]["pass"]:
-            rejection = rejection or "Already have an open position. One at a time."
+            rejection = rejection or f"Max positions reached ({open_count}/{MAX_OPEN_POSITIONS}). Wait for a position to close."
+
+        # --- CHECK 4B: Portfolio Risk Cap ---
+        new_trade_risk = lots * abs(entry - stop_loss) * CONTRACT_SIZE
+        total_risk = new_trade_risk
+        for pos in self.storage.get_open_positions():
+            pos_risk = pos["lots"] * abs(pos["entry_price"] - pos["stop_loss"]) * CONTRACT_SIZE
+            total_risk += pos_risk
+        portfolio_risk_pct = total_risk / balance if balance > 0 else 1.0
+        portfolio_ok = portfolio_risk_pct <= MAX_PORTFOLIO_RISK_PERCENT
+        checks["portfolio_risk"] = {
+            "pass": portfolio_ok,
+            "detail": (
+                f"Portfolio risk ${total_risk:.2f} = {portfolio_risk_pct:.1%} of ${balance:.2f} "
+                f"(max {MAX_PORTFOLIO_RISK_PERCENT:.0%})"
+            ),
+        }
+        if not portfolio_ok:
+            rejection = rejection or (
+                f"Portfolio risk {portfolio_risk_pct:.1%} would exceed {MAX_PORTFOLIO_RISK_PERCENT:.0%} cap."
+            )
         
         # --- CHECK 5: Consecutive Losses ---
         account = self.storage.get_account_state()
@@ -274,13 +299,19 @@ class RiskManager:
         if not checks["calendar_block"]["pass"]:
             rejection = rejection or checks["calendar_block"]["detail"]
         
-        # --- CHECK 10: Dollar Risk (informational — margin check is the real safety net) ---
+        # --- CHECK 10: Dollar Risk (enforces MAX_RISK_PERCENT hard cap) ---
         dollar_risk = lots * CONTRACT_SIZE * risk
         dollar_risk_pct = dollar_risk / balance * 100 if balance > 0 else 100
+        max_dollar_risk = (MAX_RISK_PERCENT / 100) * balance
+        dollar_risk_ok = dollar_risk <= max_dollar_risk
         checks["dollar_risk"] = {
-            "pass": True,  # Margin check (CHECK 2) is the binding constraint
-            "detail": f"Risk ${dollar_risk:.2f} ({dollar_risk_pct:.1f}% of balance) on this trade",
+            "pass": dollar_risk_ok,
+            "detail": f"Risk ${dollar_risk:.2f} ({dollar_risk_pct:.1f}% of balance, max {MAX_RISK_PERCENT}%)",
         }
+        if not dollar_risk_ok:
+            rejection = rejection or (
+                f"Dollar risk ${dollar_risk:.2f} ({dollar_risk_pct:.1f}%) exceeds {MAX_RISK_PERCENT}% hard cap."
+            )
             
         # --- CHECK 11: Lot Size Valid ---
         checks["lot_size"] = {
@@ -313,13 +344,81 @@ class RiskManager:
             },
         }
     
-    def get_safe_lot_size(self, balance: float, price: float, sl_distance: float = 150) -> float:
-        """Calculate the safe lot size given current balance.
+    def get_safe_lot_size(
+        self,
+        balance: float,
+        price: float,
+        sl_distance: float,
+        confidence: int = None,
+        peak_balance: float = None,
+    ) -> float:
+        """Calculate lot size using risk-based sizing (RISK_PERCENT % of balance).
 
-        Margin cap: lots * price * MARGIN_FACTOR <= balance * MAX_MARGIN_PERCENT
-        On a $20 account: 0.05 lots = $13.59 margin (49.9% of $27.23).
+        Formula: lots = (risk_pct% × balance) / (sl_distance × $1/pt)
+        Hard caps: margin ≤ MAX_MARGIN_PERCENT of balance, risk ≤ MAX_RISK_PERCENT.
+        Drawdown protection reduces risk_pct when balance falls below peak.
         """
-        max_margin = balance * MAX_MARGIN_PERCENT
-        margin_per_lot = CONTRACT_SIZE * price * MARGIN_FACTOR
-        max_lots = max_margin / margin_per_lot if margin_per_lot > 0 else 0
-        return max(MIN_LOT_SIZE, int(max_lots * 100) / 100)
+        # 1. Drawdown protection
+        risk_pct = RISK_PERCENT  # default 2.0%
+        if peak_balance and peak_balance > 0:
+            drawdown = (peak_balance - balance) / peak_balance
+            if drawdown >= 0.20 and DRAWDOWN_STOP_20PCT:
+                logger.warning(
+                    f"Drawdown {drawdown:.1%} ≥ 20% — using minimum lot size (drawdown halt)"
+                )
+                return MIN_LOT_SIZE
+            elif drawdown >= 0.15:
+                risk_pct = DRAWDOWN_REDUCE_15PCT   # 0.25%
+            elif drawdown >= 0.10:
+                risk_pct = DRAWDOWN_REDUCE_10PCT   # 0.5%
+
+        # 2. SL distance floor
+        sl_distance = max(sl_distance, SL_FLOOR_PTS)
+
+        # 3. Base dollar risk
+        dollar_risk = (risk_pct / 100.0) * balance
+
+        # 4. Confidence scaling: +15% max for high-conviction setups
+        if confidence is not None:
+            confidence_mult = min(1.15, 1.0 + (confidence - MIN_CONFIDENCE) / 200.0)
+            dollar_risk *= confidence_mult
+
+        # 5. Lots from dollar risk
+        lots = dollar_risk / (sl_distance * CONTRACT_SIZE)
+
+        # 6. Cap by per-position margin ceiling
+        max_lots_margin = (balance * MAX_MARGIN_PERCENT) / (price * MARGIN_FACTOR) if price > 0 else lots
+        lots = min(lots, max_lots_margin)
+
+        return max(MIN_LOT_SIZE, round(lots, 2))
+
+    def get_dynamic_sl(
+        self,
+        atr: float,
+        setup_type: str = None,
+        fallback_pts: float = None,
+    ) -> float:
+        """Compute dynamic SL distance (in points) based on ATR and setup type.
+
+        Returns SL distance always ≥ SL_FLOOR_PTS.
+        Falls back to fallback_pts (or DEFAULT_SL_DISTANCE) when ATR is unavailable.
+        """
+        if not atr or atr <= 0:
+            return max(fallback_pts or DEFAULT_SL_DISTANCE, SL_FLOOR_PTS)
+
+        if setup_type:
+            st = setup_type.lower()
+            if "breakout" in st:
+                multiplier = SL_ATR_MULTIPLIER_BREAKOUT
+            elif "momentum" in st or "continuation" in st:
+                multiplier = SL_ATR_MULTIPLIER_MOMENTUM
+            elif "vwap" in st or "ema9" in st:
+                multiplier = SL_ATR_MULTIPLIER_VWAP
+            elif any(x in st for x in ("bounce", "reversal", "oversold", "reversion", "rejection")):
+                multiplier = SL_ATR_MULTIPLIER_MEAN_REVERSION
+            else:
+                multiplier = SL_ATR_MULTIPLIER_DEFAULT
+        else:
+            multiplier = SL_ATR_MULTIPLIER_DEFAULT
+
+        return max(multiplier * atr, SL_FLOOR_PTS)

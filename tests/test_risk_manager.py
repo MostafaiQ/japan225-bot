@@ -22,7 +22,7 @@ class MockStorage:
             "daily_loss_date": datetime.now().date().isoformat(),
             "weekly_loss": 0,
             "weekly_loss_start": datetime.now().date().isoformat(),
-            "balance": 20.09,
+            "balance": 500.0,
         }
 
     def get_position_state(self):
@@ -30,6 +30,17 @@ class MockStorage:
 
     def get_account_state(self):
         return self.account_state
+
+    def get_open_positions_count(self) -> int:
+        if hasattr(self, "_mock_open_count"):
+            return self._mock_open_count
+        return 1 if self.position_state.get("has_open") else 0
+
+    def get_open_positions(self) -> list:
+        count = self.get_open_positions_count()
+        return [{"deal_id": f"MOCK{i}", "direction": "LONG", "lots": 0.01,
+                 "entry_price": 59500, "stop_loss": 59300}
+                for i in range(count)]
 
     def update_position_phase(self, deal_id, phase):
         pass
@@ -53,7 +64,7 @@ class TestRiskManagerValidation:
             "stop_loss": 59300,
             "take_profit": 59900,
             "confidence": 80,
-            "balance": 20.09,
+            "balance": 500.0,
             "upcoming_events": [],
         }
         trade.update(overrides)
@@ -87,14 +98,14 @@ class TestRiskManagerValidation:
         assert result["checks"]["confidence"]["pass"] is True
 
     def test_margin_exceeded_rejected(self):
-        # 0.10 lots at 59500 = $29.75 margin, > 50% of $20.09
+        # 0.10 lots at 59500 = $29.75 margin, > 5% of $500 = $25
         result = self.rm.validate_trade(**self._base_trade(lots=0.10))
         assert result["approved"] is False
         assert "margin" in result["rejection_reason"].lower()
 
     def test_margin_at_limit(self):
-        # 0.03 lots at 59500 = $8.925, which is ~44% of $20.09
-        result = self.rm.validate_trade(**self._base_trade(lots=0.03, balance=50.0))
+        # 0.03 lots at 59500 = $8.925 margin, 5% of $500 = $25 → passes
+        result = self.rm.validate_trade(**self._base_trade(lots=0.03, balance=500.0))
         assert result["checks"]["margin"]["pass"] is True
 
     def test_bad_rr_rejected(self):
@@ -106,7 +117,9 @@ class TestRiskManagerValidation:
         assert result["checks"]["risk_reward"]["pass"] is False
 
     def test_open_position_rejected(self):
-        self.storage.position_state["has_open"] = True
+        # At MAX_OPEN_POSITIONS=3, need 3 open positions to reject
+        from config.settings import MAX_OPEN_POSITIONS
+        self.storage._mock_open_count = MAX_OPEN_POSITIONS
         result = self.rm.validate_trade(**self._base_trade())
         assert result["checks"]["max_positions"]["pass"] is False
 
@@ -150,18 +163,19 @@ class TestSafeLotSize:
     def setup_method(self):
         self.rm = RiskManager(MockStorage())
 
-    def test_lot_size_stays_under_50_percent(self):
-        lots = self.rm.get_safe_lot_size(20.09, 59500)
-        margin = lots * 1 * 59500 * 0.005
-        assert margin <= 20.09 * 0.50
+    def test_lot_size_risk_based(self):
+        # At $500 balance, 2% risk = $10, 150pt SL → lots ≈ 0.07, well under MAX_RISK_PERCENT
+        lots = self.rm.get_safe_lot_size(500.0, 59500, 150)
+        dollar_risk = lots * 150 * 1  # CONTRACT_SIZE = 1
+        assert dollar_risk <= 500.0 * 0.03  # Within MAX_RISK_PERCENT (3%)
 
     def test_minimum_lot_size(self):
-        lots = self.rm.get_safe_lot_size(1.0, 59500)
+        lots = self.rm.get_safe_lot_size(1.0, 59500, 150)
         assert lots >= 0.01
 
     def test_scales_with_balance(self):
-        lots_small = self.rm.get_safe_lot_size(20, 59500)
-        lots_big = self.rm.get_safe_lot_size(100, 59500)
+        lots_small = self.rm.get_safe_lot_size(200, 59500, 150)
+        lots_big = self.rm.get_safe_lot_size(1000, 59500, 150)
         assert lots_big > lots_small
 
 
