@@ -29,3 +29,4 @@ storage/data/
 
 # Context files — runtime snapshots, regenerated each scan
 storage/context/*.md
+.gitnexus

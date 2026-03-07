@@ -25,13 +25,14 @@ _run_claude(model, system_prompt, user_prompt, timeout=180) -> (str, dict)
 
 scan_with_sonnet(indicators, recent_scans, market_context, web_research,
                  prescreen_direction=None, local_confidence=None, live_edge_block=None,
-                 failed_criteria=None) -> dict
+                 failed_criteria=None, open_positions_context=None) -> dict
   # Only public analysis method. Calls _analyze() with SONNET_MODEL.
+  # open_positions_context: {"count": N, "directions": [...], "daily_pnl": X}
   # Sonnet handles everything: analysis, quick-reject, and Opus delegation when needed.
 
 _analyze(model, indicators, recent_scans, market_context, web_research,
          prescreen_direction=None, local_confidence=None, live_edge_block=None,
-         failed_criteria=None) -> dict
+         failed_criteria=None, open_positions_context=None) -> dict
   # Builds prompt via build_scan_prompt() + JSON schema trailer
   # Parse failure auto-retry: on first parse failure, retries once with effort="medium"
   # Calls _run_claude() → _parse_json() → returns dict + _model, _cost, _tokens

@@ -1,36 +1,33 @@
 # core/confidence.py — DIGEST
-# Purpose: Local 12-criteria confidence scorer. Gates AI escalation (score must be >=60%).
+# Purpose: Local 9-criteria weighted confidence scorer. Gates AI escalation (score must be >=60%).
 # Bidirectional: LONG and SHORT criteria differ.
-# Updated 2026-03-04: _momentum_setup + _momentum_short_setup flags for trend-following setups.
-# Updated 2026-03-05 (bug fixes):
-#   BUG-017: C3 SHORT now has _momentum_short_setup branch: RSI 30-60 accepted (was fixed 55-75).
-#     Both momentum_continuation_short and vwap_rejection_short_momentum use widened zone.
-#   BUG-006: C10 defaults to False when 4H above_ema50 unavailable (was True — inflating score).
-#            C11 defaults to False when ha_bullish unavailable (was True — inflating score).
+# Updated 2026-03-07: Replaced equal-weight 12-criteria with weighted 9-criteria scoring.
+#   C7/C8 (no_event/no_friday_monthend) removed from scoring — remain as hard pre-gates.
+#   C11/C12 merged into entry_timing with OR logic.
 
 ## Constants
 BASE_SCORE=30  MAX_SCORE=100
 MIN_CONFIDENCE_LONG=70  MIN_CONFIDENCE_SHORT=75
 BB_MID_THRESHOLD_PTS=150   EMA50_THRESHOLD_PTS=150
-LONG_RSI_LOW/HIGH = 30 / RSI_ENTRY_HIGH_BOUNCE (55)
-SHORT_RSI_LOW/HIGH=55/75
 
 ## compute_confidence(direction, tf_daily, tf_4h, tf_15m, upcoming_events=None, web_research=None, setup_type=None) -> dict
-# score = min(30 + int(passed * 70 / total_criteria), 100)
-# 12 criteria:
-# 1. daily_trend:   EMA50 PRIMARY. Oversold exempt. Momentum LONG exempt. Breakdown/momentum SHORT exempt.
-# 2. entry_level:   Near BB mid/EMA50/BB lower/VWAP. MOMENTUM: accepts above VWAP, near BB upper, near EMA9.
-#                  NEW (2026-03-05): also passes when near anchored weekly VWAP (within 200pts). Both LONG and SHORT.
-# 3. rsi_15m:       LONG 30-55. BB lower 20-40. MOMENTUM LONG 40-75. SHORT 55-75. MOMENTUM SHORT 30-60.
-# 4. tp_viable:     LONG: price<=bb_mid. MOMENTUM: always pass. SHORT breakdown/momentum: always pass.
-# 5. structure:     LONG: above EMA50. SHORT: below EMA50. Oversold/overbought: reversal signals.
-# 6. macro:         4H RSI range. LONG 35-75. SHORT 30-60.
-# 7. no_event_1hr:  No HIGH-impact event within 60min.
-# 8. no_friday_monthend: Calendar clear.
-# 9. volume:        15M volume signal != LOW.
-# 10. trend_4h:     4H EMA50 alignment. Oversold/overbought: lenient.
-# 11. ha_aligned:   HA direction. Oversold/overbought: reversal signals accepted.
-# 12. entry_quality: LONG: pullback<0. MOMENTUM LONG: always pass. SHORT: pullback>0. MOMENTUM SHORT: always pass. High vol override.
+# score = int(sum(weight_i × 100) for each passing weighted criterion)
+# 9 weighted criteria:
+# 1. daily_trend (17%):  EMA50 PRIMARY. Oversold exempt. Momentum LONG/SHORT exempt.
+# 2. entry_level (17%):  Near BB mid/EMA50/BB lower/VWAP. MOMENTUM: near BB upper, EMA9, anchored VWAP.
+# 3. rsi_15m (13%):      LONG 30-55. BB lower 20-40. MOMENTUM LONG 40-75. SHORT 55-75. MOMENTUM SHORT 30-60.
+# 4. structure (13%):    LONG: above EMA50. SHORT: below EMA50. Oversold/overbought: reversal signals.
+# 5. tp_viable (11%):    LONG: price<=bb_mid. MOMENTUM: always pass. SHORT breakdown/momentum: always pass.
+# 6. macro (11%):        4H RSI range. LONG 35-75. SHORT 30-60.
+# 7. trend_4h (10%):     4H EMA50 alignment. Oversold/overbought: lenient.
+# 8. volume (9%):        15M volume signal != LOW.
+# 9. entry_timing (9%):  ha_aligned OR entry_quality (OR logic — one of two confirms entry)
+#
+# C7 (no_event_1hr) and C8 (no_friday_monthend) are hard pre-gates only — NOT scored.
+#
+# Return dict includes both:
+#   criteria (original 12-key dict for logging/diagnostics)
+#   weighted_criteria (9-key dict used for scoring)
 
 ## Setup-Type Flags
 # _oversold_setup: bb_lower_bounce, oversold_reversal, extreme_oversold_reversal → C1/C5/C10/C11 lenient

@@ -49,10 +49,10 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml outdated/unused.
 | `core/indicators.py` | analyze_timeframe(), detect_setup() (LONG+SHORT bidirectional), ema/rsi/bb/vwap/heiken_ashi, FVG, Fibonacci, PDH/PDL, liquidity sweep, pivot_points, detect_candlestick_patterns (12 patterns), analyze_body_trend |
 | `core/session.py` | get_current_session() UTC, is_no_trade_day(), is_weekend(), is_friday_blackout() |
 | `core/momentum.py` | MomentumTracker class. add_price(), should_alert(), milestone_alert() |
-| `core/confidence.py` | compute_confidence(direction, tf_daily, tf_4h, tf_15m, events, web) → score dict. 12-criteria proportional scoring. C1=EMA50. |
+| `core/confidence.py` | compute_confidence(...) → score dict. 9-criteria WEIGHTED scoring (2026-03-07). C7/C8 are pre-gates only (not scored). entry_timing = ha_aligned OR entry_quality. |
 | `ai/analyzer.py` | AIAnalyzer. scan_with_sonnet() (Opus sub-agent). evaluate_opposite(). post_trade_analysis(). **CLI subprocess (OAuth/subscription).** |
 | `ai/context_writer.py` | write_context() — writes storage/context/*.md. market_snapshot, recent_activity, macro, live_edge. |
-| `trading/risk_manager.py` | RiskManager.validate_trade() 11 checks. get_safe_lot_size() |
+| `trading/risk_manager.py` | RiskManager.validate_trade() 12 checks (incl. portfolio_risk). get_safe_lot_size(balance,price,sl_distance,confidence,peak_balance). get_dynamic_sl(atr,setup_type). |
 | `trading/exit_manager.py` | ExitManager. evaluate_position(), execute_action(), manual_trail_update() |
 | `notifications/telegram_bot.py` | TelegramBot. send_trade_alert(), /menu inline buttons, /close /kill /pause /resume |
 | `storage/database.py` | Storage class. SQLite WAL mode. open_trade_atomic(), AI cooldown, get_ai_context_block() |
@@ -70,7 +70,7 @@ EPIC = "IX.D.NIKKEI.IFM.IP"   CONTRACT_SIZE = 1 ($1/pt)   MARGIN_FACTOR = 0.005 
 MIN_CONFIDENCE = 70            MIN_CONFIDENCE_SHORT = 75    HAIKU_MIN_SCORE = 60
 EXTREME_DAY_RANGE_PTS = 1000   EXTREME_DAY_MIN_CONFIDENCE = 85
 OVERSOLD_SHORT_BLOCK_RSI_4H = 32  OVERBOUGHT_LONG_BLOCK_RSI_4H = 68
-DEFAULT_SL_DISTANCE = 150      DEFAULT_TP_DISTANCE = 400    MIN_RR_RATIO = 1.5
+DEFAULT_SL_DISTANCE = 150 (fallback only)  DEFAULT_TP_DISTANCE = 400 (fallback only)  MIN_RR_RATIO = 1.5
 BREAKEVEN_TRIGGER = 150        TRAILING_STOP_DISTANCE = 150
 SCAN_INTERVAL_SECONDS = 300    MONITOR_INTERVAL_SECONDS = 2  OFFHOURS_INTERVAL_SECONDS = 1800
 POSITION_CHECK_EVERY_N_CYCLES = 5   ADVERSE_LOOKBACK_READINGS = 150   STREAMING_STALE_SECONDS = 10
@@ -78,6 +78,13 @@ AI_COOLDOWN_MINUTES = 15       PRICE_DRIFT_ABORT_PTS = 20    SAFETY_CONSECUTIVE_
 SONNET_MODEL = "claude-sonnet-4-6"   OPUS_MODEL = "claude-opus-4-6"
 DISPLAY_TZ = UTC+3 (Kuwait). display_now() helper. All user-facing timestamps in Kuwait time.
 MOMENTUM_RSI_HIGH = 75   RSI_ENTRY_HIGH_BOUNCE = 55   ENABLE_EMA50_BOUNCE_SETUP = False
+
+# RISK-BASED SIZING (2026-03-07)
+MAX_MARGIN_PERCENT = 0.05 (5% per position)   MAX_OPEN_POSITIONS = 3   MAX_PORTFOLIO_RISK_PERCENT = 0.08
+RISK_PERCENT = 2.0  MAX_RISK_PERCENT = 3.0
+DRAWDOWN_REDUCE_10PCT=0.5  DRAWDOWN_REDUCE_15PCT=0.25  DRAWDOWN_STOP_20PCT=True
+SL_ATR_MULTIPLIER: MOMENTUM=1.2 MEAN_REVERSION=1.8 BREAKOUT=1.5 VWAP=1.3 DEFAULT=1.5
+SL_FLOOR_PTS=120  TP_ATR_MULTIPLIER_BASE=2.5  TP_ATR_MULTIPLIER_MOMENTUM=3.0  TP_FLOOR_PTS=250
 ```
 Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, ≤180s) | Opus (code fixes, ≤600s).
 
@@ -90,6 +97,33 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 - exit_manager.py: Runner phase trailing stop can exceed IG rate limit (30 non-trading/min) (MEDIUM)
 
 ---
+
+## Bug Log (fixed)
+- Force-open alert showed 0.05 lots in Telegram but trade executed at 0.01 — Tokyo lot cap was applied AFTER the initial Telegram notification, BEFORE execution. Fixed 2026-03-06 by removing Tokyo lot cap entirely.
+- get_safe_lot_size() silently ignored sl_distance, used 50% margin cap → produced 30%+ account risk. Fixed 2026-03-07: full risk-based rewrite (2% of balance / sl_distance).
+
+## Session Notes (2026-03-07)
+AI Escalation Quality fixes (session 2):
+- analyzer.py: LOCAL SCORE block now explains criteria-based nature + historical WR ranges (~43% at 70-79%, ~34% at 80-89%, ~46% at 90-100%). AI no longer mistakes 72% score for 72% probability.
+- analyzer.py: build_scan_prompt() now accepts open_positions_context dict (count, directions, daily_pnl). Sonnet sees portfolio state before deciding.
+- analyzer.py: _fmt_web_research() adds USD/JPY directional context (JPY>152 = tailwind, <148 = headwind) + MEDIUM-impact calendar events.
+- context_writer.py: macro.md now includes MEDIUM-impact events + USD/JPY direction framing.
+- monitor.py: collects open_positions_context before scan_with_sonnet call (storage.get_open_positions + daily P&L from recent trades).
+- DISABLED_SETUP_TYPES: added ema9_pullback_short (29% WR, structural loser outside crash regimes).
+- bollinger_mid_bounce proximity: tightened 150→80pts (reduces marginal entries at band edge). REVERTED later — overfitting. Currently at 80pts (needs re-check).
+- Key principle: backtest has no AI. Optimizing backtest parameters is overfitting. The AI filter IS the edge.
+
+Major overhaul across 4 phases completed:
+- Phase 1 (settings + risk_manager + database + monitor):
+  - get_safe_lot_size() rewritten: 2% risk-based, ATR-aware floors, confidence scaling, drawdown protection
+  - get_dynamic_sl() added: multiplier × ATR, floored at 120pts
+  - validate_trade(): 12 checks now (portfolio_risk cap 8%, dollar_risk now enforced at MAX_RISK_PERCENT=3%)
+  - MAX_OPEN_POSITIONS: 1→3. MAX_MARGIN_PERCENT: 50%→5%.
+  - database.py: get_open_positions_count() + get_open_positions() added
+  - monitor.py: main loop now allows concurrent scan when 0<open_count<MAX_OPEN_POSITIONS (background task). Race check uses open_count>=MAX not has_open.
+- Phase 2 (analyzer.py): DECISION FRAME (5-30min horizon), FATAL FLAWS section (7 disqualifiers), 5-gate chain replaced 7-step, expected vs unexpected failed criteria, secondary setup removed from Sonnet, time-of-day context header, confidence_breakdown removed from JSON schema.
+- Phase 3 (confidence.py): 9-criteria weighted scoring (was 12 equal-weight). C7/C8 pre-gates only. entry_timing = ha_aligned OR entry_quality.
+- Tests: 428/428 passing (2026-03-07)
 
 ## Tokyo Session
 Tokyo (00:00-06:00 UTC) uses same lot sizing and consecutive-loss rules as other sessions.
@@ -116,8 +150,6 @@ bb_upper_rejection, ema50_rejection, bb_mid_rejection, overbought_reversal, brea
 dead_cat_bounce_short, bear_flag_breakdown, vwap_rejection_short, high_volume_distribution,
 multi_tf_bearish, ema200_rejection, lower_lows_bearish_momentum, pivot_r1_rejection,
 momentum_continuation_short, vwap_rejection_short_momentum
-### Momentum Bypass
-4+/5 bullish signals (above EMA50+VWAP, HA≥2, RSI 45-72, 4H above EMA50) → Opus evaluate_scalp()
 ### All types: SL=150, TP=400. 5M fallback: _5m suffix. C1 penalizes counter-trend.
 
 ---
@@ -171,4 +203,11 @@ Force Open: when local conf 100% (12/12) but AI rejects → Telegram alert. Forc
 DB: `storage/data/trading.db` — Oracle VM only. WAL mode. Never commit.
 Digests: `.claude/digests/` — settings · monitor · database · indicators · session · momentum ·
          confidence · ig_client · risk_manager · exit_manager · analyzer · telegram_bot · dashboard · claude_client
-Tests: **428/428 passing** (2026-03-06). Removed Tokyo lot-capping tests (feature removed).
+Tests: **428/428 passing** (2026-03-07).
+
+## Backtest Benchmarks (2026-03-07 — new weighted confidence + risk-based sizing)
+TA-Only OOS: Scalp SL=60 TP=300 → 690 trades, 47.8% WR, PF=1.16, +$3,305 ✓ PROFITABLE
+TA-Only OOS: Swing SL=150 TP=600 → 416 trades, 52.2% WR, PF=0.76, -$5,505 ✗ LOSING
+AI-Filtered (last 10d): 141 trades, 46.1% WR, PF=0.97, -$198 (near-breakeven)
+AI delta vs no-filter: +1.5pp WR, +0.10 PF, +$2,555 P&L improvement.
+Key: tight SL (60pts) beats wide SL (150pts). ATR-based SL targets this range. AI filter works.

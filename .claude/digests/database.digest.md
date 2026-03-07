@@ -17,7 +17,7 @@ log_trade_close(deal_id: str, close_data: dict)
 get_recent_trades(limit=10) -> list[dict]
 get_trade_stats() -> dict                   # {total, wins, losses, win_rate, avg_win, avg_loss}
 
-## Position state (single open position)
+## Position state (primary open position)
 get_position_state() -> dict
   # Returns: {has_open, deal_id, direction, entry_price, stop_level, limit_level,
   #            lots, confidence, phase, opened_at} or has_open=False if none
@@ -25,6 +25,13 @@ set_position_open(position: dict)
 set_position_closed()
 update_position_phase(deal_id, phase)
 update_position_levels(stop_level=None, limit_level=None)
+
+## Multi-position support (added 2026-03-07)
+get_open_positions_count() -> int
+  # Count open positions via trades table (closed_at IS NULL). Use for max_positions check.
+get_open_positions() -> list[dict]
+  # Returns all open positions: [{deal_id, direction, lots, entry_price, stop_loss}, ...]
+  # Used by validate_trade() portfolio risk cap check.
 
 ## Pending alert (trade waiting for Telegram confirm)
 set_pending_alert(alert_data: dict)
