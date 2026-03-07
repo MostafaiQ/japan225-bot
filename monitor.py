@@ -662,20 +662,24 @@ class TradingMonitor:
             logger.warning("Failed to fetch 4H candles — pre-screen will degrade gracefully.")
 
         # --- Local pre-screen — BIDIRECTIONAL (zero AI cost) ---
+        # Pre-compute session context for session-specific setups (tokyo_gap_fill, london_orb).
+        # Done before detect_setup so those setups can use gap_pts and Asia range.
+        sess_ctx_pre = compute_session_context(candles_15m, candles_daily)
+
         # Run detect_setup() for BOTH directions independently.
         # 4H data now available at pre-screen for extreme_oversold_reversal and other setups.
         setup_long = detect_setup(
             tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_15m,
-            exclude_direction="SHORT",
+            exclude_direction="SHORT", session_context=sess_ctx_pre,
         )
         setup_short = detect_setup(
             tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_15m,
-            exclude_direction="LONG",
+            exclude_direction="LONG", session_context=sess_ctx_pre,
         )
 
         # --- 5M fallback: for each direction that didn't find on 15M, try 5M ---
         if not setup_long["found"] and tf_5m:
-            setup_5m_long = detect_setup(tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_5m, exclude_direction="SHORT")
+            setup_5m_long = detect_setup(tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_5m, exclude_direction="SHORT", session_context=sess_ctx_pre)
             if setup_5m_long["found"] and self._5m_aligns_with_15m(setup_5m_long, tf_15m):
                 setup_long = setup_5m_long
                 setup_long["type"] += "_5m"
@@ -683,7 +687,7 @@ class TradingMonitor:
                 logger.info(f"5M fallback: LONG {setup_long['type']} detected")
 
         if not setup_short["found"] and tf_5m:
-            setup_5m_short = detect_setup(tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_5m, exclude_direction="LONG")
+            setup_5m_short = detect_setup(tf_daily=tf_daily, tf_4h=tf_4h, tf_15m=tf_5m, exclude_direction="LONG", session_context=sess_ctx_pre)
             if setup_5m_short["found"] and self._5m_aligns_with_15m(setup_5m_short, tf_15m):
                 setup_short = setup_5m_short
                 setup_short["type"] += "_5m"
@@ -881,7 +885,7 @@ class TradingMonitor:
             indicators["m5"] = tf_5m
 
         # ── Session context + order flow → injected into indicators_snapshot ──
-        sess_ctx = compute_session_context(candles_15m, candles_daily)
+        sess_ctx = sess_ctx_pre  # already computed above before detect_setup
         tick_density = self.ig.get_tick_density()
         snap = setup.get("indicators_snapshot", {})
         snap.update({
@@ -1622,14 +1626,22 @@ class TradingMonitor:
 
         # Post-trade learning: update prompt_learnings.json + brier_scores.json
         try:
+            # entry_context (JSON) holds setup_type, session, ai_reasoning — position_state has no those columns
+            _ec = pos_state.get("entry_context") or {}
+            if isinstance(_ec, str):
+                try:
+                    _ec = json.loads(_ec)
+                except Exception:
+                    _ec = {}
             trade_data = {
-                "pnl": pnl_dollars, "setup_type": pos_state.get("setup_type", "unknown"),
-                "session": pos_state.get("session", "unknown"),
+                "pnl": pnl_dollars,
+                "setup_type": _ec.get("setup_type") or "unknown",
+                "session": _ec.get("session") or "unknown",
                 "confidence": pos_state.get("confidence", 0),
                 "direction": logical_direction, "duration_minutes": duration,
                 "phase_at_close": phase, "result": result,
             }
-            ai_analysis = pos_state.get("ai_analysis", "")
+            ai_analysis = _ec.get("ai_reasoning", "") or ""
             post_trade_analysis(trade_data, ai_analysis)
         except Exception as e:
             logger.warning(f"Post-trade analysis failed (non-fatal): {e}")
