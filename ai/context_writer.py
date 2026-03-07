@@ -197,7 +197,18 @@ def _write_macro(web_research: dict) -> None:
     jpy = web_research.get("usd_jpy")
     fg  = web_research.get("fear_greed")
     if vix: lines.append(f"**VIX:** {vix:.2f}  {'(elevated risk >25)' if vix > 25 else ''}")
-    if jpy: lines.append(f"**USD/JPY:** {jpy:.2f}  (JPY strength = bearish Nikkei signal)")
+    if jpy:
+        try:
+            jpy_f = float(jpy)
+            if jpy_f > 152:
+                jpy_dir = "JPY WEAK → Nikkei tailwind (exports benefit)"
+            elif jpy_f < 148:
+                jpy_dir = "JPY STRONG → Nikkei headwind (export earnings hurt)"
+            else:
+                jpy_dir = "JPY neutral range 148-152"
+            lines.append(f"**USD/JPY:** {jpy:.2f}  ({jpy_dir})")
+        except (TypeError, ValueError):
+            lines.append(f"**USD/JPY:** {jpy}  (JPY strength = bearish Nikkei signal)")
     if fg:  lines.append(f"**Fear & Greed:** {fg}")
 
     news = web_research.get("nikkei_news") or []
@@ -208,12 +219,17 @@ def _write_macro(web_research: dict) -> None:
 
     cal = web_research.get("economic_calendar") or []
     high = [e for e in cal if isinstance(e, dict) and e.get("impact") == "HIGH"]
+    med  = [e for e in cal if isinstance(e, dict) and e.get("impact") == "MEDIUM"]
     lines.append("\n**High-Impact Economic Events (next 8h):**")
     if high:
         for e in high[:5]:
             lines.append(f"- {e.get('time','?')} {e.get('country','?')} — {e.get('event','?')}")
     else:
         lines.append("- None scheduled.")
+    if med:
+        lines.append("\n**Medium-Impact Events (next 8h):**")
+        for e in med[:5]:
+            lines.append(f"- {e.get('time','?')} {e.get('country','?')} — {e.get('event','?')}")
 
     (CONTEXT_DIR / "macro.md").write_text("\n".join(lines))
 

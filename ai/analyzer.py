@@ -12,7 +12,7 @@ import re
 import subprocess
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -34,7 +34,12 @@ CONTEXT_DIR   = PROJECT_ROOT / "storage" / "context"
 
 def build_system_prompt() -> str:
     """Enhanced system prompt: Wyckoff + SMC + VP + setup quality for slow days."""
-    return """Japan 225 Cash CFD analyst. LONG+SHORT bidirectional. No directional bias.
+    return """DECISION FRAME: Approve or reject a trade entry happening in the NEXT 5-30 MINUTES.
+Not in the next hour. Not after confirmation. The next candle is the entry candle.
+Trade horizon: 1-8 HOURS (15M setup managed by live bot). Not asking about next 15 minutes.
+If you need more confirmation → REJECT. Never write "wait for" or "monitor". Decide NOW.
+
+Japan 225 Cash CFD analyst. LONG+SHORT bidirectional. No directional bias.
 
 ━━ SETUPS (reference — indicators data decides which fired) ━━
 LONG MEAN-REVERSION: bb_mid_bounce(±150 BB_mid,RSI30-65) | bb_lower_bounce(±150 BB_low,RSI20-40,wick≥15) | oversold_reversal(RSI<30,daily bullish,reversal confirm)
@@ -134,7 +139,18 @@ COUNTER SIGNAL: On rejection, check opposite direction. Set counter_signal="LONG
 EXIT: +150pts → SL to BE+10. TP=400pts. 75%TP in <2h → trail@150pts.
 REASONING_SHORT: ~3-5 sentences (~400-500 chars). Format: "[APPROVE/REJECT] [dir]. [Structure]. [Decisive signal]. [Key risk/edge]. [Final call]."
   Example: "REJECT SHORT. D1/4H/15M bearish but CRASH DAY 1794pts overrides — crash rules require bounce short not continuation. swept_low + bullish_engulfing at lows = reversal, not continuation. 4H RSI 41 near oversold = squeeze risk. Wait for dead-cat then SHORT from higher."
-  reasoning field holds full analysis. reasoning_short is the log summary."""
+  reasoning field holds full analysis. reasoning_short is the log summary.
+
+━━ FATAL FLAWS — APPROVE UNLESS ONE EXISTS ━━
+1. SL direction wrong (LONG SL above entry, SHORT SL below entry)
+2. Effective R:R < 1.5 after spread
+3. HIGH-impact event within 60 minutes
+4. 4H RSI < 32 on a SHORT trade
+5. 4H RSI > 68 on a LONG trade
+6. Counter-trend on extreme day (range > 1000pts) with confidence < 85%
+7. BOTH daily_trend AND entry_level fail simultaneously (no macro alignment AND not at tech level)
+
+If NONE of these apply → APPROVE. No other reason to reject a setup that has already passed local scoring."""
 
 
 def _fmt_indicators(indicators: dict) -> str:
@@ -425,12 +441,27 @@ def _fmt_web_research(web: dict) -> str:
     fg   = web.get("fear_greed")
     news = web.get("nikkei_news") or []
     cal  = web.get("economic_calendar") or []
+    # JPY direction hint: higher USD/JPY = weaker JPY = bullish Nikkei; lower = stronger JPY = bearish
+    jpy_hint = ""
+    try:
+        jpy_f = float(jpy)
+        if jpy_f > 152:
+            jpy_hint = " [JPY WEAK → Nikkei tailwind]"
+        elif jpy_f < 148:
+            jpy_hint = " [JPY STRONG → Nikkei headwind]"
+        else:
+            jpy_hint = " [JPY neutral 148-152]"
+    except (TypeError, ValueError):
+        pass
     high_cal = [e for e in cal if isinstance(e, dict) and e.get("impact") == "HIGH"][:3]
+    med_cal  = [e for e in cal if isinstance(e, dict) and e.get("impact") == "MEDIUM"][:3]
     news_str = " | ".join(str(n)[:70] for n in (news[:2] if news else []))
-    lines = [f"USD/JPY: {jpy} | VIX: {vix}" + (f" | Fear&Greed: {fg}" if fg else "")]
+    lines = [f"USD/JPY: {jpy}{jpy_hint} | VIX: {vix}" + (f" | Fear&Greed: {fg}" if fg else "")]
     if news_str:
         lines.append(f"News: {news_str}")
     lines.append(f"Calendar HIGH: {high_cal if high_cal else 'none next 8h'}")
+    if med_cal:
+        lines.append(f"Calendar MEDIUM: {med_cal}")
     return "\n".join(lines)
 
 
@@ -458,6 +489,7 @@ def build_scan_prompt(
     live_edge_block: str = None,
     failed_criteria: list = None,
     recent_trades: list = None,
+    open_positions_context: dict = None,
 ) -> str:
     from config.settings import display_now, DISPLAY_TZ_LABEL
     now = display_now().strftime(f"%Y-%m-%d %H:%M {DISPLAY_TZ_LABEL}")
@@ -474,27 +506,23 @@ def build_scan_prompt(
             f"  → Confirm or reject. You may suggest opposite direction or NO TRADE.\n"
         )
 
-    # Secondary setup block (bidirectional context)
+    # --- Open positions / risk context ---
+    position_block = ""
+    if open_positions_context:
+        count = open_positions_context.get("count", 0)
+        dirs = open_positions_context.get("directions", [])
+        daily_pnl = open_positions_context.get("daily_pnl")
+        dirs_str = ", ".join(dirs) if dirs else "none"
+        pnl_str = f" | Today P&L: ${daily_pnl:+.2f}" if daily_pnl is not None else ""
+        position_block = (
+            f"\nPORTFOLIO STATE: {count} open position(s) [{dirs_str}]{pnl_str}\n"
+            f"  [Factor this into your decision — adding another position in the same direction "
+            f"increases correlated risk. Already losing today = be more selective.]\n"
+        )
+
+    # Secondary setup block — removed from Sonnet prompt to prevent contamination of primary analysis.
+    # Opus receives secondary context when evaluating opposite direction after Sonnet rejection.
     secondary_block = ""
-    sec = market_context.get("secondary_setup")
-    if sec:
-        sec_dir = sec.get("direction", "?")
-        sec_type = sec.get("type", "?")
-        sec_conf = sec.get("confidence", "?")
-        sec_passed = sec.get("passed_criteria", "?")
-        sec_reason = sec.get("reasoning", "")[:200]
-        sec_threshold = MIN_CONFIDENCE_SHORT if sec_dir == "SHORT" else MIN_CONFIDENCE
-        sec_qualifies = isinstance(sec_conf, (int, float)) and sec_conf >= sec_threshold
-        sec_framing = (
-            f"  → INDEPENDENT CANDIDATE: meets {sec_threshold}% threshold — evaluate as a primary trade, not just a fallback.\n"
-            if sec_qualifies
-            else f"  → Below {sec_threshold}% threshold — context only, do not execute independently.\n"
-        )
-        secondary_block = (
-            f"\nSECONDARY SETUP: {sec_dir} | {sec_type} | Local: {sec_conf}% ({sec_passed}/12)\n"
-            f"  {sec_reason}\n"
-            f"{sec_framing}"
-        )
 
     local_conf_block = ""
     if local_confidence:
@@ -504,31 +532,60 @@ def build_scan_prompt(
         local_conf_block = (
             f"\nLOCAL SCORE: {local_confidence.get('score', '?')}% "
             f"({local_confidence.get('passed_criteria', '?')}/{local_confidence.get('total_criteria', 10)}) "
+            f"[CRITERIA-BASED — not probability of profit. "
+            f"Historical win rate at 70-79%: ~43%. At 80-89%: ~34%. At 90-100%: ~46%. "
+            f"Treat as setup quality signal, not edge certainty.] "
             f"✓{','.join(passed)} ✗{','.join(failed)}\n"
         )
 
-    # --- Build failed criteria block ---
+    # --- Build failed criteria block (separate expected vs unexpected by setup type) ---
+    SETUP_EXPECTED_FAILURES = {
+        'bollinger_lower_bounce':      {'daily_trend', 'price_structure', 'trend_4h', 'ha_aligned', 'entry_timing'},
+        'bollinger_mid_bounce':        {'ha_aligned'},
+        'oversold_reversal':           {'daily_trend', 'price_structure', 'trend_4h', 'ha_aligned'},
+        'extreme_oversold_reversal':   {'daily_trend', 'price_structure', 'trend_4h', 'ha_aligned', 'entry_timing'},
+        'bb_upper_rejection':          {'daily_trend', 'price_structure', 'trend_4h', 'ha_aligned', 'entry_timing'},
+        'overbought_reversal':         {'daily_trend', 'price_structure', 'trend_4h', 'ha_aligned'},
+        'breakdown_continuation':      {'daily_trend'},
+        'momentum_continuation_short': {'daily_trend'},
+        'bear_flag_breakdown':         {'daily_trend'},
+        'multi_tf_bearish':            {'daily_trend'},
+        'dead_cat_bounce_short':       {'daily_trend', 'ha_aligned'},
+        'ema50_rejection':             {'ha_aligned'},
+    }
+    setup_type_ctx = market_context.get("prescreen_setup_type", "")
+    expected_fails = SETUP_EXPECTED_FAILURES.get(setup_type_ctx, set())
+
     failed_block = ""
     if failed_criteria:
-        failed_block = (
-            f"\nFAILED LOCAL CRITERIA (technical code only — you may override with macro):\n"
-            + "\n".join(f"  ✗ {c}" for c in failed_criteria) + "\n"
-        )
+        unexpected = [c for c in failed_criteria if c not in expected_fails]
+        expected   = [c for c in failed_criteria if c in expected_fails]
+        if expected:
+            failed_block += (
+                f"\nEXPECTED FAILURES for {setup_type_ctx} (counter-trend by design — DO NOT penalize):\n"
+                + "\n".join(f"  ✓ {c} (expected counter-trend fail — see setup-class rules)" for c in expected) + "\n"
+            )
+        if unexpected:
+            failed_block += (
+                f"\nUNEXPECTED FAILURES (evaluate these):\n"
+                + "\n".join(f"  ✗ {c}" for c in unexpected) + "\n"
+            )
 
     role_block = (
         f"{failed_block}"
-        "\nBefore outputting JSON, reason through these steps IN ORDER:\n"
-        "  1. WYCKOFF PHASE: From HA streaks, BB width, volume pattern, sweeps, equal H/L zones — which phase?\n"
-        "     (Accumulation/Markup/Distribution/Markdown/Coil) → what is the bias?\n"
-        "  2. VOLUME PROFILE: Is price at POC (neutral/wait), VAH (resistance/SHORT), VAL (support/LONG),\n"
-        "     inside VA (slow/mean-revert), or outside VA (rejection vs acceptance)?\n"
-        "  3. SMC CONTEXT: Any liquidity sweep + FVG + OB confluence? swept_low+fvg_bull=demand. swept_high+fvg_bear=supply.\n"
-        "  4. STRUCTURE: Are D1/4H/15M aligned? (cite specific RSI/EMA/BB values)\n"
-        "  5. SETUP QUALITY: Is the technical trigger clean? (price distance, volume, HA, FVG)\n"
-        "  6. RISK/EDGE: What causes a 150pt loss? Does this setup type have positive EV given live edge stats?\n"
-        "  7. DEVIL'S ADVOCATE: Challenge your own case. Borderline (72-86%) = be extra rigorous.\n"
-        "     SLOW DAY CHECK: If BB width narrow + HA near 0 + RSI near 50 = coil/choppy market.\n"
-        "       In coil: lower bar for band-edge mean-reversion. Pre-position for breakout if VP edge exists.\n"
+        "\nBefore outputting JSON, answer these 5 gates IN ORDER, then COMMIT:\n"
+        "  1. HARD GATES: Does 4H RSI / extreme day / upcoming event disqualify this trade? "
+        "If yes → REJECT immediately. No further analysis needed.\n"
+        "  2. PHASE: From the WYCKOFF/SMC CONTEXT hint above, does the phase support this setup class? "
+        "Accept the hint unless a specific indicator directly contradicts it.\n"
+        "  3. TRIGGER QUALITY: Is the setup trigger clean at a real S/R level? "
+        "(check: price proximity, HA direction, volume, FVG/sweep confluence)\n"
+        "  4. R:R: Compute effective_rr = (TP_dist - 7) / (SL_dist + 7). Is it ≥ 1.5?\n"
+        "  5. COMMIT: Write APPROVE or REJECT on the first line of your reasoning. "
+        "If borderline (72-86%): name the SINGLE decisive factor, then commit. "
+        "NEVER write 'wait for' or 'need more' — this is a NOW decision.\n"
+        "     SLOW DAY CHECK: If BB width narrow + HA near 0 + RSI near 50 = coil market. "
+        "Lower bar for band-edge mean-reversion.\n"
     )
 
     # Inject prompt learnings from closed trades (auto-updated feedback loop)
@@ -631,11 +688,36 @@ def build_scan_prompt(
         f"\n  Sweeps:      {'swept_LOW (Spring/bullish reversal)' if _swept_lo else 'swept_HIGH (UpThrust/bearish reversal)' if _swept_hi else 'none'}"
         + (f"\n  VP position: {_vp_hint}" if _vp_hint else "")
         + (f"\n  BB width:    {_bbw_15m:.0f}pts (15M) — {'COIL (<200 = tight range)' if isinstance(_bbw_15m, (int, float)) and _bbw_15m < 200 else 'normal/expanding'}" if _bbw_15m else "")
-        + "\n  [AI: verify phase from full indicator data above — hint is heuristic only]\n"
+        + "\n  [Use this hint as your starting phase. Override only if a specific indicator directly contradicts it.]\n"
     )
+
+    # Time-of-day context
+    _utc_now = display_now().astimezone(timezone.utc) if hasattr(display_now(), 'astimezone') else datetime.now(timezone.utc)
+    _hour_utc = _utc_now.hour
+    _min_utc = _utc_now.minute
+    _session_name = market_context.get("session_name", "?")
+    _mins_into_session = None
+    _session_char = ""
+    _session_starts = {"Tokyo": 0, "London": 8, "New York": 16}
+    if _session_name in _session_starts:
+        _sess_start_h = _session_starts[_session_name]
+        _mins_into_session = (_hour_utc - _sess_start_h) * 60 + _min_utc
+        if _session_name == "Tokyo" and _mins_into_session < 30:
+            _session_char = " ⚠ OPENING 30MIN (breakout bias, wide spread risk, widen SL)"
+        elif _session_name == "Tokyo" and _mins_into_session > 120:
+            _session_char = " (late Tokyo — mean-reversion bias, low volume)"
+        elif _session_name == "London" and _mins_into_session < 90:
+            _session_char = " ⚡ LONDON OPEN (high quality — directional moves, tight spread)"
+        elif _session_name == "New York" and _mins_into_session < 60:
+            _session_char = " (NY open — US macro correlation active)"
+    _time_context = f"SESSION: {_session_name}{_session_char}"
+    if _mins_into_session is not None:
+        _time_context += f" | {_mins_into_session}min into session"
 
     return (
         f"Japan 225 CFD analysis — {now}\n"
+        f"{_time_context}\n"
+        f"{position_block}"
         f"{prescreen_block}{secondary_block}{local_conf_block}"
         f"\nTIMEFRAME SNAPSHOT:\n{_fmt_indicators(indicators)}\n"
         f"{range_block}\n"
@@ -762,6 +844,7 @@ class AIAnalyzer:
         live_edge_block: str = None,
         failed_criteria: list = None,
         recent_trades: list = None,
+        open_positions_context: dict = None,
     ) -> dict:
         return self._analyze(
             model=SONNET_MODEL,
@@ -774,6 +857,7 @@ class AIAnalyzer:
             live_edge_block=live_edge_block,
             failed_criteria=failed_criteria,
             recent_trades=recent_trades,
+            open_positions_context=open_positions_context,
         )
 
     # ── Core analysis ──────────────────────────────────────────────────────────
@@ -790,6 +874,7 @@ class AIAnalyzer:
         live_edge_block: str = None,
         failed_criteria: list = None,
         recent_trades: list = None,
+        open_positions_context: dict = None,
     ) -> dict:
         user_prompt = build_scan_prompt(
             indicators, recent_scans, market_context, web_research,
@@ -798,6 +883,7 @@ class AIAnalyzer:
             live_edge_block=live_edge_block,
             failed_criteria=failed_criteria,
             recent_trades=recent_trades,
+            open_positions_context=open_positions_context,
         )
 
         schema_comment = (
@@ -810,9 +896,6 @@ class AIAnalyzer:
             f'{{"setup_found": false, "direction": null, "confidence": 0, '
             f'"entry": null, "stop_loss": null, "take_profit": null, '
             f'"setup_type": null, "reasoning": "...", '
-            f'"confidence_breakdown": {{"daily_trend": false, "entry_at_tech_level": false, '
-            f'"rsi_15m_in_range": false, "tp_viable": false, "price_structure": false, '
-            f'"macro_aligned": false, "no_event_1hr": false, "no_friday_monthend": false}}, '
             f'"effective_rr": 0.0, '
             f'"key_levels": {{"support": [], "resistance": []}}, '
             f'"trend_observation": "...", "warnings": [], "edge_factors": [], '
