@@ -1,5 +1,9 @@
 # ai/analyzer.py — DIGEST (updated 2026-03-05)
 # Single-subprocess pipeline: Sonnet 4.6 primary, Opus 4.6 sub-agent for borderline/oversold setups.
+# Updated 2026-03-07 session 3: Tier 3 noise removed from _fmt_indicators.
+#   EMA200 now only shown for D1/4H. Fibonacci: 2 nearest only (SUP+RES). Removed: bounce_starting,
+#   body_trend/consec/wick_ratio, Prev Week H/L, tick density, Fear&Greed from web research.
+#   System prompt: SESSION SETUPS section added (tokyo_gap_fill, london_orb).
 # --effort low on ALL CLI calls (disables adaptive thinking: 105s→9s, quality unchanged for JSON).
 # Haiku pre-gate REMOVED. Separate Opus subprocess REMOVED. All in one `claude` invocation with --agents flag.
 # AUTH: Claude Code CLI subprocess (OAuth/subscription). No ANTHROPIC_API_KEY used.

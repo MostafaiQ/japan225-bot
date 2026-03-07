@@ -72,7 +72,7 @@ _build_confluence(tf_15m: dict, direction: str) -> (list[str], list[str])
   #   LONG: fib below price = support held. Fib above = overhead resistance.
   #   SHORT: fib above price = resistance holding. Fib below = support below.
 
-detect_setup(tf_daily, tf_4h, tf_15m, tf_5m=None, exclude_direction=None) -> dict
+detect_setup(tf_daily, tf_4h, tf_15m, tf_5m=None, exclude_direction=None, session_context=None) -> dict
   # Bidirectional — NO daily hard gate. C1 in confidence.py penalizes counter-trend.
   # Returns: found, type, direction, entry, sl, tp, reasoning, indicators_snapshot
   # indicators_snapshot includes: ema9_15m, above_ema9, above_ema200, fibonacci (full dict)
@@ -98,6 +98,11 @@ detect_setup(tf_daily, tf_4h, tf_15m, tf_5m=None, exclude_direction=None) -> dic
   # SHORT momentum/trend-following:
   #   momentum_continuation_short: below EMA50+VWAP + HA streak≤-2 + vol not LOW | RSI 30-55
   #   vwap_rejection_short_momentum: near VWAP(120pts) from below + below EMA50 + rejection confirm | RSI 35-60
+  #
+  # SESSION-SPECIFIC (require session_context dict from compute_session_context):
+  #   tokyo_gap_fill: gap_pts ≥100pts + Tokyo 00-02 UTC. Gap down→LONG RSI30-62, Gap up→SHORT RSI42-70.
+  #   london_orb: Asia range ≥50pts + London 08-10 UTC + vol≠LOW. Above asia_high→LONG, below asia_low→SHORT.
+  #              SL = opposite Asia range boundary. TP = 1.5×Asia range from entry.
   #
   # SL/TP: DEFAULT_SL_DISTANCE=150, DEFAULT_TP_DISTANCE=400
 

@@ -84,7 +84,7 @@ MAX_MARGIN_PERCENT = 0.05 (5% per position)   MAX_OPEN_POSITIONS = 3   MAX_PORTF
 RISK_PERCENT = 2.0  MAX_RISK_PERCENT = 3.0
 DRAWDOWN_REDUCE_10PCT=0.5  DRAWDOWN_REDUCE_15PCT=0.25  DRAWDOWN_STOP_20PCT=True
 SL_ATR_MULTIPLIER: MOMENTUM=1.2 MEAN_REVERSION=1.8 BREAKOUT=1.5 VWAP=1.3 DEFAULT=1.5
-SL_FLOOR_PTS=120  TP_ATR_MULTIPLIER_BASE=2.5  TP_ATR_MULTIPLIER_MOMENTUM=3.0  TP_FLOOR_PTS=250
+SL_FLOOR_PTS=60   TP_ATR_MULTIPLIER_BASE=2.5  TP_ATR_MULTIPLIER_MOMENTUM=3.0  TP_FLOOR_PTS=250
 ```
 Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, ≤180s) | Opus (code fixes, ≤600s).
 
@@ -101,6 +101,22 @@ Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, �
 ## Bug Log (fixed)
 - Force-open alert showed 0.05 lots in Telegram but trade executed at 0.01 — Tokyo lot cap was applied AFTER the initial Telegram notification, BEFORE execution. Fixed 2026-03-06 by removing Tokyo lot cap entirely.
 - get_safe_lot_size() silently ignored sl_distance, used 50% margin cap → produced 30%+ account risk. Fixed 2026-03-07: full risk-based rewrite (2% of balance / sl_distance).
+
+## Session Notes (2026-03-07 session 3 — remaining 4-agent items)
+- SL_FLOOR_PTS: 120 → 60 (backtest: tight SL=60 PF=1.16 vs wide SL PF=1.10)
+- PROMPT_LEARNINGS metadata fix: extract setup_type/session/ai_reasoning from entry_context JSON (not position_state columns which don't have those fields). All future learnings will be properly tagged.
+- Tier 3 noise removal from AI prompt (analyzer.py _fmt_indicators):
+  - EMA200: now only shown for D1 and 4H (not 15M/5M where it's noise)
+  - Fibonacci: reduced from 5 levels to 2 nearest (1 SUP below + 1 RES above)
+  - Removed: bounce_starting bool, body_trend/consecutive_direction/wick_ratio block
+  - Removed from Market Structure: prev_week_high/low, tick_density
+  - Removed from web research: Fear & Greed (CNN crypto-based, not Nikkei-specific)
+- New setups: tokyo_gap_fill + london_orb (session_context required)
+  - detect_setup() now accepts session_context: dict = None (backward compatible)
+  - monitor.py: compute_session_context() now called BEFORE detect_setup + reused for snap.update()
+  - tokyo_gap_fill: ≥100pt overnight gap, early Tokyo 00-02 UTC, direction = fill gap
+  - london_orb: break above/below Asia range at London open 08-10 UTC, vol≠LOW
+- AI system prompt updated with SESSION SETUPS section
 
 ## Session Notes (2026-03-07)
 AI Escalation Quality fixes (session 2):
@@ -150,6 +166,9 @@ bb_upper_rejection, ema50_rejection, bb_mid_rejection, overbought_reversal, brea
 dead_cat_bounce_short, bear_flag_breakdown, vwap_rejection_short, high_volume_distribution,
 multi_tf_bearish, ema200_rejection, lower_lows_bearish_momentum, pivot_r1_rejection,
 momentum_continuation_short, vwap_rejection_short_momentum
+### Session-Specific (require session_context)
+| tokyo_gap_fill | ≥100pt overnight gap | Tokyo 00-02 UTC | RSI 30-70 | direction = gap fill |
+| london_orb | break above/below Asia range | London 08-10 UTC | vol≠LOW | RSI 32-72 |
 ### All types: SL=150, TP=400. 5M fallback: _5m suffix. C1 penalizes counter-trend.
 
 ---
