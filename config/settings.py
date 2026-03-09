@@ -74,7 +74,7 @@ MARGIN_FACTOR = 0.005  # 0.5% Tier 1 (0-95 contracts)
 # ============================================
 # RISK MANAGEMENT - NON-NEGOTIABLE
 # ============================================
-MAX_MARGIN_PERCENT = 0.05   # Hard ceiling: 5% of balance in margin per position (replaces 50%)
+MAX_MARGIN_PERCENT = 0.10   # Hard ceiling: 10% of balance in margin per position
 MAX_OPEN_POSITIONS = 3      # Allow up to 3 concurrent positions (up from 1)
 MAX_PORTFOLIO_RISK_PERCENT = 0.08  # Total open risk across all positions ≤ 8% of balance
 MAX_CONSECUTIVE_LOSSES = 2  # 2 losses = 1-hour cooldown
