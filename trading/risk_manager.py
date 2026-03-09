@@ -12,10 +12,10 @@ from config.settings import (
     COOLDOWN_HOURS, DAILY_LOSS_LIMIT_PERCENT, WEEKLY_LOSS_LIMIT_PERCENT,
     MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT,
     MIN_SCALP_CONFIDENCE, MIN_SCALP_CONFIDENCE_SHORT,
-    EVENT_BLACKOUT_MINUTES, MIN_RR_RATIO,
-    BLOCKED_DAYS, MONTHEND_BLACKOUT_DAYS, SPREAD_ESTIMATE,
+    EVENT_BLACKOUT_MINUTES, MIN_RR_RATIO, MIN_RR_OVERSOLD_REVERSAL,
+    OVERSOLD_SHORT_BLOCK_RSI_4H,
+    SPREAD_ESTIMATE,
     CONTRACT_SIZE, MARGIN_FACTOR, MIN_LOT_SIZE,
-    FRIDAY_BLACKOUT_START_UTC, FRIDAY_BLACKOUT_END_UTC,
     EXTREME_DAY_RANGE_PTS, EXTREME_DAY_MIN_CONFIDENCE,
     RISK_PERCENT, MAX_RISK_PERCENT,
     DRAWDOWN_REDUCE_10PCT, DRAWDOWN_REDUCE_15PCT, DRAWDOWN_STOP_20PCT,
@@ -46,6 +46,7 @@ class RiskManager:
         upcoming_events: list[dict] = None,
         indicators_snapshot: dict = None,
         is_scalp: bool = False,
+        setup_type: str = None,
     ) -> dict:
         """
         Run ALL pre-trade checks. Returns pass/fail with reasons.
@@ -124,15 +125,37 @@ class RiskManager:
         effective_risk = risk + SPREAD_ESTIMATE
         effective_reward = reward - SPREAD_ESTIMATE
         effective_rr = effective_reward / effective_risk if effective_risk > 0 else 0
+
+        # Oversold reversal LONG exception: 4H RSI < 32 + 15M bullish reversal candle → lower RR to 1.3
+        min_rr = MIN_RR_RATIO
+        oversold_reversal_exception = False
+        if direction == "LONG" and setup_type:
+            _snap = indicators_snapshot or {}
+            tf_4h = _snap.get("h4", _snap.get("4h", {}))
+            tf_15m = _snap.get("m15", _snap.get("15m", {}))
+            rsi_4h = tf_4h.get("rsi")
+            candle_patterns = tf_15m.get("candlestick_patterns", [])
+            bullish_reversal = any(
+                p.get("direction") == "bullish" and p.get("name") in (
+                    "hammer", "bullish_engulfing", "inverted_hammer", "morning_star"
+                )
+                for p in candle_patterns
+            ) if candle_patterns else False
+            if (rsi_4h is not None and rsi_4h < OVERSOLD_SHORT_BLOCK_RSI_4H
+                    and bullish_reversal):
+                oversold_reversal_exception = True
+                min_rr = MIN_RR_OVERSOLD_REVERSAL
+
         checks["risk_reward"] = {
-            "pass": effective_rr >= MIN_RR_RATIO,
+            "pass": effective_rr >= min_rr,
             "detail": (
                 f"Gross R:R = 1:{rr:.2f} | Effective 1:{effective_rr:.2f} "
-                f"(risk +{SPREAD_ESTIMATE}pt, reward -{SPREAD_ESTIMATE}pt spread). Min 1:{MIN_RR_RATIO}"
+                f"(risk +{SPREAD_ESTIMATE}pt, reward -{SPREAD_ESTIMATE}pt spread). Min 1:{min_rr}"
+                + (f" [oversold reversal exception: 4H RSI<32 + 15M reversal candle]" if oversold_reversal_exception else "")
             ),
         }
         if not checks["risk_reward"]["pass"]:
-            rejection = rejection or f"Effective R:R {effective_rr:.2f} below minimum {MIN_RR_RATIO}. Need wider TP or tighter SL."
+            rejection = rejection or f"Effective R:R {effective_rr:.2f} below minimum {min_rr}. Need wider TP or tighter SL."
 
         # --- CHECK 3B: Extreme Day Volatility Gate (crash or rally, direction-aware) ---
         daily_tf = (indicators_snapshot or {}).get("daily", {})
@@ -258,43 +281,16 @@ class RiskManager:
         if not checks["event_blackout"]["pass"]:
             rejection = rejection or f"High-impact event within {EVENT_BLACKOUT_MINUTES} minutes. Standing aside."
         
-        # --- CHECK 9: Friday / Month-End ---
-        import calendar as cal_module
-        now = datetime.now()
-        now_utc = datetime.now(timezone.utc)
-        is_blocked_day = False
-        block_reason = ""
-
-        if now.weekday() == 4:  # Friday
-            utc_time = now_utc.strftime("%H:%M")
-            # Default block during the NFP/high-impact data window (12:00-16:00 UTC)
-            in_friday_window = FRIDAY_BLACKOUT_START_UTC <= utc_time <= FRIDAY_BLACKOUT_END_UTC
-            if in_friday_window:
-                is_blocked_day = True
-                block_reason = f"Friday high-impact window ({FRIDAY_BLACKOUT_START_UTC}-{FRIDAY_BLACKOUT_END_UTC} UTC)"
-            # Also block if specific events found in calendar (even outside default window)
-            if upcoming_events and not is_blocked_day:
-                blocked_keywords = BLOCKED_DAYS.get(4, [])
-                for event in upcoming_events:
-                    if any(kw.lower() in event.get("name", "").lower() for kw in blocked_keywords):
-                        is_blocked_day = True
-                        block_reason = f"Friday with {event.get('name', 'high-impact event')}"
-                        break
-
-        # Month-end check — use trading days (consistent with session.py)
-        last_day = cal_module.monthrange(now.year, now.month)[1]
-        days_left = last_day - now.day
-        trading_days_left = sum(
-            1 for i in range(1, days_left + 1)
-            if (now.date().replace(day=now.day + i)).weekday() < 5
-        )
-        is_monthend = trading_days_left <= MONTHEND_BLACKOUT_DAYS
-        if is_monthend:
-            block_reason = f"Month-end rebalancing ({trading_days_left} trading days to EOM)"
+        # --- CHECK 9: Friday / Month-End (delegates to session.py) ---
+        from core.session import is_friday_blackout, is_month_end_blackout
+        fri_blocked, fri_reason = is_friday_blackout(upcoming_events)
+        me_blocked, me_reason = is_month_end_blackout()
+        cal_blocked = fri_blocked or me_blocked
+        cal_reason = fri_reason or me_reason
 
         checks["calendar_block"] = {
-            "pass": not is_blocked_day and not is_monthend,
-            "detail": block_reason if (is_blocked_day or is_monthend) else "Calendar clear",
+            "pass": not cal_blocked,
+            "detail": cal_reason if cal_blocked else "Calendar clear",
         }
         if not checks["calendar_block"]["pass"]:
             rejection = rejection or checks["calendar_block"]["detail"]

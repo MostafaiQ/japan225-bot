@@ -26,6 +26,8 @@ import json
 import logging
 import signal
 import sys
+import time
+from collections import deque
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -101,7 +103,7 @@ class TradingMonitor:
         self._dashboard_force_scan: bool = False  # Set by poll task, consumed by _scanning_cycle
         self._last_opus_decision: dict | None = None  # Track Opus direction consistency
         self._opus_pos_eval_counter = 0          # Counts monitoring cycles; eval fires every OPUS_POSITION_EVAL_EVERY_N
-        self._position_price_buffer: list = []   # Rolling price buffer for Opus position evaluator
+        self._position_price_buffer: deque = deque(maxlen=10800)  # Rolling price buffer for Opus position evaluator
         self._streaming_reconnect_counter = 0    # Consecutive cycles without streaming price → triggers reconnect
         self._concurrent_scan_running: bool = False  # Guard: prevents overlapping background scans
         self._last_concurrent_scan_at: datetime | None = None  # Last time a concurrent scan ran
@@ -115,6 +117,7 @@ class TradingMonitor:
         self._pos_check_trigger_path  = Path(__file__).parent / "storage" / "data" / "pos_check.trigger"
         self._price_buffer_cache_path = Path(__file__).parent / "storage" / "data" / "price_buffer_cache.json"
         self._buffer_save_counter = 0  # Save every N monitoring cycles
+        self._last_state_write: float = 0.0  # Throttle _write_state to every 10s
 
     # ============================================================
     # STARTUP
@@ -135,7 +138,7 @@ class TradingMonitor:
         await self.telegram.start_polling()
 
         # Write initial bot_state.json so dashboard has fresh data immediately
-        self._write_state(phase="STARTING")
+        self._write_state(phase="STARTING", force=True)
 
         # Connect to IG — 3 fast retries, then retry every 5 min until IG recovers
         connected = False
@@ -155,7 +158,7 @@ class TradingMonitor:
             )
             _startup_backoff = 60
             while not connected:
-                self._write_state(phase="IG_DISCONNECTED")
+                self._write_state(phase="IG_DISCONNECTED", force=True)
                 logger.info(f"Retrying IG connection in {_startup_backoff}s...")
                 await asyncio.sleep(_startup_backoff)
                 _startup_backoff = min(_startup_backoff * 2, 300)
@@ -359,11 +362,15 @@ class TradingMonitor:
         except Exception as e:
             logger.debug(f"_reload_overrides skipped: {e}")
 
-    def _write_state(self, session_name: str | None = None, phase: str | None = None):
-        """Write bot_state.json for the dashboard to read."""
+    def _write_state(self, session_name: str | None = None, phase: str | None = None, force: bool = False):
+        """Write bot_state.json for the dashboard to read. Throttled to every 10s unless force=True."""
         try:
             if session_name:
                 self._current_session = session_name
+            now_mono = time.monotonic()
+            if not force and (now_mono - self._last_state_write) < 10.0:
+                return
+            self._last_state_write = now_mono
             uptime_secs = int((datetime.now(timezone.utc) - self._started_at).total_seconds())
             h, rem = divmod(uptime_secs, 3600)
             m = rem // 60
@@ -1109,6 +1116,7 @@ class TradingMonitor:
                                             balance=balance,
                                             upcoming_events=web_research.get("economic_calendar", []),
                                             indicators_snapshot=indicators,
+                                            setup_type=opus_result.get("setup_type"),
                                         )
 
                                         if validation["approved"]:
@@ -1259,6 +1267,7 @@ class TradingMonitor:
             balance=balance,
             upcoming_events=web_research.get("economic_calendar", []),
             indicators_snapshot=indicators,
+            setup_type=final_result.get("setup_type") or setup.get("type"),
         )
 
         if not validation["approved"]:
@@ -1440,8 +1449,6 @@ class TradingMonitor:
 
         # --- Opus position evaluator (every 2 minutes, or on-demand via dashboard/telegram) ---
         self._position_price_buffer.append(current_price)
-        if len(self._position_price_buffer) > 10800:  # hard cap at 6hrs (~6hrs × 1800 readings)
-            self._position_price_buffer.pop(0)
 
         # Persist buffer to disk every ~60 cycles (2 min) so restarts only gap-fill
         self._buffer_save_counter += 1
@@ -1621,7 +1628,7 @@ class TradingMonitor:
 
         # Clear price buffer cache — no longer needed for this trade
         self._price_buffer_cache_path.unlink(missing_ok=True)
-        self._position_price_buffer = []
+        self._position_price_buffer = deque(maxlen=10800)
         self._buffer_save_counter = 0
 
         # Post-trade learning: update prompt_learnings.json + brier_scores.json
@@ -1705,6 +1712,7 @@ class TradingMonitor:
             upcoming_events=[],
             indicators_snapshot=indicators_snapshot or {},
             is_scalp=True,
+            setup_type=setup.get("type") if setup else None,
         )
         if not validation["approved"]:
             logger.info(f"Scalp risk validation failed: {validation['rejection_reason']}")
@@ -1999,7 +2007,7 @@ class TradingMonitor:
 
         # Init momentum tracker + reset price buffer for fresh trade history
         self.momentum_tracker = MomentumTracker(direction, actual_entry)
-        self._position_price_buffer = []
+        self._position_price_buffer = deque(maxlen=10800)
         self._opus_pos_eval_counter = 0
         self._buffer_save_counter = 0
         self._position_empty_count = 0
@@ -2046,7 +2054,7 @@ class TradingMonitor:
             data = {
                 "opened_at": opened_at_str,
                 "saved_at": datetime.now(timezone.utc).isoformat(),
-                "prices": self._position_price_buffer,
+                "prices": list(self._position_price_buffer),
             }
             self._price_buffer_cache_path.write_text(json.dumps(data))
         except Exception as e:
@@ -2090,7 +2098,7 @@ class TradingMonitor:
             gap_prices = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.ig.get_trade_history_buffer(saved_at)
             )
-            self._position_price_buffer = (cached_prices + gap_prices)[-10800:]
+            self._position_price_buffer = deque((cached_prices + gap_prices)[-10800:], maxlen=10800)
             logger.info(
                 f"Buffer restored: {len(cached_prices)} cached + {len(gap_prices)} gap → "
                 f"{len(self._position_price_buffer)} total"
@@ -2100,7 +2108,7 @@ class TradingMonitor:
             full_prices = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.ig.get_trade_history_buffer(opened_at_dt)
             )
-            self._position_price_buffer = full_prices
+            self._position_price_buffer = deque(full_prices, maxlen=10800)
             logger.info(f"Buffer cold-filled: {len(full_prices)} price points from IG")
 
         # Immediately persist so next restart has this as baseline

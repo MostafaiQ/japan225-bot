@@ -123,6 +123,7 @@ SPREAD_ESTIMATE = 7  # Points during main hours (live spread used at execution)
 DEFAULT_SL_DISTANCE = 150  # Points — fallback only (ATR-based used when ATR available)
 DEFAULT_TP_DISTANCE = 400  # Points — fallback only
 MIN_RR_RATIO = 1.5  # Minimum acceptable R:R
+MIN_RR_OVERSOLD_REVERSAL = 1.3  # Lower RR for oversold bounce LONGs (4H RSI < 32 + 15M reversal candle)
 
 # Phase 2: Breakeven lock
 BREAKEVEN_TRIGGER = 150  # Move SL to BE at +150 pts
@@ -235,15 +236,6 @@ CONTRADICTORY_SIGNAL_MAX_GAP = 5      # Max gap between LONG/SHORT scores to cal
 # ============================================
 # COMPOUND PLAN
 # ============================================
-def get_lot_size(balance: float, price: float = 59500) -> float:
-    """Calculate max lot size that keeps margin under 50% of balance."""
-    max_margin = balance * MAX_MARGIN_PERCENT
-    margin_per_lot = CONTRACT_SIZE * price * MARGIN_FACTOR
-    max_lots = max_margin / margin_per_lot
-    # Round down to nearest 0.01
-    lots = int(max_lots * 100) / 100
-    return max(MIN_LOT_SIZE, lots)
-
 
 def calculate_margin(lots: float, price: float = 59500) -> float:
     """Calculate required margin for a position."""

@@ -124,6 +124,7 @@ MOMENTUM SHORTS (momentum_continuation_short, breakdown_continuation, bear_flag_
 
 ━━ HARD PROHIBITIONS ━━
 OVERSOLD SHORTING: 4H RSI < 32 + exhaustion (spinning_top/doji/contracting bodies) → REJECT SHORT.
+OVERSOLD REVERSAL LONG EXCEPTION: 4H RSI < 32 + 15M confirmed reversal candle (hammer/bullish_engulfing/morning_star) → ALLOW LONG with R:R ≥ 1.3 (instead of 1.5). This is a high-quality mean-reversion entry at extreme oversold.
 OVERBOUGHT LONGING: 4H RSI > 68 + exhaustion → REJECT LONG.
 EVENTS: No trade within 60min of HIGH-impact event.
 EXTREME DAY (range > 1000pts):
@@ -144,9 +145,9 @@ REASONING_SHORT: ~3-5 sentences (~400-500 chars). Format: "[APPROVE/REJECT] [dir
 
 ━━ FATAL FLAWS — APPROVE UNLESS ONE EXISTS ━━
 1. SL direction wrong (LONG SL above entry, SHORT SL below entry)
-2. Effective R:R < 1.5 after spread
+2. Effective R:R < 1.5 after spread (EXCEPTION: oversold reversal LONG with 4H RSI < 32 + 15M reversal candle → R:R ≥ 1.3 is OK)
 3. HIGH-impact event within 60 minutes
-4. 4H RSI < 32 on a SHORT trade
+4. 4H RSI < 32 on a SHORT trade (does NOT block LONGs — oversold bounce LONGs are encouraged here)
 5. 4H RSI > 68 on a LONG trade
 6. Counter-trend on extreme day (range > 1000pts) with confidence < 85%
 7. BOTH daily_trend AND entry_level fail simultaneously (no macro alignment AND not at tech level)
