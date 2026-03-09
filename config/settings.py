@@ -115,7 +115,7 @@ TP_FLOOR_PTS = 250            # Absolute minimum TP in points
 # ============================================
 # TRADING PARAMETERS
 # ============================================
-MIN_LOT_SIZE = 0.01
+MIN_LOT_SIZE = 0.02  # IG minimum for Japan 225 Mini (dealingRules.minDealSize)
 SPREAD_ESTIMATE = 7  # Points during main hours (live spread used at execution)
 
 # --- Exit Strategy (3-Phase) ---

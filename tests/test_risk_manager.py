@@ -59,7 +59,7 @@ class TestRiskManagerValidation:
     def _base_trade(self, **overrides):
         trade = {
             "direction": "LONG",
-            "lots": 0.01,
+            "lots": 0.02,
             "entry": 59500,
             "stop_loss": 59300,
             "take_profit": 59900,
@@ -171,7 +171,7 @@ class TestSafeLotSize:
 
     def test_minimum_lot_size(self):
         lots = self.rm.get_safe_lot_size(1.0, 59500, 150)
-        assert lots >= 0.01
+        assert lots >= 0.02
 
     def test_scales_with_balance(self):
         lots_small = self.rm.get_safe_lot_size(200, 59500, 150)
