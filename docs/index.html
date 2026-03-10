@@ -2109,6 +2109,23 @@ function _disconnectSSE() {
 //  INIT
 // ══════════════════════════════════════════════
 (async function init() {
+  // Auto-discover backend URL from api_config.json (updated automatically on tunnel restart)
+  try {
+    const cfgResp = await fetch('api_config.json?t=' + Date.now());
+    if (cfgResp.ok) {
+      const cfg = await cfgResp.json();
+      if (cfg.apiUrl) {
+        const current = localStorage.getItem('apiUrl') || '';
+        if (!current || current !== cfg.apiUrl) {
+          S.url = cfg.apiUrl;
+          localStorage.setItem('apiUrl', cfg.apiUrl);
+          const sUrlEl = document.getElementById('sUrl');
+          if (sUrlEl) sUrlEl.value = cfg.apiUrl;
+        }
+      }
+    }
+  } catch(_) { /* offline or no config — use localStorage fallback */ }
+
   document.getElementById('lTabScan').style.color = 'var(--primary)';
   if (!S.url) {
     showNotConfigured();   // shows "Click ⚙ to configure" — no modal, no blocking overlay
