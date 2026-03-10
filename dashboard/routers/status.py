@@ -64,31 +64,40 @@ async def health():
     return {"status": "ok"}
 
 
+def _enrich_position(position: dict, state: dict) -> dict:
+    """Add live price/pnl to a position dict."""
+    try:
+        from core.ig_client import ig
+        market = ig.get_market_info()
+        if market and "bid" in market:
+            cp = float(market["bid"])
+        else:
+            cp = float(state.get("current_price", position.get("entry_price", 0)))
+    except Exception:
+        cp = float(state.get("current_price", position.get("entry_price", 0)))
+
+    ep = float(position.get("entry_price") or 0)
+    lots = float(position.get("size") or 0)
+    direction = position.get("direction", "LONG")
+    pnl_pts = (cp - ep) if direction == "LONG" else (ep - cp)
+    pnl_dollars = pnl_pts * lots  # CONTRACT_SIZE = $1/pt
+    position["current_price"] = cp
+    position["unrealised_pnl"] = round(pnl_dollars, 2)
+    position["unrealised_pnl_pts"] = round(pnl_pts, 1)
+    return position
+
+
 @router.get("/api/status")
 async def status():
     state = _read_state()
-    position = db_reader.get_position()
+    positions = db_reader.get_positions()
 
-    # Enrich position with live price/pnl from IG (not stale state file)
-    if position:
-        try:
-            from core.ig_client import ig
-            market = ig.get_market_info()
-            if market and "bid" in market:
-                cp = float(market["bid"])
-            else:
-                cp = float(state.get("current_price", position.get("entry_price", 0)))
-        except Exception:
-            cp = float(state.get("current_price", position.get("entry_price", 0)))
+    # Enrich each position with live price/pnl
+    for pos in positions:
+        _enrich_position(pos, state)
 
-        ep = float(position.get("entry_price") or 0)
-        lots = float(position.get("size") or 0)
-        direction = position.get("direction", "LONG")
-        pnl_pts = (cp - ep) if direction == "LONG" else (ep - cp)
-        pnl_dollars = pnl_pts * lots  # CONTRACT_SIZE = $1/pt
-        position["current_price"]    = cp
-        position["unrealised_pnl"]   = round(pnl_dollars, 2)
-        position["unrealised_pnl_pts"] = round(pnl_pts, 1)
+    # Backward compat: first position or None
+    position = positions[0] if positions else None
 
     scans = db_reader.get_recent_scans(50)
 
@@ -115,6 +124,7 @@ async def status():
         "chat_tokens_today": _chat_tokens_today(),
         "uptime":           uptime,
         "position":         position,
+        "positions":        positions,
         "recent_scans":     scans,
         "db_connected":     db_reader.db_exists(),
     }

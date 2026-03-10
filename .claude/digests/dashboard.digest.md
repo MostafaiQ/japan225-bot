@@ -22,7 +22,9 @@ Routers: status, config, history, logs, chat, controls, stream
 ### routers/status.py
 GET /api/health       → {"status":"ok"} — no auth
 GET /api/status       → session, phase, scanning_paused, last_scan, next_scan_in,
-                        last_scan_detail, ai_calls_today, cost_today, uptime, position, recent_scans, db_connected
+                        last_scan_detail, ai_calls_today, cost_today, uptime,
+                        position (first open, backward compat), positions (list of all open, enriched with live price/P&L),
+                        recent_scans, db_connected
 Reads: bot_state.json (written by monitor._write_state()) + db_reader
 NOTE: last_scan_detail is passed from bot_state.json — contains outcome, direction, confidence, price, setup_type, reason
 
@@ -57,7 +59,8 @@ GET  /api/chat/costs        → {today_usd, total_usd, note:"estimate", entries:
 ### routers/stream.py
 GET /api/stream          → Server-Sent Events (text/event-stream)
   Event types:
-    state_update : pushed when bot_state.json mtime changes (same payload as /api/status, minus live IG price)
+    state_update : pushed when bot_state.json mtime changes
+                   Includes position (first, compat) + positions (list, enriched with live price/P&L from state file)
     new_logs     : pushed when journal entries change (~9s check interval)
     keep_alive   : ping every ~15s to prevent timeout
   Auth: Bearer token required. Uses fetch ReadableStream on frontend (not EventSource, because custom headers needed for ngrok).
@@ -74,7 +77,8 @@ POST /api/apply-fix            → body:{target, diff} → git_ops.apply_fix()
 
 ### services/db_reader.py
 Read-only SQLite: file:{DB_PATH}?mode=ro
-get_position()            → dict or None (maps stop_level→stop_loss, limit_level→take_profit)
+get_positions()           → list[dict] all open positions from trades (closed_at IS NULL)
+get_position()            → dict or None (first from get_positions(), backward compat)
 get_recent_scans(n)       → list[dict] last N scans, oldest-first
 get_trade_history(n)      → list[dict] last N closed trades. NOTE: renames phase_at_close→exit_phase, notes→close_reason
 get_cost_today()          → float ($)
@@ -124,3 +128,6 @@ SSE: /api/stream replaces setInterval polling for overview + logs + connection c
   Frontend uses fetch() + ReadableStream (not EventSource) to support custom headers (Bearer auth + ngrok-skip-browser-warning).
   Remaining setInterval: history (15s, IG API too expensive for SSE), countdown ticker (1s), chat sync (5s), chat cost (30s).
   _connectSSE() called on init + on saveSettings(). _disconnectSSE() on credential change.
+Multi-position (2026-03-10): renderPositions(positions) renders multiple position cards.
+  renderPosCard(p, idx, total) renders individual card with numbered header when total > 1.
+  SSE handler uses data.positions || [data.position] for backward compatibility.

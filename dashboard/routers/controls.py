@@ -59,8 +59,8 @@ async def force_scan():
 
 @router.post("/api/controls/pos-check")
 async def pos_check():
-    pos = db_reader.get_position()
-    if not pos:
+    positions = db_reader.get_positions()
+    if not positions:
         return {"ok": False, "warning": "No open position."}
     POS_CHECK_TRIGGER.parent.mkdir(parents=True, exist_ok=True)
     POS_CHECK_TRIGGER.touch()
@@ -80,11 +80,11 @@ async def clear_cooldown():
 
 @router.post("/api/controls/restart")
 async def restart(force: bool = False):
-    pos = db_reader.get_position()
-    if pos and not force:
+    positions = db_reader.get_positions()
+    if positions and not force:
         return {
             "ok": False,
-            "warning": "Position is open. Pass force=true to restart anyway.",
+            "warning": f"{len(positions)} position(s) open. Pass force=true to restart anyway.",
         }
     ok, msg = _systemctl("restart")
     if not ok:
@@ -94,11 +94,11 @@ async def restart(force: bool = False):
 
 @router.post("/api/controls/stop")
 async def stop():
-    pos = db_reader.get_position()
-    if pos:
+    positions = db_reader.get_positions()
+    if positions:
         return {
             "ok": False,
-            "warning": "Position is open — stopping would leave it unmonitored. Close position first.",
+            "warning": f"{len(positions)} position(s) open — stopping would leave them unmonitored. Close first.",
         }
     ok, msg = _systemctl("stop")
     if not ok:

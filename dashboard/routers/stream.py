@@ -74,22 +74,29 @@ def _next_scan_in(state: dict):
         return None
 
 
+def _enrich_position_from_state(position: dict, state: dict) -> dict:
+    """Add live price/pnl using state file price (no IG API call)."""
+    cp = float(state.get("current_price", position.get("entry_price", 0)))
+    ep = float(position.get("entry_price") or 0)
+    lots = float(position.get("size") or 0)
+    direction = position.get("direction", "LONG")
+    pnl_pts = (cp - ep) if direction == "LONG" else (ep - cp)
+    pnl_dollars = pnl_pts * lots
+    position["current_price"] = cp
+    position["unrealised_pnl"] = round(pnl_dollars, 2)
+    position["unrealised_pnl_pts"] = round(pnl_pts, 1)
+    return position
+
+
 def _build_status() -> dict:
     """Build the same status payload as /api/status (without live IG price call for perf)."""
     state = _read_state()
-    position = db_reader.get_position()
+    positions = db_reader.get_positions()
 
-    if position:
-        # Use state file price (avoid IG API call in SSE hot loop)
-        cp = float(state.get("current_price", position.get("entry_price", 0)))
-        ep = float(position.get("entry_price") or 0)
-        lots = float(position.get("size") or 0)
-        direction = position.get("direction", "LONG")
-        pnl_pts = (cp - ep) if direction == "LONG" else (ep - cp)
-        pnl_dollars = pnl_pts * lots
-        position["current_price"] = cp
-        position["unrealised_pnl"] = round(pnl_dollars, 2)
-        position["unrealised_pnl_pts"] = round(pnl_pts, 1)
+    for pos in positions:
+        _enrich_position_from_state(pos, state)
+
+    position = positions[0] if positions else None
 
     scans = db_reader.get_recent_scans(50)
 
@@ -115,6 +122,7 @@ def _build_status() -> dict:
         "chat_tokens_today": _chat_tokens_today(),
         "uptime":           uptime,
         "position":         position,
+        "positions":        positions,
         "recent_scans":     scans,
         "db_connected":     db_reader.db_exists(),
     }

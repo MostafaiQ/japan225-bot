@@ -17,16 +17,28 @@ log_trade_close(deal_id: str, close_data: dict)
 get_recent_trades(limit=10) -> list[dict]
 get_trade_stats() -> dict                   # {total, wins, losses, win_rate, avg_win, avg_loss}
 
-## Position state (primary open position)
+## Position state (trades-based, multi-position — migrated 2026-03-10)
+# Source of truth: trades table WHERE closed_at IS NULL (not position_state singleton)
+# position_state table kept for legacy compat (still written, never read as primary)
 get_position_state() -> dict
+  # Queries trades WHERE closed_at IS NULL ORDER BY id ASC LIMIT 1
   # Returns: {has_open, deal_id, direction, entry_price, stop_level, limit_level,
-  #            lots, confidence, phase, opened_at} or has_open=False if none
-set_position_open(position: dict)
-set_position_closed()
+  #            lots, confidence, phase, opened_at, setup_type, entry_context} or {has_open: False}
+  # Column mapping: stop_loss→stop_level, take_profit→limit_level
+get_all_position_states() -> list[dict]
+  # Same query without LIMIT — returns list of ALL open positions
+  # Used by monitor._main_cycle(), telegram._status_text(), dashboard get_positions()
+set_position_open(position: dict)       # Legacy — writes to position_state only
+set_position_closed(deal_id=None)
+  # Sets phase='closed' on trades row WHERE deal_id=? AND closed_at IS NULL
+  # Also clears legacy position_state singleton
+  # IMPORTANT: call log_trade_close() BEFORE this (sets closed_at which get_position_state uses)
 update_position_phase(deal_id, phase)
-update_position_levels(stop_level=None, limit_level=None)
+  # Writes to trades WHERE deal_id=? AND closed_at IS NULL + legacy position_state
+update_position_levels(deal_id=None, stop_level=None, limit_level=None)
+  # Writes to trades WHERE deal_id=? AND closed_at IS NULL + legacy position_state
 
-## Multi-position support (added 2026-03-07)
+## Multi-position count (for risk_manager)
 get_open_positions_count() -> int
   # Count open positions via trades table (closed_at IS NULL). Use for max_positions check.
 get_open_positions() -> list[dict]
@@ -34,6 +46,7 @@ get_open_positions() -> list[dict]
   # Used by validate_trade() portfolio risk cap check.
 
 ## Pending alert (trade waiting for Telegram confirm)
+# Migrated to pending_alerts table (2026-03-10). Falls back to legacy position_state column.
 set_pending_alert(alert_data: dict)
 get_pending_alert() -> Optional[dict]
 clear_pending_alert()
@@ -56,7 +69,8 @@ reset_market_context()
 
 ## Atomic operations (use these)
 open_trade_atomic(trade: dict, position: dict) -> int
-  # log_trade_open + set_position_open in one DB transaction. Returns trade_number.
+  # INSERT into trades (with phase + entry_context) + legacy position_state write.
+  # Returns trade_number. Single DB transaction.
 
 ## Price history
 save_price_point(price, session=None)

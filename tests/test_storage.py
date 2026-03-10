@@ -132,23 +132,77 @@ class TestTradingJournal:
 
 class TestPositionState:
     def test_open_and_close_position(self, db):
-        db.set_position_open({
-            "deal_id": "POS_001",
-            "direction": "LONG",
-            "lots": 0.03,
-            "entry_price": 59500,
-            "stop_level": 59300,
-            "limit_level": 59900,
-            "confidence": 85,
-        })
+        db.open_trade_atomic(
+            trade={
+                "deal_id": "POS_001",
+                "direction": "LONG",
+                "lots": 0.03,
+                "entry_price": 59500,
+                "stop_loss": 59300,
+                "take_profit": 59900,
+                "balance_before": 20,
+                "confidence": 85,
+                "setup_type": "test",
+                "session": "test",
+                "ai_analysis": "",
+            },
+            position={
+                "deal_id": "POS_001",
+                "direction": "LONG",
+                "lots": 0.03,
+                "entry_price": 59500,
+                "stop_level": 59300,
+                "limit_level": 59900,
+                "confidence": 85,
+            },
+        )
         state = db.get_position_state()
-        assert state["has_open"] == 1
+        assert state["has_open"] is True or state["has_open"] == 1
         assert state["deal_id"] == "POS_001"
 
-        db.set_position_closed()
+        db.log_trade_close("POS_001", {"closed_at": "2024-01-01T00:00:00", "result": "TP_HIT"})
+        db.set_position_closed("POS_001")
         state = db.get_position_state()
-        assert state["has_open"] == 0
-        assert state["deal_id"] is None
+        assert not state.get("has_open")
+
+    def test_get_all_position_states(self, db):
+        """Test multi-position tracking."""
+        for i, deal_id in enumerate(["POS_A", "POS_B"]):
+            db.open_trade_atomic(
+                trade={
+                    "deal_id": deal_id,
+                    "direction": "LONG" if i == 0 else "SHORT",
+                    "lots": 0.01,
+                    "entry_price": 59500 + i * 100,
+                    "stop_loss": 59300,
+                    "take_profit": 59900,
+                    "balance_before": 20,
+                    "confidence": 80,
+                    "setup_type": "test",
+                    "session": "test",
+                    "ai_analysis": "",
+                },
+                position={
+                    "deal_id": deal_id,
+                    "direction": "LONG" if i == 0 else "SHORT",
+                    "lots": 0.01,
+                    "entry_price": 59500 + i * 100,
+                    "stop_level": 59300,
+                    "limit_level": 59900,
+                    "confidence": 80,
+                },
+            )
+        all_pos = db.get_all_position_states()
+        assert len(all_pos) == 2
+        assert all_pos[0]["deal_id"] == "POS_A"
+        assert all_pos[1]["deal_id"] == "POS_B"
+
+        # Close first, check only second remains
+        db.set_position_closed("POS_A")
+        db.log_trade_close("POS_A", {"closed_at": "2024-01-01T00:00:00", "result": "TP_HIT"})
+        all_pos = db.get_all_position_states()
+        assert len(all_pos) == 1
+        assert all_pos[0]["deal_id"] == "POS_B"
 
     def test_pending_alert(self, db):
         alert = {"direction": "LONG", "entry": 59500, "confidence": 85}

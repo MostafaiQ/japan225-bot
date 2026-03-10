@@ -866,7 +866,7 @@ function switchTab(btn, name) {
   // Use cached SSE data if available (instant), else fall back to API call
   if (name === 'overview' && _sseLastStatus) {
     renderStatus(_sseLastStatus);
-    renderPos(_sseLastStatus.position);
+    renderPositions(_sseLastStatus.positions || (_sseLastStatus.position ? [_sseLastStatus.position] : []));
     renderScans(_sseLastStatus.recent_scans || []);
   } else if (name === 'logs' && _sseLastLogs) {
     _renderLogs(_sseLastLogs);
@@ -895,7 +895,7 @@ async function loadOverview() {
     touchUpdate();
     _seedCountdown(d.next_scan_in, d.last_scan);
     renderStatus(d);
-    renderPos(d.position);
+    renderPositions(d.positions || (d.position ? [d.position] : []));
     renderScans(d.recent_scans || []);
   } catch(e) {
     if (e.code === 'NOT_CONFIGURED') { showNotConfigured(); return; }
@@ -949,14 +949,18 @@ function renderStatus(d) {
   ).join('');
 }
 
-function renderPos(p) {
+function renderPositions(positions) {
   const el = document.getElementById('posPanel');
-  if (!p) {
+  if (!positions || positions.length === 0) {
     el.innerHTML = `<div class="no-pos">
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
       <span>No active position</span></div>`;
     return;
   }
+  el.innerHTML = positions.map((p, idx) => renderPosCard(p, idx, positions.length)).join('');
+}
+
+function renderPosCard(p, idx, total) {
   const pnlPts = p.unrealised_pnl_pts ?? 0;
   const pnlDollars = p.unrealised_pnl ?? 0;
   const pClass = pnlPts >= 0 ? 'c-long' : 'c-short';
@@ -969,7 +973,9 @@ function renderPos(p) {
   const steps = phases.map((_, i) =>
     `<div class="phase-step ${i < pi ? 'done' : i === pi ? 'active' : ''}"></div>`
   ).join('');
-  el.innerHTML = `
+  const header = total > 1 ? `<div style="font-size:12px;opacity:0.6;margin-bottom:6px;">Position #${idx+1}</div>` : '';
+  const separator = (idx < total - 1) ? '<hr style="border:none;border-top:1px solid rgba(255,255,255,0.1);margin:12px 0;">' : '';
+  return `${header}
     <div class="flex-between" style="margin-bottom:12px;">
       ${dir}
       <div style="text-align:right;">
@@ -986,7 +992,11 @@ function renderPos(p) {
     <div class="phase-bar">
       <div class="phase-lbl">Phase: ${p.phase || 'INITIAL'}</div>
       <div class="phase-steps">${steps}</div>
-    </div>`;
+    </div>${separator}`;
+}
+
+function renderPos(p) {
+  renderPositions(p ? [p] : []);
 }
 
 const _actionLabels = {
@@ -1999,7 +2009,7 @@ function _handleStateUpdate(data) {
   _sseLastStatus = data;  // always cache
   if (S.tab === 'overview') {
     renderStatus(data);
-    renderPos(data.position);
+    renderPositions(data.positions || (data.position ? [data.position] : []));
     renderScans(data.recent_scans || []);
   }
 }

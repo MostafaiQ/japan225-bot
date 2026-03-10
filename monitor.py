@@ -88,6 +88,9 @@ class TradingMonitor:
         self.researcher = WebResearcher()
         self.running = False
         self.scanning_paused = False  # /pause command toggles this
+        # Per-position tracker dict: {deal_id: {momentum_tracker, price_buffer, opus_eval_counter, buffer_save_counter, empty_count, check_counter}}
+        self._position_trackers: dict[str, dict] = {}
+        # Legacy singleton aliases (used by _on_pos_check and other code paths)
         self.momentum_tracker: MomentumTracker = None
         self._position_empty_count = 0   # Consecutive empty responses from IG
         self._position_check_counter = 0  # Increments every 2s cycle; position existence checked every N cycles
@@ -102,8 +105,7 @@ class TradingMonitor:
         self._last_scan_detail: dict = {}  # dashboard: shows last scan outcome
         self._dashboard_force_scan: bool = False  # Set by poll task, consumed by _scanning_cycle
         self._last_opus_decision: dict | None = None  # Track Opus direction consistency
-        self._opus_pos_eval_counter = 0          # Counts monitoring cycles; eval fires every OPUS_POSITION_EVAL_EVERY_N
-        self._position_price_buffer: deque = deque(maxlen=10800)  # Rolling price buffer for Opus position evaluator
+        self._position_price_buffer: deque = deque(maxlen=10800)  # Legacy — first position's buffer
         self._streaming_reconnect_counter = 0    # Consecutive cycles without streaming price → triggers reconnect
         self._concurrent_scan_running: bool = False  # Guard: prevents overlapping background scans
         self._last_concurrent_scan_at: datetime | None = None  # Last time a concurrent scan ran
@@ -118,6 +120,25 @@ class TradingMonitor:
         self._price_buffer_cache_path = Path(__file__).parent / "storage" / "data" / "price_buffer_cache.json"
         self._buffer_save_counter = 0  # Save every N monitoring cycles
         self._last_state_write: float = 0.0  # Throttle _write_state to every 10s
+
+    def _get_tracker(self, deal_id: str) -> dict:
+        """Get or create per-position tracker state."""
+        if deal_id not in self._position_trackers:
+            self._position_trackers[deal_id] = {
+                "momentum_tracker": None,
+                "price_buffer": deque(maxlen=10800),
+                "opus_eval_counter": 0,
+                "buffer_save_counter": 0,
+                "empty_count": 0,
+                "check_counter": 0,
+            }
+        return self._position_trackers[deal_id]
+
+    def _remove_tracker(self, deal_id: str):
+        """Remove per-position tracker and clean up cache file."""
+        self._position_trackers.pop(deal_id, None)
+        cache = Path(__file__).parent / "storage" / "data" / f"price_buffer_{deal_id}.json"
+        cache.unlink(missing_ok=True)
 
     # ============================================================
     # STARTUP
@@ -223,118 +244,118 @@ class TradingMonitor:
     async def startup_sync(self):
         """
         Reconcile local DB state with IG on every restart.
-        Handles the case where bot crashed while a position was open.
+        Handles multiple positions — iterates all IG positions and all DB positions.
         """
         logger.info("Running startup sync...")
         ig_positions = self.ig.get_open_positions()
-        db_state = self.storage.get_position_state()
+        db_positions = self.storage.get_all_position_states()
 
         if ig_positions is POSITIONS_API_ERROR:
             msg = "Startup sync: IG API unavailable. Cannot verify position state. Proceeding with DB state."
             logger.warning(msg)
             await self.telegram.send_alert(msg)
+            # Still init trackers for any DB positions
+            for db_pos in db_positions:
+                deal_id = db_pos.get("deal_id")
+                if deal_id:
+                    direction = "LONG" if (db_pos.get("direction") or "BUY").upper() in ("BUY", "LONG") else "SHORT"
+                    entry = float(db_pos.get("entry_price") or 0)
+                    tracker = self._get_tracker(deal_id)
+                    tracker["momentum_tracker"] = MomentumTracker(direction, entry)
             return
 
-        has_ig_position = len(ig_positions) > 0
-        has_db_position = bool(db_state.get("has_open"))
+        ig_deal_ids = {p.get("deal_id") for p in ig_positions}
+        db_deal_ids = {p.get("deal_id") for p in db_positions}
 
-        if has_ig_position and not has_db_position:
-            # IG has a position we didn't know about (crashed after open, before DB write)
-            pos = ig_positions[0]
-            logger.warning("RECOVERY: IG has position not in DB. Syncing.")
-            direction_raw = (pos.get("direction") or "BUY").upper()
-            direction_log = "LONG" if direction_raw in ("BUY", "LONG") else "SHORT"
-            self.storage.open_trade_atomic(
-                trade={
-                    "deal_id": pos.get("deal_id"),
-                    "direction": direction_log,
-                    "lots": pos.get("size"),
-                    "entry_price": pos.get("level"),
-                    "stop_loss": pos.get("stop_level"),
-                    "take_profit": pos.get("limit_level"),
-                    "balance_before": 0,
-                    "confidence": 0,
-                    "setup_type": "recovered",
-                    "session": "unknown",
-                    "ai_analysis": "Position recovered on startup — opened while bot was offline",
-                },
-                position={
-                    "deal_id": pos.get("deal_id"),
-                    "direction": direction_log,
-                    "lots": pos.get("size"),
-                    "entry_price": pos.get("level"),
-                    "stop_level": pos.get("stop_level"),
-                    "limit_level": pos.get("limit_level"),
-                    "opened_at": pos.get("created", datetime.now(timezone.utc).isoformat()),
-                    "confidence": 0,
-                },
-            )
-            # Init momentum tracker for recovered position
-            direction = "LONG" if (pos.get("direction") or "BUY").upper() in ("BUY", "LONG") else "SHORT"
-            self.momentum_tracker = MomentumTracker(direction, float(pos.get("level") or 0))
-            # Restore price buffer from disk cache + gap-fill from IG
-            opened_at_str = pos.get("created", "")
-            if opened_at_str:
-                await self._async_fetch_fetch_and_set_buffer(opened_at_str)
-            await self.telegram.send_alert(
-                "Bot restarted. Found open position on IG not in DB.\n"
-                f"Deal: {pos.get('deal_id')} | {pos.get('direction')} @ {pos.get('level')}\n"
-                "Synced and resuming monitoring."
-            )
+        # IG positions not in DB → recover
+        for pos in ig_positions:
+            ig_deal = pos.get("deal_id")
+            if ig_deal not in db_deal_ids:
+                logger.warning(f"RECOVERY: IG has position {ig_deal} not in DB. Syncing.")
+                direction_raw = (pos.get("direction") or "BUY").upper()
+                direction_log = "LONG" if direction_raw in ("BUY", "LONG") else "SHORT"
+                self.storage.open_trade_atomic(
+                    trade={
+                        "deal_id": ig_deal,
+                        "direction": direction_log,
+                        "lots": pos.get("size"),
+                        "entry_price": pos.get("level"),
+                        "stop_loss": pos.get("stop_level"),
+                        "take_profit": pos.get("limit_level"),
+                        "balance_before": 0,
+                        "confidence": 0,
+                        "setup_type": "recovered",
+                        "session": "unknown",
+                        "ai_analysis": "Position recovered on startup — opened while bot was offline",
+                    },
+                    position={
+                        "deal_id": ig_deal,
+                        "direction": direction_log,
+                        "lots": pos.get("size"),
+                        "entry_price": pos.get("level"),
+                        "stop_level": pos.get("stop_level"),
+                        "limit_level": pos.get("limit_level"),
+                        "opened_at": pos.get("created", datetime.now(timezone.utc).isoformat()),
+                        "confidence": 0,
+                    },
+                )
+                tracker = self._get_tracker(ig_deal)
+                tracker["momentum_tracker"] = MomentumTracker(direction_log, float(pos.get("level") or 0))
+                opened_at_str = pos.get("created", "")
+                if opened_at_str:
+                    await self._async_fetch_and_set_buffer_for(ig_deal, opened_at_str)
+                await self.telegram.send_alert(
+                    f"Bot restarted. Found open position on IG not in DB.\n"
+                    f"Deal: {ig_deal} | {direction_log} @ {pos.get('level')}\n"
+                    "Synced and resuming monitoring."
+                )
 
-        elif not has_ig_position and has_db_position:
-            # DB says we have a position but IG doesn't — position closed while offline
-            logger.warning("RECOVERY: DB shows position but IG has none. Position closed while offline.")
-            deal_id = db_state.get("deal_id")
-            self.storage.set_position_closed()
-            if deal_id:
-                # Attempt to record the close
-                self.storage.log_trade_close(deal_id, {
+        # DB positions not in IG → closed while offline
+        for db_pos in db_positions:
+            db_deal = db_pos.get("deal_id")
+            if db_deal not in ig_deal_ids:
+                logger.warning(f"RECOVERY: DB shows position {db_deal} but IG has none. Closed while offline.")
+                self.storage.set_position_closed(db_deal)
+                self.storage.log_trade_close(db_deal, {
                     "closed_at": datetime.now(timezone.utc).isoformat(),
                     "result": "CLOSED_WHILE_OFFLINE",
                     "notes": "Position detected closed on bot restart",
                 })
-            await self.telegram.send_alert(
-                "Bot restarted. Position was closed while offline.\n"
-                "Check IG for final P&L details."
-            )
+                await self.telegram.send_alert(
+                    f"Bot restarted. Position {db_deal} was closed while offline.\n"
+                    "Check IG for final P&L details."
+                )
 
-        elif has_ig_position and has_db_position:
-            # Both agree — verify direction matches
-            ig_dir = (ig_positions[0].get("direction") or "BUY").upper()
-            db_dir = (db_state.get("direction") or "BUY").upper()
-            db_deal = db_state.get("deal_id")
-            ig_deal = ig_positions[0].get("deal_id")
-
-            if db_deal == ig_deal:
-                # Reinit momentum tracker from DB entry
-                direction = "LONG" if db_dir in ("BUY", "LONG") else "SHORT"
-                entry = float(db_state.get("entry_price") or 0)
-                self.momentum_tracker = MomentumTracker(direction, entry)
-                logger.info("RECOVERY: Position intact on both. Resuming monitoring.")
-                # Restore price buffer from disk cache + gap-fill from IG
-                opened_at_str = db_state.get("opened_at", "")
+        # Matching positions — init trackers
+        for db_pos in db_positions:
+            db_deal = db_pos.get("deal_id")
+            if db_deal in ig_deal_ids:
+                direction = "LONG" if (db_pos.get("direction") or "BUY").upper() in ("BUY", "LONG") else "SHORT"
+                entry = float(db_pos.get("entry_price") or 0)
+                tracker = self._get_tracker(db_deal)
+                tracker["momentum_tracker"] = MomentumTracker(direction, entry)
+                logger.info(f"RECOVERY: Position {db_deal} intact on both. Resuming monitoring.")
+                opened_at_str = db_pos.get("opened_at", "")
                 if opened_at_str:
-                    await self._async_fetch_fetch_and_set_buffer(opened_at_str)
-                await self.telegram.send_alert(
-                    f"Bot restarted. {db_dir} position intact.\n"
-                    f"Entry: {db_state.get('entry_price', 0):.0f} | "
-                    f"Phase: {db_state.get('phase', 'initial')}\n"
-                    "Resuming monitoring."
-                )
-            else:
-                logger.warning(f"Deal ID mismatch: DB={db_deal} IG={ig_deal}. Syncing to IG.")
-                await self.telegram.send_alert(
-                    f"Deal ID mismatch detected. DB: {db_deal}, IG: {ig_deal}.\n"
-                    "Syncing DB to IG state."
-                )
+                    await self._async_fetch_and_set_buffer_for(db_deal, opened_at_str)
 
-        else:
-            # Clean start — no position anywhere
+        # Sync legacy singleton for backward compat
+        if self._position_trackers:
+            first_deal = next(iter(self._position_trackers))
+            self.momentum_tracker = self._position_trackers[first_deal]["momentum_tracker"]
+            self._position_price_buffer = self._position_trackers[first_deal]["price_buffer"]
+
+        if not ig_positions and not db_positions:
             logger.info("Clean start. No open positions.")
             await self.telegram.send_alert(
                 f"Bot started. Scanning mode active.\n"
                 f"Mode: {TRADING_MODE.upper()}"
+            )
+        elif ig_positions:
+            dirs = [("LONG" if (p.get("direction") or "BUY").upper() in ("BUY", "LONG") else "SHORT") for p in ig_positions]
+            await self.telegram.send_alert(
+                f"Bot restarted. {len(ig_positions)} position(s) intact: {', '.join(dirs)}.\n"
+                "Resuming monitoring."
             )
 
     # ============================================================
@@ -506,11 +527,17 @@ class TradingMonitor:
                 await self.telegram.send_alert("✅ IG API reconnected. Resuming normal operation.")
                 self._ig_fail_count = 0
 
-            pos_state = self.storage.get_position_state()
-            open_count = self.storage.get_open_positions_count()
+            all_positions = self.storage.get_all_position_states()
+            open_count = len(all_positions)
 
-            if pos_state.get("has_open"):
-                await self._monitoring_cycle(pos_state)
+            if open_count > 0:
+                # Position existence check: single IG API call for all positions
+                await self._check_all_positions_exist(all_positions)
+
+                # Monitor each position
+                for pos_state in all_positions:
+                    await self._monitoring_cycle(pos_state)
+
                 # If below position cap: also scan for new entries in background
                 if open_count < MAX_OPEN_POSITIONS and not self._concurrent_scan_running:
                     now_utc = datetime.now(timezone.utc)
@@ -540,6 +567,53 @@ class TradingMonitor:
             except Exception:
                 pass
             await asyncio.sleep(30)
+
+    async def _check_all_positions_exist(self, all_positions: list[dict]):
+        """Check position existence on IG for all tracked positions.
+        Single API call, runs once per N monitoring cycles.
+        """
+        # Use the first position's tracker for the check counter
+        if not all_positions:
+            return
+        first_deal = all_positions[0].get("deal_id", "")
+        tracker = self._get_tracker(first_deal)
+        tracker["check_counter"] += 1
+        if tracker["check_counter"] < POSITION_CHECK_EVERY_N_CYCLES:
+            return
+        tracker["check_counter"] = 0
+
+        live_positions = await asyncio.get_event_loop().run_in_executor(
+            None, self.ig.get_open_positions
+        )
+
+        if live_positions is POSITIONS_API_ERROR:
+            logger.warning("IG API error checking positions. Skipping cycle.")
+            await self.telegram.send_alert(
+                "WARNING: IG API error while checking positions. Will retry."
+            )
+            # Reset all empty counts
+            for pos in all_positions:
+                t = self._get_tracker(pos.get("deal_id", ""))
+                t["empty_count"] = 0
+            return
+
+        live_deal_ids = {p.get("deal_id") for p in live_positions}
+
+        for pos_state in all_positions:
+            deal_id = pos_state.get("deal_id")
+            t = self._get_tracker(deal_id)
+            if deal_id not in live_deal_ids:
+                t["empty_count"] += 1
+                if t["empty_count"] < SAFETY_CONSECUTIVE_EMPTY:
+                    logger.warning(
+                        f"Position {deal_id} not found on IG ({t['empty_count']}/{SAFETY_CONSECUTIVE_EMPTY}). "
+                        f"Waiting for confirmation."
+                    )
+                else:
+                    t["empty_count"] = 0
+                    await self._handle_position_closed(pos_state)
+            else:
+                t["empty_count"] = 0
 
     # ============================================================
     # SCANNING MODE
@@ -1348,55 +1422,14 @@ class TradingMonitor:
 
     async def _monitoring_cycle(self, pos_state: dict):
         """Position monitoring — runs every 2s when a trade is open.
-        15 cycles × 2s = 30s window:
-          - 14 cycles: get_market_info only (price check)
-          -  1 cycle : get_open_positions only (existence check, replaces price call)
-        Total: exactly 15 calls per 30s = 30 calls/min — within IG non-trading limit.
+        Position existence check is now done in _check_all_positions_exist() (once for all positions).
         """
         deal_id = pos_state.get("deal_id")
         direction = (pos_state.get("direction") or "BUY").upper()
         logical_direction = "LONG" if direction in ("BUY", "LONG") else "SHORT"
         entry = float(pos_state.get("entry_price") or 0)
         phase = pos_state.get("phase", ExitPhase.INITIAL)
-
-        # --- Check if position still exists on IG (every N cycles = every 30s) ---
-        self._position_check_counter += 1
-        if self._position_check_counter >= POSITION_CHECK_EVERY_N_CYCLES:
-            self._position_check_counter = 0
-            live_positions = await asyncio.get_event_loop().run_in_executor(
-                None, self.ig.get_open_positions
-            )
-
-            if live_positions is POSITIONS_API_ERROR:
-                logger.warning("IG API error checking positions. Skipping cycle.")
-                await self.telegram.send_alert(
-                    "WARNING: IG API error while checking position. Will retry."
-                )
-                self._position_empty_count = 0
-                return
-
-            position_exists = any(
-                p.get("deal_id") == deal_id for p in live_positions
-            )
-
-            if not position_exists:
-                self._position_empty_count += 1
-                if self._position_empty_count < SAFETY_CONSECUTIVE_EMPTY:
-                    logger.warning(
-                        f"Position not found on IG ({self._position_empty_count}/{SAFETY_CONSECUTIVE_EMPTY}). "
-                        f"Waiting for {SAFETY_CONSECUTIVE_EMPTY - self._position_empty_count} more confirmation(s)."
-                    )
-                    return
-                # Confirmed closed after N consecutive empties
-                self._position_empty_count = 0
-                await self._handle_position_closed(pos_state)
-                return
-
-            # Position confirmed open — reset counter.
-            # Return here: this cycle's 1 API call (get_open_positions) replaces
-            # the price call, keeping total at exactly 30 calls/min.
-            self._position_empty_count = 0
-            return
+        tracker = self._get_tracker(deal_id)
 
         # --- Get current price (streaming preferred; REST fallback on stale/disconnect) ---
         streaming_price = self.ig.get_streaming_price()
@@ -1425,10 +1458,12 @@ class TradingMonitor:
             current_price = market.get("bid", 0) if logical_direction == "LONG" else market.get("offer", 0)
             self._current_price = current_price
 
-        # --- Update momentum tracker ---
-        if self.momentum_tracker is None:
-            self.momentum_tracker = MomentumTracker(logical_direction, entry)
-        self.momentum_tracker.add_price(current_price)
+        # --- Update momentum tracker (per-position) ---
+        if tracker["momentum_tracker"] is None:
+            tracker["momentum_tracker"] = MomentumTracker(logical_direction, entry)
+        tracker["momentum_tracker"].add_price(current_price)
+        # Sync legacy singleton for backward compat
+        self.momentum_tracker = tracker["momentum_tracker"]
 
         # --- P&L ---
         pnl_points = (
@@ -1448,44 +1483,46 @@ class TradingMonitor:
         self._write_state(session_name=session["name"])
 
         # --- Stale data check ---
-        if self.momentum_tracker.is_stale():
-            logger.warning("Stale data detected — same price 10+ consecutive readings")
+        if tracker["momentum_tracker"].is_stale():
+            logger.warning(f"Stale data detected for {deal_id} — same price 10+ consecutive readings")
             await self.telegram.send_alert(
-                "WARNING: Stale data detected. Same price for 10+ readings.\n"
+                f"WARNING: Stale data for {deal_id}. Same price for 10+ readings.\n"
                 "Possible API issue or market halt. Not modifying position."
             )
             return  # Don't act on stale data
 
         # --- Milestone alerts ---
-        milestone_msg = self.momentum_tracker.milestone_alert()
+        milestone_msg = tracker["momentum_tracker"].milestone_alert()
         if milestone_msg:
             await self.telegram.send_alert(milestone_msg)
 
         # --- Adverse move alerts: SEVERE safety net (MILD/MODERATE replaced by Opus position evaluator) ---
-        should_alert, tier, alert_msg = self.momentum_tracker.should_alert()
+        should_alert, tier, alert_msg = tracker["momentum_tracker"].should_alert()
         if should_alert and tier == TIER_SEVERE:
             await self.telegram.send_adverse_alert(alert_msg, tier, deal_id)
             # SEVERE: alert only — SL stays fixed at original level (no auto-breakeven)
 
         # --- Opus position evaluator (every 2 minutes, or on-demand via dashboard/telegram) ---
-        self._position_price_buffer.append(current_price)
+        tracker["price_buffer"].append(current_price)
+        # Sync legacy singleton
+        self._position_price_buffer = tracker["price_buffer"]
 
         # Persist buffer to disk every ~60 cycles (2 min) so restarts only gap-fill
-        self._buffer_save_counter += 1
-        if self._buffer_save_counter >= 60:
-            self._buffer_save_counter = 0
-            self._save_price_buffer(pos_state.get("opened_at", ""))
+        tracker["buffer_save_counter"] += 1
+        if tracker["buffer_save_counter"] >= 60:
+            tracker["buffer_save_counter"] = 0
+            self._save_price_buffer_for(deal_id, pos_state.get("opened_at", ""))
 
         if self._pos_check_trigger_path.exists():
             try:
                 self._pos_check_trigger_path.unlink(missing_ok=True)
             except Exception:
                 pass
-            self._opus_pos_eval_counter = OPUS_POSITION_EVAL_EVERY_N  # force eval this cycle
+            tracker["opus_eval_counter"] = OPUS_POSITION_EVAL_EVERY_N  # force eval this cycle
 
-        self._opus_pos_eval_counter += 1
-        if self._opus_pos_eval_counter >= OPUS_POSITION_EVAL_EVERY_N:
-            self._opus_pos_eval_counter = 0
+        tracker["opus_eval_counter"] += 1
+        if tracker["opus_eval_counter"] >= OPUS_POSITION_EVAL_EVERY_N:
+            tracker["opus_eval_counter"] = 0
             if self._pos_check_running:
                 logger.info("Opus position eval skipped (on-demand check already running)")
             else:
@@ -1506,6 +1543,7 @@ class TradingMonitor:
                         entry_context = {}
                     current_indicators = await self._fetch_current_indicators()
 
+                    _price_buf = list(tracker["price_buffer"])
                     eval_result = await asyncio.get_event_loop().run_in_executor(
                         None,
                         lambda: self.analyzer.evaluate_open_position(
@@ -1516,7 +1554,7 @@ class TradingMonitor:
                             take_profit=tp_level,
                             phase=phase,
                             time_in_trade_min=time_open_min,
-                            recent_prices=list(self._position_price_buffer),
+                            recent_prices=_price_buf,
                             lots=pos_state.get("lots", 1.0),
                             entry_context=entry_context,
                             current_indicators=current_indicators,
@@ -1586,10 +1624,12 @@ class TradingMonitor:
         old_balance = self.storage.get_account_state().get("balance", 0) or 0
         pnl_dollars = round(new_balance - old_balance, 2) if new_balance else 0
 
-        # Exit price for display: use momentum tracker if available, else estimate from PnL
+        # Exit price for display: use per-position momentum tracker if available, else estimate from PnL
         last_price = 0
-        if self.momentum_tracker and self.momentum_tracker._prices:
-            last_price = self.momentum_tracker._prices[-1]["price"]
+        pos_tracker = self._position_trackers.get(deal_id, {})
+        mt = pos_tracker.get("momentum_tracker") or self.momentum_tracker
+        if mt and mt._prices:
+            last_price = mt._prices[-1]["price"]
         if not last_price and pnl_dollars:
             lots = float(pos_state.get("lots") or 1)
             if lots and CONTRACT_SIZE:
@@ -1633,8 +1673,9 @@ class TradingMonitor:
             "phase_at_close": phase,
         })
         self.storage.record_trade_result(pnl_dollars, new_balance)
-        self.storage.set_position_closed()
+        self.storage.set_position_closed(deal_id)
         self.storage.clear_ai_cooldown()  # Position closed — allow immediate AI escalation on next scan
+        self._remove_tracker(deal_id)
         self.momentum_tracker = None
 
         sign = "+" if pnl_dollars >= 0 else ""
@@ -1648,6 +1689,8 @@ class TradingMonitor:
 
         # Clear price buffer cache — no longer needed for this trade
         self._price_buffer_cache_path.unlink(missing_ok=True)
+        deal_cache = Path(__file__).parent / "storage" / "data" / f"price_buffer_{deal_id}.json"
+        deal_cache.unlink(missing_ok=True)
         self._position_price_buffer = deque(maxlen=10800)
         self._buffer_save_counter = 0
 
@@ -2041,11 +2084,18 @@ class TradingMonitor:
             }
         )
 
-        # Init momentum tracker + reset price buffer for fresh trade history
-        self.momentum_tracker = MomentumTracker(direction, actual_entry)
-        self._position_price_buffer = deque(maxlen=10800)
-        self._opus_pos_eval_counter = 0
-        self._buffer_save_counter = 0
+        # Init per-position tracker for new trade
+        new_deal_id = result.get("deal_id")
+        tracker = self._get_tracker(new_deal_id)
+        tracker["momentum_tracker"] = MomentumTracker(direction, actual_entry)
+        tracker["price_buffer"] = deque(maxlen=10800)
+        tracker["opus_eval_counter"] = 0
+        tracker["buffer_save_counter"] = 0
+        tracker["empty_count"] = 0
+        tracker["check_counter"] = 0
+        # Sync legacy singleton
+        self.momentum_tracker = tracker["momentum_tracker"]
+        self._position_price_buffer = tracker["price_buffer"]
         self._position_empty_count = 0
         # Clear stale buffer cache from previous trade
         self._price_buffer_cache_path.unlink(missing_ok=True)
@@ -2085,7 +2135,7 @@ class TradingMonitor:
             await asyncio.sleep(2)
 
     def _save_price_buffer(self, opened_at_str: str) -> None:
-        """Persist price buffer to disk so restarts don't lose history."""
+        """Persist price buffer to disk so restarts don't lose history (legacy)."""
         try:
             data = {
                 "opened_at": opened_at_str,
@@ -2096,9 +2146,25 @@ class TradingMonitor:
         except Exception as e:
             logger.warning(f"Price buffer save failed: {e}")
 
+    def _save_price_buffer_for(self, deal_id: str, opened_at_str: str) -> None:
+        """Persist per-position price buffer to disk."""
+        tracker = self._position_trackers.get(deal_id)
+        if not tracker:
+            return
+        try:
+            cache_path = Path(__file__).parent / "storage" / "data" / f"price_buffer_{deal_id}.json"
+            data = {
+                "opened_at": opened_at_str,
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+                "prices": list(tracker["price_buffer"]),
+            }
+            cache_path.write_text(json.dumps(data))
+        except Exception as e:
+            logger.warning(f"Price buffer save failed for {deal_id}: {e}")
+
     def _load_price_buffer(self, opened_at_str: str) -> tuple:
         """
-        Load price buffer from disk cache.
+        Load price buffer from disk cache (legacy).
         Returns (prices: list, saved_at: datetime | None) if cache exists and matches this trade.
         Returns ([], None) otherwise.
         """
@@ -2116,12 +2182,24 @@ class TradingMonitor:
             logger.warning(f"Price buffer load failed: {e}")
             return [], None
 
+    def _load_price_buffer_for(self, deal_id: str, opened_at_str: str) -> tuple:
+        """Load per-position price buffer from disk cache."""
+        cache_path = Path(__file__).parent / "storage" / "data" / f"price_buffer_{deal_id}.json"
+        try:
+            if not cache_path.exists():
+                return self._load_price_buffer(opened_at_str)  # fallback to legacy
+            data = json.loads(cache_path.read_text())
+            if data.get("opened_at") != opened_at_str:
+                cache_path.unlink(missing_ok=True)
+                return [], None
+            saved_at = datetime.fromisoformat(data["saved_at"].replace("Z", "+00:00"))
+            return data.get("prices", []), saved_at
+        except Exception as e:
+            logger.warning(f"Price buffer load failed for {deal_id}: {e}")
+            return [], None
+
     async def _async_fetch_fetch_and_set_buffer(self, opened_at_str: str) -> None:
-        """
-        On startup with existing position: load cached buffer from disk, then
-        fetch only the gap (saved_at → now) from IG and append. Far cheaper than
-        re-fetching the full history on every restart.
-        """
+        """Legacy: On startup with existing position, restore price buffer."""
         try:
             opened_at_dt = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
         except Exception:
@@ -2130,7 +2208,6 @@ class TradingMonitor:
         cached_prices, saved_at = self._load_price_buffer(opened_at_str)
 
         if cached_prices and saved_at:
-            # Cache hit — only fetch the gap
             gap_prices = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.ig.get_trade_history_buffer(saved_at)
             )
@@ -2140,12 +2217,37 @@ class TradingMonitor:
                 f"{len(self._position_price_buffer)} total"
             )
         else:
-            # No cache — full fetch from trade open
             full_prices = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.ig.get_trade_history_buffer(opened_at_dt)
             )
             self._position_price_buffer = deque(full_prices, maxlen=10800)
             logger.info(f"Buffer cold-filled: {len(full_prices)} price points from IG")
+
+    async def _async_fetch_and_set_buffer_for(self, deal_id: str, opened_at_str: str) -> None:
+        """Per-position: On startup, restore price buffer for specific deal."""
+        try:
+            opened_at_dt = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
+        except Exception:
+            return
+
+        tracker = self._get_tracker(deal_id)
+        cached_prices, saved_at = self._load_price_buffer_for(deal_id, opened_at_str)
+
+        if cached_prices and saved_at:
+            gap_prices = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self.ig.get_trade_history_buffer(saved_at)
+            )
+            tracker["price_buffer"] = deque((cached_prices + gap_prices)[-10800:], maxlen=10800)
+            logger.info(
+                f"Buffer restored for {deal_id}: {len(cached_prices)} cached + {len(gap_prices)} gap → "
+                f"{len(tracker['price_buffer'])} total"
+            )
+        else:
+            full_prices = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self.ig.get_trade_history_buffer(opened_at_dt)
+            )
+            tracker["price_buffer"] = deque(full_prices, maxlen=10800)
+            logger.info(f"Buffer cold-filled for {deal_id}: {len(full_prices)} price points from IG")
 
         # Immediately persist so next restart has this as baseline
         self._save_price_buffer(opened_at_str)
@@ -2200,15 +2302,16 @@ class TradingMonitor:
         self._force_scan_event.set()
 
     async def _on_pos_check(self):
-        """Triggered by /poscheck command or dashboard button. Runs Opus position eval immediately."""
+        """Triggered by /poscheck command or dashboard button. Runs Opus position eval on first open position."""
         if self._pos_check_running:
             await self.telegram.send_alert("⏳ Position check already running — please wait.")
             return
-        pos_state = self.storage.get_position_state()
-        if not pos_state.get("has_open"):
+        all_positions = self.storage.get_all_position_states()
+        if not all_positions:
             logger.info("Opus position eval triggered (on-demand) — no open position")
             await self.telegram.send_alert("ℹ️ No open position to evaluate.")
             return
+        pos_state = all_positions[0]  # Evaluate first open position
         self._pos_check_running = True
         try:
             logger.info("Opus position eval triggered (on-demand)")
@@ -2217,6 +2320,7 @@ class TradingMonitor:
             self._pos_check_running = False
             raise
         try:
+            _pos_tracker = self._get_tracker(pos_state.get("deal_id", ""))
             direction = pos_state.get("direction", "LONG")
             logical_direction = "LONG" if direction == "BUY" else ("SHORT" if direction == "SELL" else direction)
             entry = pos_state.get("entry_price", 0)
@@ -2254,7 +2358,7 @@ class TradingMonitor:
                     take_profit=tp_level,
                     phase=phase,
                     time_in_trade_min=time_open_min,
-                    recent_prices=list(self._position_price_buffer),
+                    recent_prices=list(_pos_tracker["price_buffer"]),
                     lots=pos_state.get("lots", 1.0),
                     entry_context=entry_context,
                     current_indicators=current_indicators,

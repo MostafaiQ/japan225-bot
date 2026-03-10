@@ -158,11 +158,35 @@ class Storage:
             # Migrations — ADD COLUMN is idempotent via try/except
             for migration in [
                 "ALTER TABLE position_state ADD COLUMN entry_context TEXT",
+                "ALTER TABLE trades ADD COLUMN phase TEXT DEFAULT 'initial'",
+                "ALTER TABLE trades ADD COLUMN entry_context TEXT",
             ]:
                 try:
                     conn.execute(migration)
                 except sqlite3.OperationalError:
                     pass  # column already exists
+
+            # Create pending_alerts table (replaces pending_alert column in position_state)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS pending_alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    alert_data TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expired INTEGER DEFAULT 0
+                )
+            """)
+
+            # Backfill: copy phase/entry_context from position_state to matching open trade
+            try:
+                ps = conn.execute("SELECT deal_id, phase, entry_context FROM position_state WHERE id=1 AND has_open=1").fetchone()
+                if ps and ps["deal_id"]:
+                    conn.execute(
+                        "UPDATE trades SET phase = ?, entry_context = ? WHERE deal_id = ? AND closed_at IS NULL AND phase = 'initial'",
+                        (ps["phase"] or "initial", ps["entry_context"], ps["deal_id"])
+                    )
+            except Exception:
+                pass  # backfill is best-effort
+
             logger.info("Database initialized")
     
     def _conn(self) -> sqlite3.Connection:
@@ -279,13 +303,61 @@ class Storage:
     # ==========================================
     
     def get_position_state(self) -> dict:
-        """Get current position state."""
+        """Get current position state from trades table (first open position).
+        Returns dict with has_open, deal_id, direction, lots, entry_price,
+        stop_level, limit_level, opened_at, phase, confidence, entry_context.
+        """
         with self._conn() as conn:
-            row = conn.execute("SELECT * FROM position_state WHERE id = 1").fetchone()
-        return self._row_to_dict(row) if row else {"has_open": False}
-    
+            row = conn.execute(
+                "SELECT * FROM trades WHERE closed_at IS NULL ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+        if not row:
+            return {"has_open": False}
+        d = self._row_to_dict(row)
+        return {
+            "has_open": True,
+            "deal_id": d.get("deal_id"),
+            "direction": d.get("direction"),
+            "lots": d.get("lots"),
+            "entry_price": d.get("entry_price"),
+            "stop_level": d.get("stop_loss"),
+            "limit_level": d.get("take_profit"),
+            "opened_at": d.get("opened_at"),
+            "phase": d.get("phase", "initial"),
+            "confidence": d.get("confidence"),
+            "entry_context": d.get("entry_context"),
+            "updated_at": d.get("opened_at"),
+        }
+
+    def get_all_position_states(self) -> list[dict]:
+        """Get all open positions from trades table."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM trades WHERE closed_at IS NULL ORDER BY id ASC"
+            ).fetchall()
+        result = []
+        for row in rows:
+            d = self._row_to_dict(row)
+            result.append({
+                "has_open": True,
+                "deal_id": d.get("deal_id"),
+                "direction": d.get("direction"),
+                "lots": d.get("lots"),
+                "entry_price": d.get("entry_price"),
+                "stop_level": d.get("stop_loss"),
+                "limit_level": d.get("take_profit"),
+                "opened_at": d.get("opened_at"),
+                "phase": d.get("phase", "initial"),
+                "confidence": d.get("confidence"),
+                "entry_context": d.get("entry_context"),
+                "updated_at": d.get("opened_at"),
+            })
+        return result
+
     def set_position_open(self, position: dict):
-        """Record a new open position."""
+        """Record a new open position (legacy compat — updates position_state singleton).
+        New code should use open_trade_atomic() which writes directly to trades table.
+        """
         entry_ctx = position.get("entry_context")
         with self._conn() as conn:
             conn.execute("""
@@ -307,10 +379,20 @@ class Storage:
                 datetime.now().isoformat(),
                 json.dumps(entry_ctx) if entry_ctx else None,
             ))
-    
-    def set_position_closed(self):
-        """Clear the open position."""
+
+    def set_position_closed(self, deal_id: str = None):
+        """Mark position as closed.
+        If deal_id provided: sets closed_at on that specific trade row.
+        Also updates legacy position_state singleton for backward compat.
+        """
+        now = datetime.now().isoformat()
         with self._conn() as conn:
+            if deal_id:
+                conn.execute(
+                    "UPDATE trades SET phase = 'closed' WHERE deal_id = ? AND closed_at IS NULL",
+                    (deal_id,)
+                )
+            # Legacy: clear position_state singleton
             conn.execute("""
                 UPDATE position_state SET
                     has_open = 0, deal_id = NULL, direction = NULL,
@@ -318,19 +400,36 @@ class Storage:
                     limit_level = NULL, opened_at = NULL, phase = 'closed',
                     pending_alert = NULL, updated_at = ?
                 WHERE id = 1
-            """, (datetime.now().isoformat(),))
-    
+            """, (now,))
+
     def update_position_phase(self, deal_id: str, phase: str):
-        """Update the exit phase of the current position."""
+        """Update the exit phase of a specific position."""
         with self._conn() as conn:
+            conn.execute(
+                "UPDATE trades SET phase = ? WHERE deal_id = ? AND closed_at IS NULL",
+                (phase, deal_id)
+            )
+            # Legacy: update position_state if it matches
             conn.execute("""
                 UPDATE position_state SET phase = ?, updated_at = ?
                 WHERE id = 1 AND deal_id = ?
             """, (phase, datetime.now().isoformat(), deal_id))
-    
-    def update_position_levels(self, stop_level=None, limit_level=None):
+
+    def update_position_levels(self, stop_level=None, limit_level=None, deal_id: str = None):
         """Update SL/TP levels after modification."""
         with self._conn() as conn:
+            if deal_id:
+                if stop_level is not None:
+                    conn.execute(
+                        "UPDATE trades SET stop_loss = ? WHERE deal_id = ? AND closed_at IS NULL",
+                        (stop_level, deal_id)
+                    )
+                if limit_level is not None:
+                    conn.execute(
+                        "UPDATE trades SET take_profit = ? WHERE deal_id = ? AND closed_at IS NULL",
+                        (limit_level, deal_id)
+                    )
+            # Legacy: update position_state
             if stop_level is not None:
                 conn.execute(
                     "UPDATE position_state SET stop_level = ?, updated_at = ? WHERE id = 1",
@@ -360,14 +459,32 @@ class Storage:
 
     def set_pending_alert(self, alert_data: dict):
         """Store a pending trade alert waiting for user confirmation."""
+        now = datetime.now().isoformat()
         with self._conn() as conn:
+            # Clear any existing non-expired alerts
+            conn.execute("UPDATE pending_alerts SET expired = 1 WHERE expired = 0")
+            conn.execute(
+                "INSERT INTO pending_alerts (alert_data, created_at) VALUES (?, ?)",
+                (json.dumps(alert_data), now)
+            )
+            # Legacy: also write to position_state for backward compat
             conn.execute("""
                 UPDATE position_state SET pending_alert = ?, updated_at = ?
                 WHERE id = 1
-            """, (json.dumps(alert_data), datetime.now().isoformat()))
-    
+            """, (json.dumps(alert_data), now))
+
     def get_pending_alert(self) -> Optional[dict]:
         """Get pending trade alert if any."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT alert_data FROM pending_alerts WHERE expired = 0 ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        if row:
+            try:
+                return json.loads(row["alert_data"])
+            except (json.JSONDecodeError, TypeError):
+                return None
+        # Fallback to legacy position_state
         state = self.get_position_state()
         alert = state.get("pending_alert")
         if alert and isinstance(alert, str):
@@ -376,10 +493,12 @@ class Storage:
             except json.JSONDecodeError:
                 return None
         return alert
-    
+
     def clear_pending_alert(self):
         """Clear pending alert (expired or rejected)."""
         with self._conn() as conn:
+            conn.execute("UPDATE pending_alerts SET expired = 1 WHERE expired = 0")
+            # Legacy
             conn.execute(
                 "UPDATE position_state SET pending_alert = NULL WHERE id = 1"
             )
@@ -530,11 +649,12 @@ class Storage:
     def open_trade_atomic(self, trade: dict, position: dict) -> int:
         """
         Log trade open AND set position state in a single transaction.
-        Prevents the DB from ever being in a state where a trade is logged
-        but the position state isn't set (or vice versa).
+        Trades table is the source of truth. position_state updated for legacy compat.
 
         Returns trade number on success.
         """
+        entry_ctx = position.get("entry_context")
+        entry_ctx_json = json.dumps(entry_ctx) if entry_ctx else None
         with self._conn() as conn:
             row = conn.execute("SELECT MAX(trade_number) as max_num FROM trades").fetchone()
             trade_num = (row["max_num"] or 0) + 1
@@ -542,8 +662,9 @@ class Storage:
             conn.execute("""
                 INSERT INTO trades (trade_number, deal_id, opened_at, direction, lots,
                     entry_price, stop_loss, take_profit, balance_before, confidence,
-                    confidence_breakdown, setup_type, session, ai_analysis, news_at_entry)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    confidence_breakdown, setup_type, session, ai_analysis, news_at_entry,
+                    phase, entry_context)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 trade_num,
                 trade.get("deal_id"),
@@ -560,9 +681,11 @@ class Storage:
                 trade.get("session"),
                 trade.get("ai_analysis"),
                 json.dumps(trade.get("news_at_entry", [])),
+                "initial",
+                entry_ctx_json,
             ))
 
-            entry_ctx = position.get("entry_context")
+            # Legacy: also update position_state singleton
             conn.execute("""
                 UPDATE position_state SET
                     has_open = 1, deal_id = ?, direction = ?, lots = ?,
@@ -580,7 +703,7 @@ class Storage:
                 position.get("opened_at", datetime.now().isoformat()),
                 position.get("confidence"),
                 datetime.now().isoformat(),
-                json.dumps(entry_ctx) if entry_ctx else None,
+                entry_ctx_json,
             ))
 
         return trade_num

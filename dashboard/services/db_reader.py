@@ -30,38 +30,48 @@ def _row(r) -> dict:
 
 # ── Position ──────────────────────────────────────────────────────────────────
 
-def get_position() -> dict | None:
-    """Return open position from position_state, or None."""
+def _format_position(row) -> dict:
+    """Format a trades row into frontend-compatible position dict."""
+    p = dict(row)
+    if p.get("opened_at"):
+        try:
+            opened = datetime.fromisoformat(p["opened_at"])
+            mins = int((datetime.now() - opened).total_seconds() / 60)
+            h, m = divmod(mins, 60)
+            p["duration"] = f"{h}h {m}m" if h else f"{m}m"
+        except Exception:
+            p["duration"] = "—"
+    return {
+        "deal_id":        p.get("deal_id"),
+        "direction":      p.get("direction"),
+        "entry_price":    p.get("entry_price"),
+        "stop_loss":      p.get("stop_loss"),
+        "take_profit":    p.get("take_profit"),
+        "size":           p.get("lots"),
+        "phase":          (p.get("phase") or "INITIAL").upper(),
+        "opened_at":      p.get("opened_at"),
+        "duration":       p.get("duration", "—"),
+        "confidence":     p.get("confidence"),
+    }
+
+
+def get_positions() -> list[dict]:
+    """Return all open positions from trades table."""
     try:
         with _conn() as conn:
-            ps = conn.execute("SELECT * FROM position_state WHERE id=1").fetchone()
-        if not ps or not ps["has_open"]:
-            return None
-        p = dict(ps)
-        # Compute duration
-        if p.get("opened_at"):
-            try:
-                opened = datetime.fromisoformat(p["opened_at"])
-                mins = int((datetime.now() - opened).total_seconds() / 60)
-                h, m = divmod(mins, 60)
-                p["duration"] = f"{h}h {m}m" if h else f"{m}m"
-            except Exception:
-                p["duration"] = "—"
-        # Map DB column names → frontend names
-        return {
-            "direction":      p.get("direction"),
-            "entry_price":    p.get("entry_price"),
-            "stop_loss":      p.get("stop_level"),
-            "take_profit":    p.get("limit_level"),
-            "size":           p.get("lots"),
-            "phase":          (p.get("phase") or "INITIAL").upper(),
-            "opened_at":      p.get("opened_at"),
-            "duration":       p.get("duration", "—"),
-            "confidence":     p.get("confidence"),
-            # current_price / unrealised_pnl injected from bot_state.json in status router
-        }
+            rows = conn.execute(
+                "SELECT deal_id, direction, lots, entry_price, stop_loss, take_profit, "
+                "opened_at, phase, confidence FROM trades WHERE closed_at IS NULL ORDER BY id ASC"
+            ).fetchall()
+        return [_format_position(r) for r in rows]
     except Exception:
-        return None
+        return []
+
+
+def get_position() -> dict | None:
+    """Return first open position, or None. Backward compatible."""
+    positions = get_positions()
+    return positions[0] if positions else None
 
 
 # ── Scans ─────────────────────────────────────────────────────────────────────

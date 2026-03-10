@@ -3,9 +3,9 @@
 
 ## class TradingMonitor
 __init__(): creates Storage, IGClient, RiskManager, TelegramBot, ExitManager, AIAnalyzer,
-            WebResearcher. Sets scanning_paused=False, momentum_tracker=None,
-            _position_empty_count=0, _force_scan_event=asyncio.Event(),
-            _opus_pos_eval_counter=0, _position_price_buffer=[],
+            WebResearcher. Sets scanning_paused=False, momentum_tracker=None (legacy),
+            _position_trackers={} (per deal_id: {momentum_tracker, price_buffer, opus_eval_counter, buffer_save_counter, empty_count, check_counter}),
+            _force_scan_event=asyncio.Event(),
             _streaming_reconnect_counter=0 (consecutive cycles without streaming price → triggers reconnect)
             NOTE: telegram.on_trade_confirm and on_force_scan callbacks set AFTER initialize()
 
@@ -16,13 +16,17 @@ start(): initializes Telegram FIRST (always available), then writes bot_state.js
   Once IG connected → startup_sync() → ig.start_streaming() → main loop.
   start_streaming() is best-effort: logs warning and falls back to REST on failure.
 
-startup_sync(): reconciles DB ↔ IG on every restart. 4 cases:
-  - IG has / DB none → write DB, init MomentumTracker, alert
-  - DB has / IG none → set_position_closed(), log_trade_close, alert
-  - Both agree → reinit MomentumTracker from DB state, alert
+startup_sync(): reconciles DB ↔ IG on every restart. Multi-position aware (2026-03-10).
+  Iterates ALL IG positions and ALL DB positions independently:
+  - IG has / DB none → open_trade_atomic(), init tracker, alert (per position)
+  - DB has / IG none → set_position_closed(deal_id), log_trade_close, alert (per position)
+  - Both match (deal_id) → reinit tracker from DB state, alert
   - Neither → clean start alert
+  - POSITIONS_API_ERROR → abort, no DB changes, send warning
 
-_main_cycle(): dispatches to _monitoring_cycle or _scanning_cycle based on DB position state.
+_main_cycle(): calls get_all_position_states(), iterates _monitoring_cycle(pos) for each.
+  Single _check_all_positions_exist() call (one IG API call for all positions).
+  If under MAX_OPEN_POSITIONS cap: allows concurrent scanning.
   Scanning sleep uses asyncio.wait_for(_force_scan_event.wait(), timeout=interval) — interruptible.
   After _scanning_cycle() returns: sets self._next_scan_at = now + timedelta(seconds=interval), calls _write_state().
   Clears _next_scan_at after sleep completes.
@@ -83,25 +87,31 @@ _scanning_cycle() -> int (sleep seconds):
   12. save_scan(), action_taken = pending_* (if confirmed) or ai_rejected_* (if not)
   13. risk.validate_trade(), set_pending_alert(), telegram.send_trade_alert()
 
-_monitoring_cycle(pos_state):  # every 2s price check; position existence check every N cycles
-  1. ig.get_open_positions() → check POSITIONS_API_ERROR sentinel
-  2. consecutive empty check (SAFETY_CONSECUTIVE_EMPTY=2)
-  3. STREAMING PRICE: ig.get_streaming_price() — if fresh (<10s old) → use as current_price
+_monitoring_cycle(pos_state):  # every 2s price check; per-position tracker via _get_tracker(deal_id)
+  1. Position existence: handled by _check_all_positions_exist() in _main_cycle (single IG call)
+  2. STREAMING PRICE: ig.get_streaming_price() — if fresh (<10s old) → use as current_price
      FALLBACK (streaming None/stale): REST ig.get_market_info(). After 30 consecutive REST cycles (60s)
      → background asyncio.create_task(_try_reconnect_streaming()) to restore streaming.
      REST fallback is transparent — position monitoring continues uninterrupted.
+  3. tracker = _get_tracker(deal_id) → per-position momentum_tracker, price_buffer, eval counter
   4. momentum_tracker.add_price(), should_alert()
   5. SEVERE adverse tier + Phase.INITIAL → auto-move SL to entry+BREAKEVEN_BUFFER (safety net, kept)
-     MILD/MODERATE alerts REMOVED — replaced by Opus 2-minute position evaluator (see below)
   6. exit_manager.evaluate_position() → execute_action()
   7. Phase.RUNNER → manual_trail_update()
-  8. _position_price_buffer: rolling 30-price deque (last 60s of prices)
-     _opus_pos_eval_counter: increments each cycle; resets at OPUS_POSITION_EVAL_EVERY_N=60
+  8. Per-position price_buffer: rolling 30-price deque (last 60s of prices)
+     Per-position opus_eval_counter: resets at OPUS_POSITION_EVAL_EVERY_N=60
      Every 60 cycles (120s): run_in_executor(ai.evaluate_open_position(...))
        → telegram.send_position_eval(eval_result)
        → if CLOSE_NOW and conf >= 70: auto-close position
 
-_handle_position_closed(pos_state): logs trade, sends Telegram, resets momentum_tracker=None
+_check_all_positions_exist(): single ig.get_open_positions() call, checks all DB positions against IG.
+  Per-position empty_count tracking. Triggers _handle_position_closed(pos) after SAFETY_CONSECUTIVE_EMPTY=2.
+
+_get_tracker(deal_id) -> dict: returns or creates per-position tracker dict.
+_remove_tracker(deal_id): cleans up tracker on position close.
+Per-position price buffer files: price_buffer_{deal_id}.json
+
+_handle_position_closed(pos_state): logs trade, sends Telegram, calls set_position_closed(deal_id), _remove_tracker(deal_id)
 
 _auto_execute_after_timeout(alert_data, timeout_secs=120): asyncio background task.
   Waits 120s, then checks if pending alert still exists (user didn't respond).

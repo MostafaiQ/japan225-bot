@@ -20,7 +20,7 @@ _nav_kb(ctx="default") → InlineKeyboardMarkup (1 row of 3 context buttons)
 Contexts: status, balance, journal, stats, today, cost, pause, resume, force, kill, close, default
 
 ## Text helpers (instance methods, no async)
-_status_text()  → str   — full status block
+_status_text()  → str   — full status block (multi-position: shows numbered list of all open positions)
 _balance_text() → str   — account balance block
 _journal_text() → str | None  — last 5 trades (None if no trades)
 _today_text()   → str | None  — today's scans (None if no scans)
@@ -52,8 +52,8 @@ stop()            → Graceful shutdown
 /force  → triggers on_force_scan callback + _nav_kb("force")
 /stop, /pause → sets storage.set_system_active(False) + _nav_kb("pause")
 /resume → sets storage.set_system_active(True) + _nav_kb("resume")
-/close  → confirmation dialog with "Close now" / "Hold" inline buttons
-/kill   → EMERGENCY: close position immediately, no confirmation + _nav_kb("kill")
+/close  → 1 position: confirmation dialog; 2+ positions: selection buttons (close_position:{deal_id}), then confirm
+/kill   → 1 position: immediate close; 2+ positions: selection buttons (kill_position:{deal_id}), then immediate close
 
 ## MessageHandler (_handle_text)
 Handles reply-keyboard taps (maps via _KB_MAP → dispatches same as callback)
@@ -85,7 +85,8 @@ confirm_trade     → checks expiry → on_trade_confirm(alert_data) → clears 
 reject_trade      → clears pending_alert, appends REJECTED to message
 force_open        → checks expiry → on_trade_confirm(alert_data) → clears pending_alert (same flow as confirm_trade)
 reject_force      → clears pending_alert, appends SKIPPED to message
-close_position:<id> → validates deal_id match → run_in_executor(ig.close_position()) → records in DB
+close_position:<id> → finds position from get_all_position_states() → run_in_executor(ig.close_position()) → records in DB
+kill_position:<id>  → finds position from get_all_position_states() → immediate close, no confirm
 hold_position     → appends "Holding position" to message
 noop              → no-op
 menu_status/balance/journal/today/stats/cost/force/pause/resume/close/kill → same as /commands

@@ -203,33 +203,34 @@ class TelegramBot:
             return 0
 
     def _status_text(self) -> str:
-        pos = self.storage.get_position_state()
+        all_positions = self.storage.get_all_position_states()
         acc = self.storage.get_account_state()
         on_cd = self.storage.is_ai_on_cooldown(AI_COOLDOWN_MINUTES)
         cd_info = self.storage.get_ai_cooldown()
         lines = ["🤖 <b>Japan 225 Bot</b>", DIV]
-        if pos.get("has_open"):
-            entry = float(pos.get("entry_price") or 0)
+        if all_positions:
             current = self._get_current_price()
-            direction = (pos.get("direction") or "").upper()
-            # Compute live P&L in points
-            if current and entry:
-                pnl_pts = (current - entry) if direction == "LONG" else (entry - current)
-            else:
-                pnl_pts = 0
-            tp_raw = pos.get("limit_level")
-            tp_str = _price(tp_raw) + " 🟢" if tp_raw else "<i>trailing</i>"
-            lines += [
-                "📌 <b>Open Position</b>",
-                f"Direction: {_dir(direction)}",
-                f"Entry:  {_price(entry)}",
-                f"Now:    {_price(current)}" if current else "",
-                f"SL:     {_price(pos.get('stop_level', 0))} 🔴",
-                f"TP:     {tp_str}",
-                f"Phase:  <b>{pos.get('phase', '?')}</b>",
-                f"P&amp;L:    {_pnl(pnl_pts)}",
-                DIV,
-            ]
+            for i, pos in enumerate(all_positions, 1):
+                entry = float(pos.get("entry_price") or 0)
+                direction = (pos.get("direction") or "").upper()
+                if current and entry:
+                    pnl_pts = (current - entry) if direction == "LONG" else (entry - current)
+                else:
+                    pnl_pts = 0
+                tp_raw = pos.get("limit_level")
+                tp_str = _price(tp_raw) + " 🟢" if tp_raw else "<i>trailing</i>"
+                header = f"📌 <b>Position #{i}</b>" if len(all_positions) > 1 else "📌 <b>Open Position</b>"
+                lines += [
+                    header,
+                    f"Direction: {_dir(direction)}",
+                    f"Entry:  {_price(entry)}",
+                    f"Now:    {_price(current)}" if current else "",
+                    f"SL:     {_price(pos.get('stop_level', 0))} 🔴",
+                    f"TP:     {tp_str}",
+                    f"Phase:  <b>{pos.get('phase', '?')}</b>",
+                    f"P&amp;L:    {_pnl(pnl_pts)}",
+                    DIV,
+                ]
             # Remove empty lines
             lines = [l for l in lines if l]
         else:
@@ -824,31 +825,50 @@ class TelegramBot:
         )
 
     async def _cmd_close(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        pos = self.storage.get_position_state()
-        if not pos.get("has_open"):
+        all_positions = self.storage.get_all_position_states()
+        if not all_positions:
             await update.message.reply_text(
                 "ℹ️ No open position to close.", reply_markup=_nav_kb("default")
             )
             return
-        pnl = pos.get("unrealised_pnl", 0) or 0
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔴 Yes, close now",
-                                 callback_data=f"close_position:{pos.get('deal_id')}"),
-            InlineKeyboardButton("⏳ Cancel", callback_data="hold_position"),
-        ]])
-        await update.message.reply_text(
-            f"❓ <b>Close position?</b>\n{DIV}\n"
-            f"Direction: {_dir(pos.get('direction', '?'))}\n"
-            f"Entry:     {_price(pos.get('entry_price', 0))}\n"
-            f"SL:        {_price(pos.get('stop_level', 0))}\n"
-            f"P&amp;L now:   {_pnl(pnl)}",
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard,
-        )
+        if len(all_positions) == 1:
+            pos = all_positions[0]
+            pnl = pos.get("unrealised_pnl", 0) or 0
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔴 Yes, close now",
+                                     callback_data=f"close_position:{pos.get('deal_id')}"),
+                InlineKeyboardButton("⏳ Cancel", callback_data="hold_position"),
+            ]])
+            await update.message.reply_text(
+                f"❓ <b>Close position?</b>\n{DIV}\n"
+                f"Direction: {_dir(pos.get('direction', '?'))}\n"
+                f"Entry:     {_price(pos.get('entry_price', 0))}\n"
+                f"SL:        {_price(pos.get('stop_level', 0))}\n"
+                f"P&amp;L now:   {_pnl(pnl)}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+        else:
+            # Multiple positions — show selection buttons
+            buttons = []
+            for i, pos in enumerate(all_positions, 1):
+                direction = (pos.get("direction") or "?").upper()
+                entry = float(pos.get("entry_price") or 0)
+                label = f"#{i} {direction} @ {entry:.0f}"
+                buttons.append([InlineKeyboardButton(
+                    f"🔴 Close {label}",
+                    callback_data=f"close_position:{pos.get('deal_id')}"
+                )])
+            buttons.append([InlineKeyboardButton("⏳ Cancel", callback_data="hold_position")])
+            await update.message.reply_text(
+                f"❓ <b>Which position to close?</b> ({len(all_positions)} open)",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
 
     async def _cmd_kill(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        pos = self.storage.get_position_state()
-        if not pos.get("has_open"):
+        all_positions = self.storage.get_all_position_states()
+        if not all_positions:
             await update.message.reply_text(
                 "ℹ️ No open position.", reply_markup=_nav_kb("default")
             )
@@ -860,22 +880,41 @@ class TelegramBot:
                 parse_mode=ParseMode.HTML,
             )
             return
-        await update.message.reply_text("🚨 KILL received. Closing immediately...")
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None, lambda: self.ig.close_position(pos["deal_id"], pos["direction"], pos["lots"])
-        )
-        if result:
-            self.storage.set_position_closed()
-            await update.message.reply_text(
-                "✅ <b>Position KILLED.</b>\nEmergency close executed.",
-                parse_mode=ParseMode.HTML,
-                reply_markup=_nav_kb("kill"),
+        if len(all_positions) == 1:
+            pos = all_positions[0]
+            await update.message.reply_text("🚨 KILL received. Closing immediately...")
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None, lambda: self.ig.close_position(pos["deal_id"], pos["direction"], pos["lots"])
             )
+            if result:
+                self.storage.set_position_closed(pos["deal_id"])
+                await update.message.reply_text(
+                    "✅ <b>Position KILLED.</b>\nEmergency close executed.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_nav_kb("kill"),
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ <b>Kill FAILED.</b>\nCheck IG immediately — close manually if needed.",
+                    parse_mode=ParseMode.HTML,
+                )
         else:
+            # Multiple positions — show selection buttons
+            buttons = []
+            for i, pos in enumerate(all_positions, 1):
+                direction = (pos.get("direction") or "?").upper()
+                entry = float(pos.get("entry_price") or 0)
+                label = f"#{i} {direction} @ {entry:.0f}"
+                buttons.append([InlineKeyboardButton(
+                    f"🚨 Kill {label}",
+                    callback_data=f"kill_position:{pos.get('deal_id')}"
+                )])
+            buttons.append([InlineKeyboardButton("⏳ Cancel", callback_data="hold_position")])
             await update.message.reply_text(
-                "❌ <b>Kill FAILED.</b>\nCheck IG immediately — close manually if needed.",
+                f"🚨 <b>Which position to KILL?</b> ({len(all_positions)} open)",
                 parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(buttons),
             )
 
     async def _cmd_force(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -957,10 +996,11 @@ class TelegramBot:
                 parse_mode=ParseMode.HTML, reply_markup=_nav_kb("resume"),
             )
         elif cb == "menu_close":
-            pos = self.storage.get_position_state()
-            if not pos.get("has_open"):
+            all_positions = self.storage.get_all_position_states()
+            if not all_positions:
                 await msg.reply_text("ℹ️ No open position.", reply_markup=_nav_kb("default"))
-            else:
+            elif len(all_positions) == 1:
+                pos = all_positions[0]
                 pnl = pos.get("unrealised_pnl", 0) or 0
                 keyboard = InlineKeyboardMarkup([[
                     InlineKeyboardButton("🔴 Yes, close now",
@@ -974,20 +1014,35 @@ class TelegramBot:
                     f"P&amp;L now:   {_pnl(pnl)}",
                     parse_mode=ParseMode.HTML, reply_markup=keyboard,
                 )
+            else:
+                buttons = []
+                for i, pos in enumerate(all_positions, 1):
+                    direction = (pos.get("direction") or "?").upper()
+                    entry = float(pos.get("entry_price") or 0)
+                    buttons.append([InlineKeyboardButton(
+                        f"🔴 Close #{i} {direction} @ {entry:.0f}",
+                        callback_data=f"close_position:{pos.get('deal_id')}"
+                    )])
+                buttons.append([InlineKeyboardButton("⏳ Cancel", callback_data="hold_position")])
+                await msg.reply_text(
+                    f"❓ <b>Which position to close?</b> ({len(all_positions)} open)",
+                    parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(buttons),
+                )
         elif cb == "menu_kill":
-            pos = self.storage.get_position_state()
-            if not pos.get("has_open"):
+            all_positions = self.storage.get_all_position_states()
+            if not all_positions:
                 await msg.reply_text("ℹ️ No open position.", reply_markup=_nav_kb("default"))
             elif not self.ig:
                 await msg.reply_text("⚠️ IG client not connected.", parse_mode=ParseMode.HTML)
-            else:
+            elif len(all_positions) == 1:
+                pos = all_positions[0]
                 await msg.reply_text("🚨 KILL received. Closing immediately...")
                 loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(
                     None, lambda: self.ig.close_position(pos["deal_id"], pos["direction"], pos["lots"])
                 )
                 if result:
-                    self.storage.set_position_closed()
+                    self.storage.set_position_closed(pos["deal_id"])
                     await msg.reply_text(
                         "✅ <b>Position KILLED.</b>",
                         parse_mode=ParseMode.HTML, reply_markup=_nav_kb("kill"),
@@ -997,6 +1052,20 @@ class TelegramBot:
                         "❌ <b>Kill FAILED.</b> Check IG immediately.",
                         parse_mode=ParseMode.HTML,
                     )
+            else:
+                buttons = []
+                for i, pos in enumerate(all_positions, 1):
+                    direction = (pos.get("direction") or "?").upper()
+                    entry = float(pos.get("entry_price") or 0)
+                    buttons.append([InlineKeyboardButton(
+                        f"🚨 Kill #{i} {direction} @ {entry:.0f}",
+                        callback_data=f"kill_position:{pos.get('deal_id')}"
+                    )])
+                buttons.append([InlineKeyboardButton("⏳ Cancel", callback_data="hold_position")])
+                await msg.reply_text(
+                    f"🚨 <b>Which position to KILL?</b> ({len(all_positions)} open)",
+                    parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(buttons),
+                )
 
     # ── Callback handler ───────────────────────────────────────────────────
 
@@ -1090,14 +1159,10 @@ class TelegramBot:
 
         elif data.startswith("close_position:"):
             deal_id = data.split(":", 1)[1]
-            pos = self.storage.get_position_state()
-            if not pos.get("has_open"):
+            all_positions = self.storage.get_all_position_states()
+            pos = next((p for p in all_positions if p.get("deal_id") == deal_id), None)
+            if not pos:
                 await query.edit_message_text("ℹ️ Position already closed.")
-                return
-            if pos.get("deal_id") != deal_id:
-                await query.edit_message_text(
-                    "⚠️ Deal ID mismatch — position may have changed.", parse_mode=ParseMode.HTML
-                )
                 return
             if not self.ig:
                 await query.edit_message_text(
@@ -1109,7 +1174,7 @@ class TelegramBot:
                 None, lambda: self.ig.close_position(pos["deal_id"], pos["direction"], pos["lots"])
             )
             if result:
-                self.storage.set_position_closed()
+                self.storage.set_position_closed(deal_id)
                 await query.edit_message_text(
                     query.message.text + "\n\n✅ <b>Position CLOSED.</b>",
                     parse_mode=ParseMode.HTML,
@@ -1117,6 +1182,31 @@ class TelegramBot:
             else:
                 await query.edit_message_text(
                     "❌ <b>Close FAILED.</b> Check IG manually.", parse_mode=ParseMode.HTML
+                )
+
+        elif data.startswith("kill_position:"):
+            deal_id = data.split(":", 1)[1]
+            all_positions = self.storage.get_all_position_states()
+            pos = next((p for p in all_positions if p.get("deal_id") == deal_id), None)
+            if not pos:
+                await query.edit_message_text("ℹ️ Position already closed.")
+                return
+            if not self.ig:
+                await query.edit_message_text("⚠️ IG client not connected.", parse_mode=ParseMode.HTML)
+                return
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None, lambda: self.ig.close_position(pos["deal_id"], pos["direction"], pos["lots"])
+            )
+            if result:
+                self.storage.set_position_closed(deal_id)
+                await query.edit_message_text(
+                    query.message.text + "\n\n✅ <b>Position KILLED.</b>",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                await query.edit_message_text(
+                    "❌ <b>Kill FAILED.</b> Check IG immediately.", parse_mode=ParseMode.HTML
                 )
 
         elif data == "hold_position":

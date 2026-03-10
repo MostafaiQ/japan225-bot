@@ -68,11 +68,17 @@ def _make_monitor(ig_positions, db_state):
     ig.get_open_positions.return_value = ig_positions
     ig.modify_position.return_value = True
     ig.close_position.return_value = {"dealStatus": "ACCEPTED"}
+    ig.get_trade_history_buffer.return_value = []
     monitor.ig = ig
 
     # Storage mock — expose all relevant methods
     storage = MagicMock()
     storage.get_position_state.return_value = db_state
+    # get_all_position_states: return list of position dicts (for multi-position startup_sync)
+    if db_state.get("has_open"):
+        storage.get_all_position_states.return_value = [db_state]
+    else:
+        storage.get_all_position_states.return_value = []
     storage.get_account_state.return_value = {
         "system_active": True, "consecutive_losses": 0,
         "daily_loss_today": 0, "weekly_loss": 0,
@@ -90,6 +96,9 @@ def _make_monitor(ig_positions, db_state):
     monitor._position_empty_count = 0
     monitor._momentum_tracker = None  # private attr (may not be used; real attr is self.momentum_tracker)
     monitor.momentum_tracker = None   # actual attr name in monitor.py
+    monitor._position_trackers = {}   # per-position tracker dict (multi-position support)
+    monitor._position_price_buffer = MagicMock()  # legacy singleton
+    monitor._price_buffer_cache_path = MagicMock()
     monitor._exit_manager = MagicMock()
 
     return monitor

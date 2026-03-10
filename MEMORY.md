@@ -178,8 +178,18 @@ momentum_continuation_short, vwap_rejection_short_momentum
 - **POSITIONS_API_ERROR** is a sentinel in ig_client.py. Check with `is POSITIONS_API_ERROR`, not `not`.
 - **open_trade_atomic()** in storage.py: log_trade_open + set_position_open in one DB transaction. Always use this.
 - **Telegram starts FIRST** in TradingMonitor.start() — before IG connection. Retries IG every 5 min.
-- **Startup sync** handles 4 cases: clean start, IG-has/DB-none (recovery), DB-has/IG-none (closed offline), both agree.
-- **MomentumTracker** is None when flat. Created at trade open, reset at close.
+- **Startup sync** handles multi-position: iterates ALL IG positions and ALL DB positions independently.
+- **Multi-position tracking** (2026-03-10): trades table is source of truth for position state.
+  - `get_position_state()` reads from trades WHERE closed_at IS NULL (not position_state singleton).
+  - `get_all_position_states()` returns ALL open positions as list.
+  - position_state table kept for legacy compat but never dropped.
+  - Per-position trackers in monitor: `_position_trackers[deal_id]` dict with momentum_tracker, price_buffer, etc.
+  - `set_position_closed(deal_id)` requires deal_id param. `log_trade_close` must be called first (sets closed_at).
+  - pending_alerts table replaces pending_alert column in position_state.
+  - Telegram /close and /kill show selection buttons when 2+ positions.
+  - Dashboard API returns `positions` (list) + `position` (first, backward compat).
+  - Frontend `renderPositions()` renders multiple position cards.
+- **MomentumTracker** is per-position. Legacy singleton `self.momentum_tracker` synced to first position.
 - **Local confidence pre-gate**: only escalates to AI if local score >= 60%. Sonnet rejects <50% skip Opus.
 - **WebResearcher.research()** is synchronous/blocking → run in executor.
 - **detect_setup()** bidirectional. BB_MID_THRESHOLD=150pts, BB_LOWER_THRESHOLD=80pts. No above_ema50 gate on mid bounce.
@@ -223,7 +233,7 @@ Force Open: when local conf 100% (12/12) but AI rejects → Telegram alert. Forc
 DB: `storage/data/trading.db` — Oracle VM only. WAL mode. Never commit.
 Digests: `.claude/digests/` — settings · monitor · database · indicators · session · momentum ·
          confidence · ig_client · risk_manager · exit_manager · analyzer · telegram_bot · dashboard · claude_client
-Tests: **424/424 passing** (2026-03-07).
+Tests: **422/422 passing** (2026-03-10).
 
 ## Backtest Benchmarks (2026-03-07 — new weighted confidence + risk-based sizing)
 TA-Only OOS: Scalp SL=60 TP=300 → 690 trades, 47.8% WR, PF=1.16, +$3,305 ✓ PROFITABLE
