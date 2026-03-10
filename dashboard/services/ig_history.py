@@ -705,7 +705,7 @@ def _fetch_journal_locked(days):
     _sync_trades_to_db(trades)
 
     # Compute total PnL for this period (trading only, not deposits)
-    total_pnl = total_trade_pnl
+    total_pnl = sum(t["pnl"] for t in trades)
 
     # Filter: only Japan 225 trades for win rate
     j225 = [t for t in trades if "Japan 225" in t.get("instrument", "")]
