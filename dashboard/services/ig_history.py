@@ -139,12 +139,26 @@ def _fetch_transactions(cst, token, days=30):
 
     from_date = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00")
     to_date = (datetime.utcnow() + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
-    url = f"{base}/history/transactions?from={from_date}&to={to_date}&type=ALL"
+    url = f"{base}/history/transactions?from={from_date}&to={to_date}&type=ALL&pageSize=500"
 
     try:
         resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code == 200:
-            return resp.json().get("transactions", [])
+            data = resp.json()
+            txns = data.get("transactions", [])
+            # Handle pagination — fetch remaining pages if needed
+            meta = data.get("metadata", {}).get("pageData", {})
+            total_pages = meta.get("totalPages", 1)
+            if total_pages > 1:
+                for page in range(2, total_pages + 1):
+                    page_url = f"{url}&pageNumber={page}"
+                    try:
+                        r2 = requests.get(page_url, headers=headers, timeout=15)
+                        if r2.status_code == 200:
+                            txns.extend(r2.json().get("transactions", []))
+                    except Exception:
+                        break
+            return txns
         logger.error(f"IG transactions failed: {resp.status_code}")
     except Exception as e:
         logger.error(f"IG transactions error: {e}")
@@ -430,7 +444,7 @@ def _fetch_journal_locked(days):
         except Exception:
             return None
         best = None
-        best_delta = 60  # max 60 seconds difference
+        best_delta = 600  # max 10 minutes (allows "recovered" trades with timestamp drift)
         for t in _db_by_ts:
             try:
                 db_ts = datetime.fromisoformat(t["opened_at"].replace("Z", "+00:00"))
@@ -449,20 +463,27 @@ def _fetch_journal_locked(days):
                 continue
         return best
 
-    # Separate deposits/withdrawals from trades for correct balance calculation
-    deposits = []  # list of {date, amount, type}
+    # Filter all transactions by cutoff date first
+    cutoff = JOURNAL_CUTOFF
+    transactions = [t for t in transactions if (t.get("dateUtc") or t.get("openDateUtc") or "") >= cutoff]
+
+    # Separate real deposits/withdrawals (ignore interest, dividends, adjustments)
+    deposits = []
     for txn in transactions:
         txn_type = (txn.get("transactionType") or "").upper()
         if txn_type in ("DEPO", "WITH", "DEPOSIT", "WITHDRAWAL"):
             amt = _parse_pnl(txn.get("profitAndLoss", "$0"))
-            deposits.append({
-                "date": txn.get("dateUtc", ""),
-                "amount": amt,
-                "type": "deposit" if txn_type in ("DEPO", "DEPOSIT") else "withdrawal",
-            })
+            # Only count real cash deposits (> $5), not interest/concession adjustments
+            if abs(amt) >= 5:
+                deposits.append({
+                    "date": txn.get("dateUtc", ""),
+                    "amount": amt,
+                    "type": "deposit" if amt > 0 else "withdrawal",
+                })
 
     # Build trade list from IG transactions
     trades = []
+    matched_db_ids = set()  # track which DB trades were matched to IG
     acc = get_account_state()
     ig_live_balance = _fetch_ig_balance(cst, token)
 
@@ -490,6 +511,9 @@ def _fetch_journal_locked(days):
         if db_match is None:
             db_match = _ts_fallback_match(txn.get("openDateUtc", ""), direction)
 
+        if db_match and db_match.get("deal_id"):
+            matched_db_ids.add(db_match["deal_id"])
+
         # Determine auto/manual labels.
         # If we have a DB match, it's a bot trade (opened via PUBLIC_WEB_API).
         # Only fall back to "Manual" when we have no DB match AND no channel info.
@@ -514,13 +538,21 @@ def _fetch_journal_locked(days):
         sl = db_match.get("stop_loss") if db_match else None
         tp = db_match.get("take_profit") if db_match else None
 
-        # Compute R:R (risk : reward)
+        # Compute R:R (planned if SL/TP available, realized from actual entry/exit otherwise)
         rr = None
         if sl and tp and entry:
             risk = abs(entry - sl)
             reward = abs(tp - entry)
             if risk > 0:
                 rr = round(reward / risk, 1)
+        elif entry and exit_p and pnl != 0:
+            # Realized R:R: actual move / estimated risk (SL ~150pts for Japan 225)
+            move_pts = abs(exit_p - entry)
+            est_sl_pts = 150  # standard SL estimate for Japan 225
+            if est_sl_pts > 0:
+                rr = round(move_pts / est_sl_pts, 1)
+                if pnl < 0:
+                    rr = -rr  # negative R:R for losing trades
 
         # Compute duration string
         dur_str = db_match.get("duration") if db_match else None
@@ -566,6 +598,60 @@ def _fetch_journal_locked(days):
         }
 
         trades.append(trade)
+
+    # Add DB-only trades (not matched to any IG transaction — e.g. from demo or pre-switch)
+    for dbt in db_trades:
+        if dbt.get("deal_id") in matched_db_ids:
+            continue
+        if not dbt.get("closed_at"):
+            continue  # skip open positions
+        pnl = dbt.get("pnl") or 0
+        direction = (dbt.get("direction") or "LONG").upper()
+        entry = dbt.get("entry_price") or 0
+        exit_p = dbt.get("exit_price") or 0
+        sl = dbt.get("stop_loss")
+        tp = dbt.get("take_profit")
+        rr = None
+        if sl and tp and entry:
+            risk = abs(entry - sl)
+            reward = abs(tp - entry)
+            if risk > 0:
+                rr = round(reward / risk, 1)
+        dur_str = None
+        try:
+            t_open = datetime.fromisoformat(dbt["opened_at"])
+            t_close = datetime.fromisoformat(dbt["closed_at"])
+            mins = int((t_close - t_open).total_seconds() / 60)
+            h, m = divmod(mins, 60)
+            dur_str = f"{h}h {m}m" if h else f"{m}m"
+        except Exception:
+            dur_str = "?"
+        notes = _build_trade_note(dbt, "", pnl, direction, dur_str)
+        trades.append({
+            "opened_at": dbt.get("opened_at", ""),
+            "closed_at": dbt.get("closed_at", ""),
+            "instrument": "Japan 225 Cash ($1)",
+            "direction": direction,
+            "lots": dbt.get("lots") or 0,
+            "entry_price": entry,
+            "exit_price": exit_p,
+            "stop_loss": sl,
+            "take_profit": tp,
+            "pnl": pnl,
+            "opened_by": "Auto",
+            "closed_by": "System" if (dbt.get("result") or "") in ("SL_HIT", "TP_HIT") else "Manual",
+            "notes": notes,
+            "reference": (dbt.get("deal_id") or "").replace("DIAAAAQ", ""),
+            "confidence": dbt.get("confidence"),
+            "session": dbt.get("session"),
+            "result": dbt.get("result") or ("WIN" if pnl > 0 else "LOSS"),
+            "duration": dur_str,
+            "rr": rr,
+            "_db_deal_id": dbt.get("deal_id"),
+        })
+
+    # Sort all trades chronologically by open date
+    trades.sort(key=lambda t: t.get("opened_at") or "")
 
     # Filter: only trades from Feb 26, 2026 onwards
     cutoff = JOURNAL_CUTOFF

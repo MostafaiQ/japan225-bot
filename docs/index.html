@@ -635,6 +635,12 @@
             <option value="Japan 225">Japan 225</option>
             <option value="other">Other</option>
           </select>
+          <select id="hfSource" onchange="applyHistFilters()" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;">
+            <option value="">All Sources</option>
+            <option value="Auto">Bot</option>
+            <option value="Manual">Manual</option>
+            <option value="System">System</option>
+          </select>
           <input type="date" id="hfDateFrom" onchange="applyHistFilters()" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:12px;" title="From date">
           <input type="date" id="hfDateTo" onchange="applyHistFilters()" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:12px;" title="To date">
           <button class="btn btn-ghost btn-sm" onclick="clearHistFilters()" style="font-size:11px;">Clear</button>
@@ -1243,6 +1249,7 @@ function applyHistFilters() {
   const dir = document.getElementById('hfDir').value;
   const res = document.getElementById('hfResult').value;
   const inst = document.getElementById('hfInst').value;
+  const src = document.getElementById('hfSource').value;
   const dfrom = document.getElementById('hfDateFrom').value;
   const dto = document.getElementById('hfDateTo').value;
 
@@ -1252,6 +1259,7 @@ function applyHistFilters() {
     if (res === 'LOSS' && (t.pnl ?? 0) >= 0) return false;
     if (inst === 'Japan 225' && !(t.instrument||'').includes('Japan 225')) return false;
     if (inst === 'other' && (t.instrument||'').includes('Japan 225')) return false;
+    if (src && t.opened_by !== src) return false;
     if (dfrom) { const d = (t.opened_at||'').slice(0,10); if (d < dfrom) return false; }
     if (dto) { const d = (t.opened_at||'').slice(0,10); if (d > dto) return false; }
     return true;
@@ -1265,6 +1273,7 @@ function clearHistFilters() {
   document.getElementById('hfDir').value = '';
   document.getElementById('hfResult').value = '';
   document.getElementById('hfInst').value = '';
+  document.getElementById('hfSource').value = '';
   document.getElementById('hfDateFrom').value = '';
   document.getElementById('hfDateTo').value = '';
   applyHistFilters();
