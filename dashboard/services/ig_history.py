@@ -463,8 +463,22 @@ def _fetch_journal_locked(days):
                 continue
         return best
 
-    # Filter all transactions by cutoff date first
     cutoff = JOURNAL_CUTOFF
+
+    # Compute total PnL + deposits from ALL transactions (not filtered by cutoff)
+    # so starting_balance accurately reflects account state at cutoff start
+    all_pnl = 0.0
+    all_deposits_amt = 0.0
+    for txn in transactions:
+        txn_type = (txn.get("transactionType") or "").upper()
+        if txn_type == "DEAL":
+            all_pnl += _parse_pnl(txn.get("profitAndLoss", "$0"))
+        elif txn_type in ("DEPO", "WITH", "DEPOSIT", "WITHDRAWAL"):
+            amt = _parse_pnl(txn.get("profitAndLoss", "$0"))
+            if abs(amt) >= 5:
+                all_deposits_amt += amt
+
+    # Now filter transactions by cutoff for display
     transactions = [t for t in transactions if (t.get("dateUtc") or t.get("openDateUtc") or "") >= cutoff]
 
     # Separate real deposits/withdrawals (ignore interest, dividends, adjustments)
@@ -473,7 +487,6 @@ def _fetch_journal_locked(days):
         txn_type = (txn.get("transactionType") or "").upper()
         if txn_type in ("DEPO", "WITH", "DEPOSIT", "WITHDRAWAL"):
             amt = _parse_pnl(txn.get("profitAndLoss", "$0"))
-            # Only count real cash deposits (> $5), not interest/concession adjustments
             if abs(amt) >= 5:
                 deposits.append({
                     "date": txn.get("dateUtc", ""),
@@ -659,10 +672,12 @@ def _fetch_journal_locked(days):
 
     # Compute running balance anchored to live IG balance, accounting for deposits
     current_balance = ig_live_balance if ig_live_balance is not None else acc.get("balance", 0)
-    total_trade_pnl = sum(t["pnl"] for t in trades)
+    # Use ALL-time PnL + deposits for accurate starting balance (not just filtered trades)
+    # This accounts for pre-cutoff trades (e.g. US Tech 100) that affected the balance
+    starting_bal = current_balance - all_pnl - all_deposits_amt
+    # Displayed deposits are only the ones after cutoff
     total_deposits = sum(d["amount"] for d in deposits if d["type"] == "deposit")
     total_withdrawals = sum(abs(d["amount"]) for d in deposits if d["type"] == "withdrawal")
-    starting_bal = current_balance - total_trade_pnl - total_deposits + total_withdrawals
 
     # Build chronological event list: trades + deposits interleaved by date
     # so the running balance correctly accounts for money in/out
