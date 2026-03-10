@@ -910,6 +910,10 @@ class AIAnalyzer:
                 result = _parse_json(raw2, default)
                 tokens = tokens2
 
+        # Cap confidence at 95% — 100% is epistemically impossible and ruins Brier calibration
+        if result.get("confidence", 0) > 95:
+            result["confidence"] = 95
+
         result["_model"]  = model
         result["_cost"]   = 0.0
         result["_tokens"] = tokens
@@ -1051,6 +1055,10 @@ class AIAnalyzer:
                 result["sl_distance"] = sl
                 result["tp_distance"] = tp
                 result["effective_rr"] = round(effective_rr, 2)
+
+        # Cap confidence at 95%
+        if result.get("confidence", 0) > 95:
+            result["confidence"] = 95
 
         result["_model"] = OPUS_MODEL
         logger.info(
@@ -1239,6 +1247,10 @@ class AIAnalyzer:
                 f"Direction mismatch: expected {opposite_direction}, got {result.get('direction')}. "
                 + result.get("reasoning", "")
             )
+
+        # Cap confidence at 95%
+        if result.get("confidence", 0) > 95:
+            result["confidence"] = 95
 
         result["_model"] = OPUS_MODEL
         result["_cost"] = 0.0
