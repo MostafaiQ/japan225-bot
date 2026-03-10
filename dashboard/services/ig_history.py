@@ -449,6 +449,18 @@ def _fetch_journal_locked(days):
                 continue
         return best
 
+    # Separate deposits/withdrawals from trades for correct balance calculation
+    deposits = []  # list of {date, amount, type}
+    for txn in transactions:
+        txn_type = (txn.get("transactionType") or "").upper()
+        if txn_type in ("DEPO", "WITH", "DEPOSIT", "WITHDRAWAL"):
+            amt = _parse_pnl(txn.get("profitAndLoss", "$0"))
+            deposits.append({
+                "date": txn.get("dateUtc", ""),
+                "amount": amt,
+                "type": "deposit" if txn_type in ("DEPO", "DEPOSIT") else "withdrawal",
+            })
+
     # Build trade list from IG transactions
     trades = []
     acc = get_account_state()
@@ -559,27 +571,49 @@ def _fetch_journal_locked(days):
     cutoff = JOURNAL_CUTOFF
     trades = [t for t in trades if (t.get("opened_at") or "") >= cutoff]
 
-    # Compute running balance anchored to live IG balance (not stale DB)
+    # Compute running balance anchored to live IG balance, accounting for deposits
     current_balance = ig_live_balance if ig_live_balance is not None else acc.get("balance", 0)
-    total_pnl_filtered = sum(t["pnl"] for t in trades)
-    starting_bal = current_balance - total_pnl_filtered
+    total_trade_pnl = sum(t["pnl"] for t in trades)
+    total_deposits = sum(d["amount"] for d in deposits if d["type"] == "deposit")
+    total_withdrawals = sum(abs(d["amount"]) for d in deposits if d["type"] == "withdrawal")
+    starting_bal = current_balance - total_trade_pnl - total_deposits + total_withdrawals
+
+    # Build chronological event list: trades + deposits interleaved by date
+    # so the running balance correctly accounts for money in/out
+    events = []
+    for t in trades:
+        events.append(("trade", t.get("closed_at") or t.get("opened_at", ""), t))
+    for d in deposits:
+        events.append(("deposit", d["date"], d))
+    events.sort(key=lambda e: e[1])
 
     current_bal = starting_bal
-    for t in trades:  # chronological order (oldest first)
-        t["balance_before"] = round(current_bal, 2)
-        current_bal += t["pnl"]
-        t["balance_after"] = round(current_bal, 2)
+    deposit_idx = 0
+    for etype, edate, edata in events:
+        if etype == "deposit":
+            if edata["type"] == "deposit":
+                current_bal += edata["amount"]
+            else:
+                current_bal -= abs(edata["amount"])
+        else:  # trade
+            edata["balance_before"] = round(current_bal, 2)
+            current_bal += edata["pnl"]
+            edata["balance_after"] = round(current_bal, 2)
 
     # Sync IG values (pnl, exit_price, balance_before, balance_after) back to DB
     _sync_trades_to_db(trades)
 
-    # Compute total PnL for this period
-    total_pnl = sum(t["pnl"] for t in trades)
-    starting_balance = trades[0]["balance_before"] if trades else acc.get("starting_balance", 0)
+    # Compute total PnL for this period (trading only, not deposits)
+    total_pnl = total_trade_pnl
 
     # Filter: only Japan 225 trades for win rate
     j225 = [t for t in trades if "Japan 225" in t.get("instrument", "")]
     j225_wins = len([t for t in j225 if t["pnl"] > 0])
+    # Separate bot vs manual stats
+    j225_bot = [t for t in j225 if t.get("opened_by") == "Auto"]
+    j225_bot_wins = len([t for t in j225_bot if t["pnl"] > 0])
+    j225_manual = [t for t in j225 if t.get("opened_by") != "Auto"]
+    j225_manual_wins = len([t for t in j225_manual if t["pnl"] > 0])
 
     # Strip internal field before returning
     for t in trades:
@@ -589,10 +623,15 @@ def _fetch_journal_locked(days):
         "trades": trades,
         "account": {
             "balance": round(current_balance, 2),
-            "starting_balance": round(starting_balance, 2),
+            "starting_balance": round(starting_bal, 2),
             "total_pnl": round(total_pnl, 2),
+            "total_deposits": round(total_deposits, 2),
             "j225_wins": j225_wins,
             "j225_total": len(j225),
+            "j225_bot_wins": j225_bot_wins,
+            "j225_bot_total": len(j225_bot),
+            "j225_manual_wins": j225_manual_wins,
+            "j225_manual_total": len(j225_manual),
         },
         "source": "ig_api",
     }

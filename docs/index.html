@@ -1199,25 +1199,38 @@ async function loadHistory() {
     const acc = d.account || {};
 
     // Summary stats
-    const wins = acc.j225_wins ?? 0;
-    const total = acc.j225_total ?? 0;
-    const losses = total - wins;
-    const wr = total ? Math.round(wins / total * 100) : 0;
     const startBal = acc.starting_balance ?? null;
     const curBal = acc.balance ?? null;
     const totPnl = acc.total_pnl ?? null;
+    const totalDeposits = acc.total_deposits ?? 0;
+    // Bot stats
+    const botWins = acc.j225_bot_wins ?? 0;
+    const botTotal = acc.j225_bot_total ?? 0;
+    const botLosses = botTotal - botWins;
+    const botWr = botTotal ? Math.round(botWins / botTotal * 100) : 0;
+    // Manual stats
+    const manWins = acc.j225_manual_wins ?? 0;
+    const manTotal = acc.j225_manual_total ?? 0;
+    const manLosses = manTotal - manWins;
+    const manWr = manTotal ? Math.round(manWins / manTotal * 100) : 0;
+    // Combined
+    const allWins = acc.j225_wins ?? 0;
+    const allTotal = acc.j225_total ?? 0;
+    const allWr = allTotal ? Math.round(allWins / allTotal * 100) : 0;
 
     const sumEl = document.getElementById('histSummary');
-    const sc = (label, val, color) =>
+    const sc = (label, val, color, sub) =>
       `<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;">
         <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">${label}</div>
         <div style="font-size:18px;font-weight:700;color:${color||'var(--text)'};">${val}</div>
+        ${sub ? `<div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${sub}</div>` : ''}
       </div>`;
+    const depositsNote = totalDeposits > 0 ? `+$${totalDeposits.toFixed(2)} deposited` : '';
     sumEl.innerHTML = [
-      sc('Starting Balance', startBal != null ? '$'+startBal.toFixed(2) : '—', ''),
+      sc('Starting Balance', startBal != null ? '$'+startBal.toFixed(2) : '—', '', depositsNote),
       sc('Current Balance', curBal != null ? '$'+curBal.toFixed(2) : '—', curBal > startBal ? 'var(--long)' : curBal < startBal ? 'var(--short)' : ''),
       sc('Total P/L', totPnl != null ? (totPnl>=0?'+$':'-$')+Math.abs(totPnl).toFixed(2) : '—', totPnl >= 0 ? 'var(--long)' : 'var(--short)'),
-      sc('Win Rate (J225)', total ? `${wins}W / ${losses}L (${wr}%)` : '—', wr >= 50 ? 'var(--long)' : 'var(--short)'),
+      sc('Bot WR', botTotal ? `${botWins}W / ${botLosses}L (${botWr}%)` : '—', botWr >= 50 ? 'var(--long)' : 'var(--short)', manTotal ? `Manual: ${manWins}W/${manLosses}L (${manWr}%)` : ''),
     ].join('');
 
     applyHistFilters();
