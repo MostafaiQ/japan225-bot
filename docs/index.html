@@ -857,12 +857,23 @@ function switchTab(btn, name) {
   document.getElementById('tab-' + name).classList.add('active');
   S.tab = name;
   localStorage.setItem('activeTab', name);
-  const loaders = { overview: loadOverview, history: loadHistory, logs: loadLogs, config: loadConfig };
-  if (loaders[name]) loaders[name]();
+  // Use cached SSE data if available (instant), else fall back to API call
+  if (name === 'overview' && _sseLastStatus) {
+    renderStatus(_sseLastStatus);
+    renderPos(_sseLastStatus.position);
+    renderScans(_sseLastStatus.recent_scans || []);
+  } else if (name === 'logs' && _sseLastLogs) {
+    _renderLogs(_sseLastLogs);
+  } else {
+    const loaders = { overview: loadOverview, history: loadHistory, logs: loadLogs, config: loadConfig };
+    if (loaders[name]) loaders[name]();
+  }
+  if (name === 'history') loadHistory(); // history always fetches fresh (not in SSE)
   if (name === 'chat') { const b = document.getElementById('chatBox'); if (b) b.scrollTop = b.scrollHeight; }
   if (name === 'chat') _refreshChatCost();
 }
 function refreshCurrent() {
+  // SSE keeps overview + logs updated automatically; force-refresh for manual button
   const loaders = { overview: loadOverview, history: loadHistory, logs: loadLogs, config: loadConfig };
   if (loaders[S.tab]) loaders[S.tab]();
 }
@@ -1952,11 +1963,14 @@ function fmtDt(iso) {
 let _sseController = null;   // AbortController for the current SSE fetch
 let _sseRetryMs = 3000;      // reconnect delay (backs off on failure, resets on success)
 const _SSE_MAX_RETRY = 30000;
+let _sseLastStatus = null;   // cache latest state_update for tab switch
+let _sseLastLogs = null;     // cache latest log lines for tab switch
 
 function _handleStateUpdate(data) {
   setConn('ok', 'Connected');
   touchUpdate();
   _seedCountdown(data.next_scan_in, data.last_scan);
+  _sseLastStatus = data;  // always cache
   if (S.tab === 'overview') {
     renderStatus(data);
     renderPos(data.position);
@@ -1964,11 +1978,9 @@ function _handleStateUpdate(data) {
   }
 }
 
-function _handleNewLogs(data) {
-  if (S.tab !== 'logs') return;
+function _renderLogs(lines) {
   const box = document.getElementById('logBox');
   if (!box) return;
-  const lines = data.lines || [];
   if (!lines.length) { box.innerHTML = '<span class="l-info">No entries</span>'; return; }
   box.innerHTML = lines.map(l => {
     let c = 'l-info';
@@ -1978,6 +1990,11 @@ function _handleNewLogs(data) {
     return `<div class="${c}">${esc(l)}</div>`;
   }).join('');
   box.scrollTop = box.scrollHeight;
+}
+
+function _handleNewLogs(data) {
+  _sseLastLogs = data.lines || [];  // always cache
+  if (S.tab === 'logs') _renderLogs(_sseLastLogs);
 }
 
 async function _connectSSE() {
