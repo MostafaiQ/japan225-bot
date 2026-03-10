@@ -1,5 +1,11 @@
 # Japan 225 Bot — Claude Code Instructions
 
+## CRITICAL RULE
+You are running INSIDE the japan225-dashboard uvicorn process as a subprocess.
+NEVER run `systemctl restart japan225-dashboard` — it will kill you mid-response.
+If code changes require a dashboard restart, say so in your response and the user will restart it.
+You MAY restart japan225-bot (the monitor) if needed — that is a separate process.
+
 ## START HERE (every session, every dashboard query)
 
 1. Read `MEMORY.md` first — full architecture, file map, key constants, known bugs.
