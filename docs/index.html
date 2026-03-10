@@ -1219,6 +1219,8 @@ async function loadHistory() {
     const manTotal = acc.j225_manual_total ?? 0;
     const manLosses = manTotal - manWins;
     const manWr = manTotal ? Math.round(manWins / manTotal * 100) : 0;
+    const botAvgRR = acc.j225_bot_avg_rr;
+    const manAvgRR = acc.j225_manual_avg_rr;
     // Combined
     const allWins = acc.j225_wins ?? 0;
     const allTotal = acc.j225_total ?? 0;
@@ -1236,7 +1238,9 @@ async function loadHistory() {
       sc('Starting Balance', startBal != null ? '$'+startBal.toFixed(2) : '—', '', depositsNote),
       sc('Current Balance', curBal != null ? '$'+curBal.toFixed(2) : '—', curBal > startBal ? 'var(--long)' : curBal < startBal ? 'var(--short)' : ''),
       sc('Total P/L', totPnl != null ? (totPnl>=0?'+$':'-$')+Math.abs(totPnl).toFixed(2) : '—', totPnl >= 0 ? 'var(--long)' : 'var(--short)'),
-      sc('Bot WR', botTotal ? `${botWins}W / ${botLosses}L (${botWr}%)` : '—', botWr >= 50 ? 'var(--long)' : 'var(--short)', manTotal ? `Manual: ${manWins}W/${manLosses}L (${manWr}%)` : ''),
+      sc('Bot WR', botTotal ? `${botWins}W / ${botLosses}L (${botWr}%)` : '—', botWr >= 50 ? 'var(--long)' : 'var(--short)',
+        (botTotal ? `Avg R:R ${botAvgRR != null ? botAvgRR.toFixed(1) : '—'}` : '') +
+        (manTotal ? ` · Manual: ${manWins}W/${manLosses}L (${manWr}%) R:R ${manAvgRR != null ? manAvgRR.toFixed(1) : '—'}` : '')),
     ].join('');
 
     applyHistFilters();

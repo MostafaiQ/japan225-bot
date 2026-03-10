@@ -415,16 +415,18 @@ def _fetch_journal_locked(days):
         _cache = {"ts": now, "data": result}
         return result
 
-    transactions = _fetch_transactions(cst, token, days)
-    activities = _fetch_activities(cst, token, days)
+    # Fetch 90 days to capture initial deposits/trades for accurate starting balance
+    fetch_days = max(days, 90)
+    transactions = _fetch_transactions(cst, token, fetch_days)
+    activities = _fetch_activities(cst, token, fetch_days)
 
     # If both empty, session may have expired — retry once with fresh auth
     if not transactions and not activities:
         _invalidate_session()
         cst, token = _get_or_create_session()
         if cst:
-            transactions = _fetch_transactions(cst, token, days)
-            activities = _fetch_activities(cst, token, days)
+            transactions = _fetch_transactions(cst, token, fetch_days)
+            activities = _fetch_activities(cst, token, fetch_days)
 
     open_ch_map, close_ch_map, close_to_open = _build_activity_map(activities)
 
@@ -465,18 +467,18 @@ def _fetch_journal_locked(days):
 
     cutoff = JOURNAL_CUTOFF
 
-    # Compute total PnL + deposits from ALL transactions (not filtered by cutoff)
-    # so starting_balance accurately reflects account state at cutoff start
-    all_pnl = 0.0
-    all_deposits_amt = 0.0
+    # Compute post-cutoff J225 PnL from IG transactions (not DB-only trades).
+    # Used for starting balance: current - ig_j225_pnl - deposits
+    ig_j225_pnl = 0.0
     for txn in transactions:
+        date_str = txn.get("dateUtc") or txn.get("openDateUtc") or ""
+        if date_str < cutoff:
+            continue
         txn_type = (txn.get("transactionType") or "").upper()
         if txn_type == "DEAL":
-            all_pnl += _parse_pnl(txn.get("profitAndLoss", "$0"))
-        elif txn_type in ("DEPO", "WITH", "DEPOSIT", "WITHDRAWAL"):
-            amt = _parse_pnl(txn.get("profitAndLoss", "$0"))
-            if abs(amt) >= 5:
-                all_deposits_amt += amt
+            inst = txn.get("instrumentName", "") or ""
+            if "Japan 225" in inst:
+                ig_j225_pnl += _parse_pnl(txn.get("profitAndLoss", "$0"))
 
     # Now filter transactions by cutoff for display
     transactions = [t for t in transactions if (t.get("dateUtc") or t.get("openDateUtc") or "") >= cutoff]
@@ -672,12 +674,15 @@ def _fetch_journal_locked(days):
 
     # Compute running balance anchored to live IG balance, accounting for deposits
     current_balance = ig_live_balance if ig_live_balance is not None else acc.get("balance", 0)
-    # Use ALL-time PnL + deposits for accurate starting balance (not just filtered trades)
-    # This accounts for pre-cutoff trades (e.g. US Tech 100) that affected the balance
-    starting_bal = current_balance - all_pnl - all_deposits_amt
-    # Displayed deposits are only the ones after cutoff
+    # Displayed deposits are only the ones after cutoff with $5 minimum
     total_deposits = sum(d["amount"] for d in deposits if d["type"] == "deposit")
     total_withdrawals = sum(abs(d["amount"]) for d in deposits if d["type"] == "withdrawal")
+
+    # Starting balance = current minus IG-recorded J225 PnL minus significant deposits.
+    # Uses IG transaction PnL (not displayed total) to avoid double-counting DB-only trades.
+    # Uses the $5-filtered deposit total (not raw non_deal_impact) because small credits
+    # like daily interest often cover pre-cutoff periods and shouldn't reduce starting balance.
+    starting_bal = current_balance - ig_j225_pnl - total_deposits + total_withdrawals
 
     # Build chronological event list: trades + deposits interleaved by date
     # so the running balance correctly accounts for money in/out
@@ -689,7 +694,6 @@ def _fetch_journal_locked(days):
     events.sort(key=lambda e: e[1])
 
     current_bal = starting_bal
-    deposit_idx = 0
     for etype, edate, edata in events:
         if etype == "deposit":
             if edata["type"] == "deposit":
@@ -716,6 +720,12 @@ def _fetch_journal_locked(days):
     j225_manual = [t for t in j225 if t.get("opened_by") != "Auto"]
     j225_manual_wins = len([t for t in j225_manual if t["pnl"] > 0])
 
+    # Average R:R for bot and manual
+    bot_rrs = [t["rr"] for t in j225_bot if t.get("rr") is not None]
+    manual_rrs = [t["rr"] for t in j225_manual if t.get("rr") is not None]
+    avg_rr_bot = round(sum(bot_rrs) / len(bot_rrs), 2) if bot_rrs else None
+    avg_rr_manual = round(sum(manual_rrs) / len(manual_rrs), 2) if manual_rrs else None
+
     # Strip internal field before returning
     for t in trades:
         t.pop("_db_deal_id", None)
@@ -733,6 +743,8 @@ def _fetch_journal_locked(days):
             "j225_bot_total": len(j225_bot),
             "j225_manual_wins": j225_manual_wins,
             "j225_manual_total": len(j225_manual),
+            "j225_bot_avg_rr": avg_rr_bot,
+            "j225_manual_avg_rr": avg_rr_manual,
         },
         "source": "ig_api",
     }
