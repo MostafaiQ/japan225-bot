@@ -769,6 +769,12 @@ class TradingMonitor:
                 setup_type=setup_long.get("type"),
             )
             logger.info(f"Local confidence LONG: {conf_long['score']}%")
+            if conf_long["score"] < 60:
+                wc = conf_long.get("weighted_criteria", {})
+                fails = [k for k, v in wc.items() if not v]
+                rr = conf_long.get("estimated_rr", 0)
+                rrf = conf_long.get("rr_factor", 1)
+                logger.info(f"  LONG drags: {', '.join(fails) if fails else 'none'} | R:R est={rr:.2f} factor={rrf}")
 
         if setup_short["found"]:
             conf_short = compute_confidence(
@@ -779,6 +785,12 @@ class TradingMonitor:
                 setup_type=setup_short.get("type"),
             )
             logger.info(f"Local confidence SHORT: {conf_short['score']}%")
+            if conf_short["score"] < 60:
+                wc = conf_short.get("weighted_criteria", {})
+                fails = [k for k, v in wc.items() if not v]
+                rr = conf_short.get("estimated_rr", 0)
+                rrf = conf_short.get("rr_factor", 1)
+                logger.info(f"  SHORT drags: {', '.join(fails) if fails else 'none'} | R:R est={rr:.2f} factor={rrf}")
 
         # --- Contradictory signal gate ---
         # If BOTH directions score high with tiny gap → market is ambiguous, no real edge.

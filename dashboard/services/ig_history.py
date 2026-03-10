@@ -19,7 +19,7 @@ _cache = {"ts": 0, "data": None}
 CACHE_TTL = 60  # seconds — 1 min (short enough to show new trades quickly)
 
 # Date cutoff: only show trades from this date onwards
-JOURNAL_CUTOFF = "2026-02-26T00:00:00"
+JOURNAL_CUTOFF = "2026-02-25T00:00:00"
 
 # Reuse IG session tokens across calls (avoid creating/destroying sessions)
 _ig_session = {"cst": None, "token": None, "ts": 0}
