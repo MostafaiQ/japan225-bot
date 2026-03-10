@@ -189,7 +189,7 @@ HAIKU_MIN_SCORE = 60                # Local confidence floor before AI evaluatio
                                     # C7/C8 (event/blackout) are always True when AI is reached (hard-blocked before)
                                     # → effective floor is already 50 (30 + 2×10). Setting 50 does nothing.
                                     # 60 = first meaningful threshold: requires ≥1 technical criterion beyond C7/C8
-PRICE_DRIFT_ABORT_PTS = 20          # Abort trade if price moved this far during analysis
+PRICE_DRIFT_ABORT_PTS = 80          # Abort trade if price moved this far during analysis (was 20, too tight for ~65s AI latency)
 STALE_DATA_THRESHOLD = 10           # Identical price readings = stale data alert
 ADVERSE_LOOKBACK_READINGS = 150     # Readings to look back for adverse_move (150 × 2s = 5min window)
 PRE_SCREEN_CANDLES = 220            # Candles for 15M pre-screen — MUST be >200 to compute EMA200

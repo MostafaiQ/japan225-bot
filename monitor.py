@@ -37,7 +37,7 @@ from config.settings import (
     SCAN_INTERVAL_SECONDS, OFFHOURS_INTERVAL_SECONDS,
     AI_COOLDOWN_MINUTES, HAIKU_MIN_SCORE, PRICE_DRIFT_ABORT_PTS, SAFETY_CONSECUTIVE_EMPTY,
     calculate_margin, calculate_profit, SPREAD_ESTIMATE, DEFAULT_SL_DISTANCE,
-    MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, MAX_OPEN_POSITIONS,
+    MIN_CONFIDENCE, MIN_CONFIDENCE_SHORT, MIN_RR_RATIO, MAX_OPEN_POSITIONS,
     DAILY_EMA200_CANDLES, PRE_SCREEN_CANDLES, AI_ESCALATION_CANDLES,
     MINUTE_5_CANDLES, DISPLAY_TZ, display_now,
     EXTREME_DAY_RANGE_PTS,
@@ -1871,6 +1871,22 @@ class TradingMonitor:
         if sl_level and tp_level:
             sl_distance = int(abs(current_price - sl_level))
             tp_distance = int(abs(tp_level - current_price))
+            # --- Post-drift R:R revalidation ---
+            if sl_distance > 0 and price_drift > 5:
+                new_rr = tp_distance / sl_distance
+                if new_rr < MIN_RR_RATIO:
+                    await self.telegram.send_alert(
+                        f"Trade ABORTED: R:R degraded to {new_rr:.2f} after {price_drift:.0f}pt drift "
+                        f"(need {MIN_RR_RATIO}). Entry {analyzed_entry:.0f}→{current_price:.0f}, "
+                        f"SL dist={sl_distance}, TP dist={tp_distance}."
+                    )
+                    logger.warning(
+                        f"Trade aborted: R:R degraded {new_rr:.2f} < {MIN_RR_RATIO} "
+                        f"after {price_drift:.0f}pt drift"
+                    )
+                    self.storage.clear_pending_alert()
+                    self._force_scan_event.set()
+                    return
         else:
             sl_distance = int(DEFAULT_SL_DISTANCE)
             tp_distance = 400
