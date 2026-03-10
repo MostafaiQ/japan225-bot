@@ -10,6 +10,7 @@ Also detects stale data (10+ identical readings during an active session).
 """
 import logging
 import time
+from collections import deque
 from datetime import datetime
 from typing import Optional
 
@@ -45,7 +46,7 @@ class MomentumTracker:
         """
         self.direction = direction.upper()
         self.entry_price = entry_price
-        self._prices: list[dict] = []  # [{price, timestamp}]
+        self._prices: deque = deque(maxlen=300)  # [{price, timestamp}]
         self._last_alerted_tier = TIER_NONE
         self._last_alert_time: float = 0.0  # epoch seconds
 
@@ -55,9 +56,6 @@ class MomentumTracker:
             "price": price,
             "timestamp": datetime.now().isoformat(),
         })
-        # Keep last 300 readings (10 min at 2s intervals)
-        if len(self._prices) > 300:
-            self._prices.pop(0)
 
     def current_pnl_points(self) -> float:
         """P&L in points from the last recorded price."""
@@ -170,7 +168,7 @@ class MomentumTracker:
         """
         if len(self._prices) < STALE_DATA_THRESHOLD:
             return False
-        recent = [p["price"] for p in self._prices[-STALE_DATA_THRESHOLD:]]
+        recent = [p["price"] for p in list(self._prices)[-STALE_DATA_THRESHOLD:]]
         return len(set(recent)) == 1
 
     def reset_alert_state(self):

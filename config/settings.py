@@ -76,7 +76,7 @@ MARGIN_FACTOR = 0.005  # 0.5% Tier 1 (0-95 contracts)
 # ============================================
 MAX_MARGIN_PERCENT = 0.10   # Hard ceiling: 10% of balance in margin per position
 MAX_OPEN_POSITIONS = 3      # Allow up to 3 concurrent positions (up from 1)
-MAX_PORTFOLIO_RISK_PERCENT = 0.08  # Total open risk across all positions ≤ 8% of balance
+MAX_PORTFOLIO_RISK_PERCENT = 0.15  # Total open risk across all positions ≤ 15% of balance
 MAX_CONSECUTIVE_LOSSES = 2  # 2 losses = 1-hour cooldown
 COOLDOWN_HOURS = 1
 DAILY_LOSS_LIMIT_PERCENT = 1.0  # Effectively disabled — AI finds the setups, user manages risk
@@ -94,8 +94,8 @@ TRADE_EXPIRY_MINUTES = 15  # Unconfirmed alerts expire after 15 min
 # ============================================
 # POSITION SIZING — RISK-BASED (replaces margin-cap approach)
 # ============================================
-RISK_PERCENT = 2.0          # % of balance risked per trade (base rate)
-MAX_RISK_PERCENT = 3.0      # Hard ceiling on risk per trade
+RISK_PERCENT = 5.0          # % of balance risked per trade (micro account: min lot = $3+ risk)
+MAX_RISK_PERCENT = 8.0      # Hard ceiling on risk per trade
 # Drawdown-triggered reductions:
 DRAWDOWN_REDUCE_10PCT = 0.5    # Reduce to 0.5% risk when balance 10% below peak
 DRAWDOWN_REDUCE_15PCT = 0.25   # Reduce to 0.25% risk when balance 15% below peak
@@ -110,7 +110,7 @@ SL_ATR_MULTIPLIER_DEFAULT = 1.5
 SL_FLOOR_PTS = 60            # Absolute minimum SL in points (tight scalp SL=60 → PF=1.16 vs wide SL PF=1.10)
 TP_ATR_MULTIPLIER_BASE = 2.5  # Base TP = 2.5× ATR (gives ~1.67:1 R:R)
 TP_ATR_MULTIPLIER_MOMENTUM = 3.0  # Momentum setups: wider TP (trends extend)
-TP_FLOOR_PTS = 250            # Absolute minimum TP in points
+TP_FLOOR_PTS = 150            # Absolute minimum TP in points (lowered: AI sets dynamic TP at structural levels)
 
 # ============================================
 # TRADING PARAMETERS
@@ -122,8 +122,8 @@ SPREAD_ESTIMATE = 7  # Points during main hours (live spread used at execution)
 # Phase 1: Initial protection
 DEFAULT_SL_DISTANCE = 150  # Points — fallback only (ATR-based used when ATR available)
 DEFAULT_TP_DISTANCE = 400  # Points — fallback only
-MIN_RR_RATIO = 1.5  # Minimum acceptable R:R
-MIN_RR_OVERSOLD_REVERSAL = 1.3  # Lower RR for oversold bounce LONGs (4H RSI < 32 + 15M reversal candle)
+MIN_RR_RATIO = 1.2  # Minimum acceptable R:R (1.2 = breakeven at ~45% WR)
+MIN_RR_OVERSOLD_REVERSAL = 1.0  # Lower RR for oversold bounce LONGs (4H RSI < 32 + 15M reversal candle)
 
 # Phase 2: Breakeven lock
 BREAKEVEN_TRIGGER = 150  # Move SL to BE at +150 pts

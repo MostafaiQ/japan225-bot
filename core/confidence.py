@@ -551,6 +551,54 @@ def compute_confidence(
     score = round(sum(CRITERIA_WEIGHTS[k] * 100 for k, v in weighted_criteria.items() if v))
     score = min(score, MAX_SCORE)
 
+    # ---- R:R Estimate Penalty ----
+    # Estimate R:R from market structure BEFORE AI call.
+    # Prevents 91% confidence on R:R 0.4 setups from wasting API calls.
+    atr_val = tf_15m.get("atr") or 150  # fallback to DEFAULT_SL_DISTANCE
+    sl_estimate = max(atr_val * 1.5, 60)  # ATR × default multiplier, floored at SL_FLOOR
+
+    if direction == "LONG":
+        obstacles = []
+        sh = tf_15m.get("swing_high_20")
+        if sh and price and sh > price:
+            obstacles.append(sh - price)
+        if bb_upper and price and bb_upper > price:
+            obstacles.append(bb_upper - price)
+        tp_estimate = min(obstacles) if obstacles else 400
+    else:
+        obstacles = []
+        sl_val = tf_15m.get("swing_low_20")
+        if sl_val and price and sl_val < price:
+            obstacles.append(price - sl_val)
+        if bb_lower and price and bb_lower < price:
+            obstacles.append(price - bb_lower)
+        tp_estimate = min(obstacles) if obstacles else 400
+
+    tp_estimate = max(tp_estimate, 150)  # minimum TP floor
+    estimated_rr = tp_estimate / sl_estimate if sl_estimate > 0 else 0
+
+    if estimated_rr >= 1.5:
+        rr_factor = 1.0
+    elif estimated_rr >= 1.2:
+        rr_factor = 0.95
+    elif estimated_rr >= 1.0:
+        rr_factor = 0.90
+    elif estimated_rr >= 0.8:
+        rr_factor = 0.80
+    else:
+        rr_factor = 0.70  # soft penalty — AI still gets a chance on strong setups (91%→64%)
+
+    pre_rr_score = score
+    score = round(score * rr_factor)
+    score = min(score, MAX_SCORE)
+
+    rr_penalized = rr_factor < 1.0
+    criteria["rr_estimate"] = not rr_penalized
+    reasons["rr_estimate"] = (
+        f"Est. R:R {estimated_rr:.2f} (TP~{tp_estimate:.0f}pts / SL~{sl_estimate:.0f}pts)"
+        + (f" → score {pre_rr_score}→{score} (×{rr_factor})" if rr_penalized else "")
+    )
+
     passed_count = sum(1 for v in weighted_criteria.values() if v)
     total = len(weighted_criteria)
 
@@ -566,6 +614,8 @@ def compute_confidence(
         "passed_criteria": passed_count,
         "total_criteria": total,
         "min_threshold": min_threshold,
+        "estimated_rr": round(estimated_rr, 2),
+        "rr_factor": rr_factor,
     }
 
 

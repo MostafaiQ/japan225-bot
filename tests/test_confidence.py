@@ -28,6 +28,9 @@ def make_tf(
     avg_candle_range=80,
     ha_bullish=None,
     ha_streak=None,
+    atr=100,
+    swing_high_20=None,
+    swing_low_20=None,
 ):
     """Build a synthetic analyze_timeframe() output dict."""
     return {
@@ -45,6 +48,9 @@ def make_tf(
         "avg_candle_range": avg_candle_range,
         "ha_bullish": ha_bullish,
         "ha_streak": ha_streak,
+        "atr": atr,
+        "swing_high_20": swing_high_20,
+        "swing_low_20": swing_low_20,
     }
 
 
@@ -97,11 +103,11 @@ class TestScoreComputation:
         assert result["score"] == 100
 
     def test_base_score_with_zero_criteria(self):
-        # Construct a setup where all criteria fail
+        # Construct a setup where all criteria fail — including R:R penalty
         tf_15m = make_tf(
             price=38000, rsi=80,           # RSI out of LONG range
             bb_mid=37500,                  # 500 pts from mid — too far
-            bb_upper=38100,                # Only 100 pts to upper — TP not viable (need 100+)
+            bb_upper=38100,                # Only 100 pts to upper — TP not viable
             bb_lower=37900,
             ema50=37500,                   # 500 pts below — too far
             above_ema50=False,             # NOT above EMA50 → structure fails for LONG
@@ -110,8 +116,34 @@ class TestScoreComputation:
         tf_4h = make_tf(rsi=80, above_ema200=False)  # 4H RSI >70 → macro fails
         tf_daily = make_tf(above_ema200=False, above_ema50=False)
         result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
-        # At least base score (30), possibly a few criteria pass
-        assert result["score"] >= BASE_SCORE
+        # Score is low due to failed criteria + R:R penalty
+        assert result["score"] < MIN_CONFIDENCE_LONG  # definitely below threshold
+        assert "rr_estimate" in result["criteria"]
+
+    def test_rr_penalty_crushes_bad_rr(self):
+        """Good technical setup but terrible R:R should get penalized."""
+        tf_15m = make_tf(
+            price=38000, rsi=42,
+            bb_mid=38010, bb_upper=38050,  # only 50pts to BB upper = tiny TP room
+            bb_lower=37700,
+            ema50=37985, above_ema50=True, above_ema200=True,
+            ha_bullish=True, ha_streak=3,
+            atr=200,  # ATR 200 → SL estimate = 300pts, TP estimate = 150 (floor)
+        )
+        tf_4h = make_tf(rsi=55, above_ema200=True, above_ema50=True)
+        tf_daily = make_tf(rsi=60, above_ema200=True, above_ema50=True)
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        # R:R ~0.5 → factor 0.70 → high score penalized
+        assert result["estimated_rr"] < 1.0
+        assert result["rr_factor"] < 1.0
+        assert result["score"] < 80  # significantly penalized despite good technicals
+
+    def test_rr_no_penalty_good_rr(self):
+        """Good R:R should not penalize score."""
+        tf_daily, tf_4h, tf_15m = ideal_long_setup()
+        result = compute_confidence("LONG", tf_daily, tf_4h, tf_15m)
+        assert result["rr_factor"] >= 0.95  # good R:R = no or minimal penalty
+        assert result["estimated_rr"] >= 1.2
 
     def test_score_is_capped_at_100(self):
         tf_daily, tf_4h, tf_15m = ideal_long_setup()

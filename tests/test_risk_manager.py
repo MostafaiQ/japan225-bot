@@ -98,14 +98,14 @@ class TestRiskManagerValidation:
         assert result["checks"]["confidence"]["pass"] is True
 
     def test_margin_exceeded_rejected(self):
-        # 0.10 lots at 59500 = $29.75 margin, > 5% of $500 = $25
-        result = self.rm.validate_trade(**self._base_trade(lots=0.10))
+        # 0.35 lots at 59500 = $104.125 margin, > 10% of $500 = $50
+        result = self.rm.validate_trade(**self._base_trade(lots=0.35))
         assert result["approved"] is False
         assert "margin" in result["rejection_reason"].lower()
 
     def test_margin_at_limit(self):
-        # 0.03 lots at 59500 = $8.925 margin, 5% of $500 = $25 → passes
-        result = self.rm.validate_trade(**self._base_trade(lots=0.03, balance=500.0))
+        # 0.08 lots at 59500 = $23.80 margin, 10% of $500 = $50 → passes
+        result = self.rm.validate_trade(**self._base_trade(lots=0.08, balance=500.0))
         assert result["checks"]["margin"]["pass"] is True
 
     def test_bad_rr_rejected(self):
@@ -164,10 +164,10 @@ class TestSafeLotSize:
         self.rm = RiskManager(MockStorage())
 
     def test_lot_size_risk_based(self):
-        # At $500 balance, 2% risk = $10, 150pt SL → lots ≈ 0.07, well under MAX_RISK_PERCENT
+        # At $500 balance, 5% risk = $25, 150pt SL → lots ≈ 0.16, capped by margin
         lots = self.rm.get_safe_lot_size(500.0, 59500, 150)
         dollar_risk = lots * 150 * 1  # CONTRACT_SIZE = 1
-        assert dollar_risk <= 500.0 * 0.03  # Within MAX_RISK_PERCENT (3%)
+        assert dollar_risk <= 500.0 * 0.08  # Within MAX_RISK_PERCENT (8%)
 
     def test_minimum_lot_size(self):
         lots = self.rm.get_safe_lot_size(1.0, 59500, 150)
@@ -180,76 +180,28 @@ class TestSafeLotSize:
 
 
 class TestExitManager:
-    """Test the 3-phase exit strategy logic."""
+    """Test exit manager — SL/TP fixed at entry, no mechanical modifications."""
 
-    def test_no_breakeven_at_plus_160(self):
-        """Breakeven removed: SL must NOT move when +160pts in profit."""
+    def test_no_action_at_any_price(self):
+        """SL/TP fixed: no action regardless of P&L."""
         em = ExitManager(ig_client=None, storage=MockStorage())
-        position = {
-            "deal_id": "TEST1",
-            "direction": "BUY",
-            "entry": 59500,
-            "current_price": 59660,  # +160 pts
-            "size": 0.03,
-            "stop_level": 59300,
-            "limit_level": 59900,
-            "opened_at": datetime.now().isoformat(),
-            "phase": ExitPhase.INITIAL,
-        }
-        action = em.evaluate_position(position)
-        assert action["action"] == "none", "SL must not move — breakeven step removed"
+        for price in [59600, 59660, 59820, 60000, 59200]:
+            position = {
+                "deal_id": "TEST1",
+                "direction": "BUY",
+                "entry": 59500,
+                "current_price": price,
+                "size": 0.03,
+                "stop_level": 59300,
+                "limit_level": 59900,
+                "opened_at": datetime.now().isoformat(),
+                "phase": ExitPhase.INITIAL,
+            }
+            action = em.evaluate_position(position)
+            assert action["action"] == "none", f"Should be none at price {price}"
 
-    def test_no_action_below_trigger(self):
-        em = ExitManager(ig_client=None, storage=MockStorage())
-        position = {
-            "deal_id": "TEST2",
-            "direction": "BUY",
-            "entry": 59500,
-            "current_price": 59600,  # +100 pts (below 150 trigger)
-            "size": 0.03,
-            "stop_level": 59300,
-            "limit_level": 59900,
-            "opened_at": datetime.now().isoformat(),
-            "phase": ExitPhase.INITIAL,
-        }
-        action = em.evaluate_position(position)
-        assert action["action"] == "none"
-
-    def test_runner_detection(self):
-        em = ExitManager(ig_client=None, storage=MockStorage())
-        position = {
-            "deal_id": "TEST3",
-            "direction": "BUY",
-            "entry": 59500,
-            "current_price": 59820,  # 320pts of 400pt TP = 80% > 75% threshold
-            "size": 0.03,
-            "stop_level": 59510,
-            "limit_level": 59900,
-            "opened_at": (datetime.now() - timedelta(minutes=90)).isoformat(),  # < 2 hours
-            "phase": ExitPhase.BREAKEVEN,
-        }
-        action = em.evaluate_position(position)
-        assert action["action"] == "activate_runner"
-        assert action["trailing"] is True
-
-    def test_runner_triggered_regardless_of_time(self):
-        """Slow grind to 75% TP also earns runner — no time restriction."""
-        em = ExitManager(ig_client=None, storage=MockStorage())
-        position = {
-            "deal_id": "TEST4",
-            "direction": "BUY",
-            "entry": 59500,
-            "current_price": 59820,
-            "size": 0.03,
-            "stop_level": 59510,
-            "limit_level": 59900,
-            "opened_at": (datetime.now() - timedelta(hours=3)).isoformat(),  # > 2 hours
-            "phase": ExitPhase.BREAKEVEN,
-        }
-        action = em.evaluate_position(position)
-        assert action["action"] == "activate_runner"
-
-    def test_manual_trail_ratchets_up(self):
+    def test_manual_trail_disabled(self):
+        """Manual trailing is disabled."""
         em = ExitManager(ig_client=None, storage=MockStorage())
         position = {
             "deal_id": "TEST5",
@@ -260,35 +212,20 @@ class TestExitManager:
             "phase": ExitPhase.RUNNER,
         }
         action = em.manual_trail_update(position)
-        # Current 60000 - 150 trailing = 59850 > current stop 59700
-        assert action is not None
-        assert action["new_stop"] > 59700
-
-    def test_manual_trail_no_lower(self):
-        em = ExitManager(ig_client=None, storage=MockStorage())
-        position = {
-            "deal_id": "TEST6",
-            "direction": "BUY",
-            "entry": 59500,
-            "current_price": 59800,
-            "stop_level": 59700,  # 59800 - 150 = 59650, which is < 59700
-            "phase": ExitPhase.RUNNER,
-        }
-        action = em.manual_trail_update(position)
-        assert action is None  # Should not move stop lower
+        assert action is None
 
 
 class TestExitManagerShort:
-    """Test exit logic for SHORT positions."""
+    """Test exit logic for SHORT positions — SL/TP fixed."""
 
-    def test_short_no_breakeven(self):
-        """Breakeven removed: SL must NOT move for shorts at +160pts."""
+    def test_short_no_action(self):
+        """SL/TP fixed for shorts too."""
         em = ExitManager(ig_client=None, storage=MockStorage())
         position = {
             "deal_id": "SHORT1",
             "direction": "SELL",
             "entry": 59500,
-            "current_price": 59340,  # +160 pts short profit
+            "current_price": 59340,
             "size": 0.03,
             "stop_level": 59700,
             "limit_level": 59100,
@@ -296,24 +233,7 @@ class TestExitManagerShort:
             "phase": ExitPhase.INITIAL,
         }
         action = em.evaluate_position(position)
-        assert action["action"] == "none", "SL must not move — breakeven step removed"
-
-    def test_short_runner_from_initial(self):
-        """Runner activates directly from INITIAL phase (no breakeven step)."""
-        em = ExitManager(ig_client=None, storage=MockStorage())
-        position = {
-            "deal_id": "SHORT2",
-            "direction": "SELL",
-            "entry": 59500,
-            "current_price": 59200,  # 300pts of 400pt TP = 75% → runner
-            "size": 0.03,
-            "stop_level": 59700,
-            "limit_level": 59100,
-            "opened_at": datetime.now().isoformat(),
-            "phase": ExitPhase.INITIAL,
-        }
-        action = em.evaluate_position(position)
-        assert action["action"] == "activate_runner"
+        assert action["action"] == "none"
 
 
 if __name__ == "__main__":

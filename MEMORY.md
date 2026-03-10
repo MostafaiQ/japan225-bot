@@ -35,6 +35,7 @@ Oracle VM: monitor.py (24/7, systemd: japan225-bot)
 Dashboard: FastAPI (systemd: japan225-dashboard, port 8080)
            Tunnel: ngrok static domain (systemd: japan225-ngrok)
            Frontend: GitHub Pages (docs/index.html)
+           SSE: /api/stream pushes state_update + new_logs (replaces setInterval polling)
 ```
 GitHub Actions: CI tests ONLY (tests.yml). scan.yml outdated/unused.
 
@@ -49,16 +50,16 @@ GitHub Actions: CI tests ONLY (tests.yml). scan.yml outdated/unused.
 | `core/indicators.py` | analyze_timeframe(), detect_setup() (LONG+SHORT bidirectional), ema/rsi/bb/vwap/heiken_ashi, FVG, Fibonacci, PDH/PDL, liquidity sweep, pivot_points, detect_candlestick_patterns (12 patterns), analyze_body_trend |
 | `core/session.py` | get_current_session() UTC, is_no_trade_day(), is_weekend(), is_friday_blackout() |
 | `core/momentum.py` | MomentumTracker class. add_price(), should_alert(), milestone_alert() |
-| `core/confidence.py` | compute_confidence(...) → score dict. 9-criteria WEIGHTED scoring (2026-03-07). C7/C8 are pre-gates only (not scored). entry_timing = ha_aligned OR entry_quality. |
+| `core/confidence.py` | compute_confidence(...) → score dict. 9-criteria WEIGHTED scoring + R:R estimate penalty (2026-03-10). C7/C8 pre-gates. R:R penalty: rr<0.8→×0.70, rr<1.0→×0.80, rr<1.2→×0.90. |
 | `ai/analyzer.py` | AIAnalyzer. scan_with_sonnet() (Opus sub-agent). evaluate_opposite(). post_trade_analysis(). **CLI subprocess (OAuth/subscription).** |
 | `ai/context_writer.py` | write_context() — writes storage/context/*.md. market_snapshot, recent_activity, macro, live_edge. |
 | `trading/risk_manager.py` | RiskManager.validate_trade() 12 checks (incl. portfolio_risk). get_safe_lot_size(balance,price,sl_distance,confidence,peak_balance). get_dynamic_sl(atr,setup_type). |
-| `trading/exit_manager.py` | ExitManager. evaluate_position(), execute_action(), manual_trail_update() |
+| `trading/exit_manager.py` | ExitManager. SL/TP fixed at entry. Only close_early (Opus evaluator). No BE/trailing. |
 | `notifications/telegram_bot.py` | TelegramBot. send_trade_alert(), /menu inline buttons, /close /kill /pause /resume |
 | `storage/database.py` | Storage class. SQLite WAL mode. open_trade_atomic(), AI cooldown, get_ai_context_block() |
 | `storage/scan_analyzer.py` | Cron-based scan analyzer. SL/TP-aware classification. Writes `storage/data/scan_analysis.md`. |
 | `storage/probability_tracker.py` | Conditional probability tracker. Wilson CI + Kelly. Writes `probability_tracker.md`. |
-| `dashboard/main.py` + `routers/` | FastAPI app, CORS, Bearer auth. Routes: status/config/history/logs/chat/controls |
+| `dashboard/main.py` + `routers/` | FastAPI app, CORS, Bearer auth. Routes: status/config/history/logs/chat/controls/stream |
 | `dashboard/services/claude_client.py` | 3-tier chat: Haiku/Sonnet/Opus. Context injection. |
 | `dashboard/services/ig_history.py` | IG journal. Timestamp fallback match for DB merge. 1min cache TTL. |
 
@@ -70,8 +71,8 @@ EPIC = "IX.D.NIKKEI.IFM.IP"   CONTRACT_SIZE = 1 ($1/pt)   MARGIN_FACTOR = 0.005 
 MIN_CONFIDENCE = 70            MIN_CONFIDENCE_SHORT = 75    HAIKU_MIN_SCORE = 60
 EXTREME_DAY_RANGE_PTS = 1000   EXTREME_DAY_MIN_CONFIDENCE = 85
 OVERSOLD_SHORT_BLOCK_RSI_4H = 32  OVERBOUGHT_LONG_BLOCK_RSI_4H = 68
-DEFAULT_SL_DISTANCE = 150 (fallback only)  DEFAULT_TP_DISTANCE = 400 (fallback only)  MIN_RR_RATIO = 1.5
-BREAKEVEN_TRIGGER = 150        TRAILING_STOP_DISTANCE = 150
+DEFAULT_SL_DISTANCE = 150 (fallback only)  DEFAULT_TP_DISTANCE = 400 (fallback only)  MIN_RR_RATIO = 1.2
+EXIT: SL/TP fixed at entry. No breakeven, no trailing. AI sets dynamic TP at structural levels.
 SCAN_INTERVAL_SECONDS = 300    MONITOR_INTERVAL_SECONDS = 2  OFFHOURS_INTERVAL_SECONDS = 1800
 POSITION_CHECK_EVERY_N_CYCLES = 5   ADVERSE_LOOKBACK_READINGS = 150   STREAMING_STALE_SECONDS = 10
 AI_COOLDOWN_MINUTES = 15       PRICE_DRIFT_ABORT_PTS = 20    SAFETY_CONSECUTIVE_EMPTY = 2
@@ -79,12 +80,12 @@ SONNET_MODEL = "claude-sonnet-4-6"   OPUS_MODEL = "claude-opus-4-6"
 DISPLAY_TZ = UTC+3 (Kuwait). display_now() helper. All user-facing timestamps in Kuwait time.
 MOMENTUM_RSI_HIGH = 75   RSI_ENTRY_HIGH_BOUNCE = 55   ENABLE_EMA50_BOUNCE_SETUP = False
 
-# RISK-BASED SIZING (2026-03-07)
-MAX_MARGIN_PERCENT = 0.05 (5% per position)   MAX_OPEN_POSITIONS = 3   MAX_PORTFOLIO_RISK_PERCENT = 0.08
-RISK_PERCENT = 2.0  MAX_RISK_PERCENT = 3.0
+# RISK-BASED SIZING (2026-03-10 — micro account friendly)
+MAX_MARGIN_PERCENT = 0.10 (10% per position)   MAX_OPEN_POSITIONS = 3   MAX_PORTFOLIO_RISK_PERCENT = 0.15
+RISK_PERCENT = 5.0  MAX_RISK_PERCENT = 8.0
 DRAWDOWN_REDUCE_10PCT=0.5  DRAWDOWN_REDUCE_15PCT=0.25  DRAWDOWN_STOP_20PCT=True
 SL_ATR_MULTIPLIER: MOMENTUM=1.2 MEAN_REVERSION=1.8 BREAKOUT=1.5 VWAP=1.3 DEFAULT=1.5
-SL_FLOOR_PTS=60   TP_ATR_MULTIPLIER_BASE=2.5  TP_ATR_MULTIPLIER_MOMENTUM=3.0  TP_FLOOR_PTS=250
+SL_FLOOR_PTS=60   TP_ATR_MULTIPLIER_BASE=2.5  TP_ATR_MULTIPLIER_MOMENTUM=3.0  TP_FLOOR_PTS=150
 ```
 Dashboard chat: 3-tier auto-select. Haiku (status, ≤60s) | Sonnet (analysis, ≤180s) | Opus (code fixes, ≤600s).
 
@@ -139,7 +140,7 @@ Major overhaul across 4 phases completed:
   - monitor.py: main loop now allows concurrent scan when 0<open_count<MAX_OPEN_POSITIONS (background task). Race check uses open_count>=MAX not has_open.
 - Phase 2 (analyzer.py): DECISION FRAME (5-30min horizon), FATAL FLAWS section (7 disqualifiers), 5-gate chain replaced 7-step, expected vs unexpected failed criteria, secondary setup removed from Sonnet, time-of-day context header, confidence_breakdown removed from JSON schema.
 - Phase 3 (confidence.py): 9-criteria weighted scoring (was 12 equal-weight). C7/C8 pre-gates only. entry_timing = ha_aligned OR entry_quality.
-- Tests: 428/428 passing (2026-03-07)
+- Tests: 424/424 passing (2026-03-07)
 
 ## Tokyo Session
 Tokyo (00:00-06:00 UTC) uses same lot sizing and consecutive-loss rules as other sessions.
@@ -222,7 +223,7 @@ Force Open: when local conf 100% (12/12) but AI rejects → Telegram alert. Forc
 DB: `storage/data/trading.db` — Oracle VM only. WAL mode. Never commit.
 Digests: `.claude/digests/` — settings · monitor · database · indicators · session · momentum ·
          confidence · ig_client · risk_manager · exit_manager · analyzer · telegram_bot · dashboard · claude_client
-Tests: **428/428 passing** (2026-03-07).
+Tests: **424/424 passing** (2026-03-07).
 
 ## Backtest Benchmarks (2026-03-07 — new weighted confidence + risk-based sizing)
 TA-Only OOS: Scalp SL=60 TP=300 → 690 trades, 47.8% WR, PF=1.16, +$3,305 ✓ PROFITABLE

@@ -28,8 +28,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "storage" / "data" / "trading.db"
+from config.settings import BASE_DIR, DB_PATH
+
 OUTPUT_MD = BASE_DIR / "storage" / "data" / "probability_tracker.md"
 OUTPUT_JSON = BASE_DIR / "storage" / "data" / "probability_tracker.json"
 

@@ -386,7 +386,8 @@ class RiskManager:
         max_lots_margin = (balance * MAX_MARGIN_PERCENT) / (price * MARGIN_FACTOR) if price > 0 else lots
         lots = min(lots, max_lots_margin)
 
-        return max(MIN_LOT_SIZE, round(lots, 2))
+        # Floor (not round) to avoid exceeding margin cap after rounding up
+        return max(MIN_LOT_SIZE, int(lots * 100) / 100.0)
 
     def get_dynamic_sl(
         self,

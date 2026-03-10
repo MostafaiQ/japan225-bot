@@ -1,7 +1,7 @@
 # ai/context_writer.py — DIGEST (created 2026-03-02)
 # Writes human-readable context files to storage/context/ before every AI call.
 # Gives Claude Code CLI subprocess richer, auditable context than inline JSON dumps.
-# Called by monitor.py immediately before the Haiku pre-gate.
+# Called by monitor.py before the Sonnet AI scan.
 
 ## Public API
 write_context(indicators, market_context, web_research, recent_scans, recent_trades,
@@ -27,5 +27,5 @@ Created automatically. *.md files are gitignored (runtime data).
 
 ## Usage in monitor.py
 Called after: 4H fetch, web research, local confidence, hard blocks, live_edge
-Called before: haiku_result = self.analyzer.precheck_with_haiku(...)
+Called before: self.analyzer.scan_with_sonnet(...)
 Data sources: self.storage.get_recent_scans(15), self.storage.get_recent_trades(10)

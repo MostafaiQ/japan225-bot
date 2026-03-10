@@ -122,7 +122,7 @@ Near-miss flow (in _scanning_cycle, after AI rejection):
   Mechanical bidirectional retry REMOVED — Opus handles both directions in one call.
 
 Force Open flow (in _scanning_cycle, after AI rejection):
-  Triggers when: local_score >= 100 (12/12 criteria pass)
+  Triggers when: local_score >= 100 (9/9 weighted criteria pass)
   → computes lots (balance + risk), builds force_alert dict
   → telegram.send_force_open_alert() → user sees Force Open / Skip buttons
   → 15min TTL, NO auto-execute. User must explicitly click Force Open.

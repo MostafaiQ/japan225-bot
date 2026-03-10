@@ -110,7 +110,7 @@ FIBO: fib_near = nearest S/R level. Use for SL/TP placement.
 SWEEP: swept_low=T → liquidity grab → bullish. swept_high=T → bearish.
 PIVOT: PP/R1-R3/S1-S3 daily. S1/S2=LONG support. R1/R2=SHORT resistance.
 CANDLE: Strong pattern at key level = high conviction. BODY: expanding=momentum, contracting=exhaustion.
-R:R (MANDATORY): effective_rr = (TP_dist - 7) / (SL_dist + 7) ≥ 1.5. Compute before approving. REJECT if below.
+R:R (MANDATORY): effective_rr = (TP_dist - 7) / (SL_dist + 7) ≥ 1.2. Compute before approving. REJECT if below. Set TP dynamically based on next resistance/support level — do NOT default to 400pts.
 
 ━━ CONFIDENCE (12 criteria, base 30, cap 100) ━━
 daily_trend | entry_at_tech_level | rsi_15m_in_range | tp_viable | price_structure | macro_aligned
@@ -138,14 +138,14 @@ QUICK REJECT: ≥4 criteria fail AND volume LOW AND no macro catalyst → setup_
 COUNTER SIGNAL: On rejection, check opposite direction. Set counter_signal="LONG"/"SHORT" if concrete structural evidence exists (swept_low + reversal pattern = LONG; swept_high + distribution = SHORT). Null if rejected for quality reasons only.
 
 ━━ EXIT & REASONING ━━
-EXIT: +150pts → SL to BE+10. TP=400pts. 75%TP in <2h → trail@150pts.
+EXIT: SL and TP fixed at entry. No breakeven, no trailing. Set TP at nearest key level (swing high/low, R1/S1, fib, FVG). Min TP=150pts.
 REASONING_SHORT: ~3-5 sentences (~400-500 chars). Format: "[APPROVE/REJECT] [dir]. [Structure]. [Decisive signal]. [Key risk/edge]. [Final call]."
   Example: "REJECT SHORT. D1/4H/15M bearish but CRASH DAY 1794pts overrides — crash rules require bounce short not continuation. swept_low + bullish_engulfing at lows = reversal, not continuation. 4H RSI 41 near oversold = squeeze risk. Wait for dead-cat then SHORT from higher."
   reasoning field holds full analysis. reasoning_short is the log summary.
 
 ━━ FATAL FLAWS — APPROVE UNLESS ONE EXISTS ━━
 1. SL direction wrong (LONG SL above entry, SHORT SL below entry)
-2. Effective R:R < 1.5 after spread (EXCEPTION: oversold reversal LONG with 4H RSI < 32 + 15M reversal candle → R:R ≥ 1.3 is OK)
+2. Effective R:R < 1.2 after spread (EXCEPTION: oversold reversal LONG with 4H RSI < 32 + 15M reversal candle → R:R ≥ 1.0 is OK)
 3. HIGH-impact event within 60 minutes
 4. 4H RSI < 32 on a SHORT trade (does NOT block LONGs — oversold bounce LONGs are encouraged here)
 5. 4H RSI > 68 on a LONG trade
@@ -565,7 +565,7 @@ def build_scan_prompt(
         "Accept the hint unless a specific indicator directly contradicts it.\n"
         "  3. TRIGGER QUALITY: Is the setup trigger clean at a real S/R level? "
         "(check: price proximity, HA direction, volume, FVG/sweep confluence)\n"
-        "  4. R:R: Compute effective_rr = (TP_dist - 7) / (SL_dist + 7). Is it ≥ 1.5?\n"
+        "  4. R:R: Compute effective_rr = (TP_dist - 7) / (SL_dist + 7). Is it ≥ 1.2? Set TP at nearest structural target, not fixed 400pts.\n"
         "  5. COMMIT: Write APPROVE or REJECT on the first line of your reasoning. "
         "If borderline (72-86%): name the SINGLE decisive factor, then commit. "
         "NEVER write 'wait for' or 'need more' — this is a NOW decision.\n"
@@ -961,7 +961,7 @@ class AIAnalyzer:
             "  that many points PER CANDLE on average. A 60-80pt SL will be eaten by noise.\n"
             "  In volatile markets: push SL toward the upper bound (120pts), widen TP accordingly.\n"
             "  Tokyo session regularly shows ATR 140-220pts — account for this in SL placement.\n\n"
-            "R:R REQUIREMENT: (TP - 7) / (SL + 7) >= 1.5  (7pt spread adjustment)\n\n"
+            "R:R REQUIREMENT: (TP - 7) / (SL + 7) >= 1.2  (7pt spread adjustment). Set TP at key structural level, NOT fixed.\n\n"
             "RULES:\n"
             "- If Sonnet's rejection is about imminent risk (events, gap), respect it for BOTH.\n"
             "- Oversold RSI<30 + daily bullish = bounce to BB mid is high-probability LONG scalp.\n"
@@ -1039,13 +1039,13 @@ class AIAnalyzer:
             # Clamp TP to 150-300
             tp = max(150, min(300, tp)) if tp else 200
 
-            # Check effective R:R >= 1.5 after spread
+            # Check effective R:R >= 1.2 after spread
             effective_rr = (tp - SPREAD_ESTIMATE) / (sl + SPREAD_ESTIMATE)
-            if effective_rr < 1.5:
+            if effective_rr < 1.2:
                 result["scalp_viable"] = False
                 result["reasoning"] = (
                     f"R:R too low: SL={sl} TP={tp} → effective "
-                    f"{effective_rr:.2f} < 1.5 minimum"
+                    f"{effective_rr:.2f} < 1.2 minimum"
                 )
             else:
                 result["sl_distance"] = sl
@@ -1103,7 +1103,7 @@ class AIAnalyzer:
             "  market is VOLATILE. SL must be at least 1× ATR from entry to survive noise.\n"
             "  Tokyo session regularly shows ATR 140-220pts — set SL accordingly.\n\n"
             f"CONFIDENCE THRESHOLDS: LONG requires >= {MIN_CONFIDENCE}%. SHORT requires >= {MIN_CONFIDENCE_SHORT}%.\n"
-            "R:R REQUIREMENT: (TP_dist - 7) / (SL_dist + 7) >= 1.5  (7pt spread adjustment)\n\n"
+            "R:R REQUIREMENT: (TP_dist - 7) / (SL_dist + 7) >= 1.2  (7pt spread adjustment). Set TP at key structural level, NOT fixed.\n\n"
             "MEAN-REVERSION BOUNCE RULES (if evaluating LONG bounce):\n"
             "  Bearish HA streak, price below EMA50, 4H bearish = EXPECTED for bounce setups.\n"
             "  Evaluate bounce QUALITY: wick rejection, pattern, sweep, volume surge, RSI divergence.\n\n"

@@ -15,7 +15,7 @@
 FastAPI app. Auth middleware: Bearer DASHBOARD_TOKEN on all routes except OPTIONS + /api/health.
 CORS: allow_origins=["https://mostafaiq.github.io", "http://localhost:3000"]
       allow_headers includes "ngrok-skip-browser-warning" (required for ngrok)
-Routers: status, config, history, logs, chat, controls
+Routers: status, config, history, logs, chat, controls, stream
 
 ## Routers
 
@@ -53,6 +53,16 @@ POST /api/chat/history      → body: {messages:[]} → {ok: true, updated_at: I
   Persists to storage/data/chat_history.json (last 40 messages). Cross-device sync.
 GET  /api/chat/costs        → {today_usd, total_usd, note:"estimate", entries:[last 20 today]}
   Reads storage/data/chat_costs.json (written by claude_client._log_chat_cost())
+
+### routers/stream.py
+GET /api/stream          → Server-Sent Events (text/event-stream)
+  Event types:
+    state_update : pushed when bot_state.json mtime changes (same payload as /api/status, minus live IG price)
+    new_logs     : pushed when journal entries change (~9s check interval)
+    keep_alive   : ping every ~15s to prevent timeout
+  Auth: Bearer token required. Uses fetch ReadableStream on frontend (not EventSource, because custom headers needed for ngrok).
+  Loop: asyncio.sleep(3) tick, mtime-based state detection, hash-based log change detection.
+  Reconnect: frontend auto-reconnects with exponential backoff (3s→30s max).
 
 ### routers/controls.py
 POST /api/controls/force-scan  → writes storage/data/force_scan.trigger
@@ -110,4 +120,7 @@ All fetch() calls include headers: Authorization: Bearer <token>, ngrok-skip-bro
 Chat: marked.js markdown rendering, localStorage + server-side persistence.
   Cross-device sync: saves to POST /api/chat/history on send, polls GET /api/chat/history every 5s.
   Max 40 messages kept server-side. BroadcastChannel('j225') for instant same-browser sync.
-Auto-refresh: Overview tab every 15s.
+SSE: /api/stream replaces setInterval polling for overview + logs + connection check.
+  Frontend uses fetch() + ReadableStream (not EventSource) to support custom headers (Bearer auth + ngrok-skip-browser-warning).
+  Remaining setInterval: history (15s, IG API too expensive for SSE), countdown ticker (1s), chat sync (5s), chat cost (30s).
+  _connectSSE() called on init + on saveSettings(). _disconnectSSE() on credential change.

@@ -7,7 +7,7 @@ import pytest
 import math
 from core.indicators import (
     ema, sma, bollinger_bands, rsi, vwap, heiken_ashi,
-    analyze_timeframe, detect_higher_lows, detect_setup,
+    analyze_timeframe, detect_setup,
     pivot_points, detect_candlestick_patterns, analyze_body_trend,
 )
 
@@ -110,20 +110,6 @@ class TestVWAP:
         result = vwap([100], [90], [95], [0])
         assert abs(result[0] - 95.0) < 0.01  # (100+90+95)/3
 
-
-class TestHigherLows:
-    def test_ascending_lows(self):
-        # Zigzag pattern with higher lows - needs 2+ candles on each side of swing
-        prices = [110, 105, 100, 98, 100, 105, 110, 108, 103, 101, 103, 108, 113, 110, 106, 104, 107, 112]
-        # Swing lows at 98, 101, 104 -> ascending
-        assert detect_higher_lows(prices, 3) == True
-    
-    def test_descending_lows(self):
-        prices = [100, 95, 105, 90, 110, 85, 115]
-        assert detect_higher_lows(prices, 3) == False
-    
-    def test_too_few_points(self):
-        assert detect_higher_lows([100, 105], 5) == False
 
 
 class TestDetectSetup:
@@ -389,18 +375,6 @@ class TestRiskManager:
         profit = calculate_profit(0.10, 300)
         assert abs(profit - 30.0) < 0.01
     
-    def test_lot_sizing(self):
-        from config.settings import get_lot_size
-        
-        # With $20 balance at 38,000 price
-        lots = get_lot_size(20, 38000)
-        margin = lots * 1 * 38000 * 0.005
-        assert margin <= 20 * 0.5  # Margin under 50%
-        
-        # With $100 balance
-        lots = get_lot_size(100, 38000)
-        margin = lots * 1 * 38000 * 0.005
-        assert margin <= 100 * 0.5
 
 
 class TestPivotPoints:

@@ -6,6 +6,7 @@
   <title>Japan 225 Bot</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230a1120'/%3E%3Cline x1='16' y1='14' x2='16' y2='50' stroke='%2322c997' stroke-width='3' stroke-linecap='round'/%3E%3Crect x='11' y='22' width='10' height='16' rx='2' fill='%2322c997'/%3E%3Cline x1='32' y1='10' x2='32' y2='54' stroke='%23f04444' stroke-width='3' stroke-linecap='round'/%3E%3Crect x='27' y='18' width='10' height='20' rx='2' fill='%23f04444'/%3E%3Cline x1='48' y1='16' x2='48' y2='48' stroke='%2322c997' stroke-width='3' stroke-linecap='round'/%3E%3Crect x='43' y='24' width='10' height='12' rx='2' fill='%2322c997'/%3E%3C/svg%3E">
   <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -1687,7 +1688,7 @@ function addMsg(role, text, time, tier) {
   const avatarClass = role === 'assistant' ? 'claude' : 'user-av';
   const avatarLabel = role === 'assistant' ? '✦' : 'You';
   const content = role === 'assistant'
-    ? marked.parse(text)
+    ? DOMPurify.sanitize(marked.parse(text))
     : esc(text).replace(/\n/g,'<br>');
   // Store raw text for reply-to (use data-attr + event handler for XSS safety)
   const replyBtn = `<button class="reply-btn" title="Reply">↩</button>`;
@@ -1867,6 +1868,7 @@ async function saveSettings() {
   closeSettings();
   setConn('ok','Connected');
   loadOverview();
+  _disconnectSSE(); _connectSSE();  // reconnect SSE with new credentials
 }
 
 // ══════════════════════════════════════════════
@@ -1945,6 +1947,112 @@ function fmtDt(iso) {
 }
 
 // ══════════════════════════════════════════════
+//  SSE (Server-Sent Events) — replaces polling for overview + logs
+// ══════════════════════════════════════════════
+let _sseController = null;   // AbortController for the current SSE fetch
+let _sseRetryMs = 3000;      // reconnect delay (backs off on failure, resets on success)
+const _SSE_MAX_RETRY = 30000;
+
+function _handleStateUpdate(data) {
+  setConn('ok', 'Connected');
+  touchUpdate();
+  _seedCountdown(data.next_scan_in, data.last_scan);
+  if (S.tab === 'overview') {
+    renderStatus(data);
+    renderPos(data.position);
+    renderScans(data.recent_scans || []);
+  }
+}
+
+function _handleNewLogs(data) {
+  if (S.tab !== 'logs') return;
+  const box = document.getElementById('logBox');
+  if (!box) return;
+  const lines = data.lines || [];
+  if (!lines.length) { box.innerHTML = '<span class="l-info">No entries</span>'; return; }
+  box.innerHTML = lines.map(l => {
+    let c = 'l-info';
+    if (/ERROR|CRITICAL/i.test(l)) c = 'l-err';
+    else if (/WARN/i.test(l))      c = 'l-warn';
+    else if (/TRADE|OPEN|CLOSE|CONFIRM|SIGNAL/i.test(l)) c = 'l-trade';
+    return `<div class="${c}">${esc(l)}</div>`;
+  }).join('');
+  box.scrollTop = box.scrollHeight;
+}
+
+async function _connectSSE() {
+  if (!S.url || !S.token) return;
+
+  // Abort any existing SSE connection
+  if (_sseController) { _sseController.abort(); _sseController = null; }
+  _sseController = new AbortController();
+
+  try {
+    const resp = await fetch(S.url + '/api/stream', {
+      method: 'GET',
+      headers: {
+        'Authorization': 'Bearer ' + S.token,
+        'ngrok-skip-browser-warning': 'true',
+        'Accept': 'text/event-stream',
+      },
+      signal: _sseController.signal,
+    });
+
+    if (!resp.ok) {
+      throw new Error('SSE HTTP ' + resp.status);
+    }
+
+    setConn('ok', 'Connected');
+    _sseRetryMs = 3000; // reset backoff on successful connect
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      // Parse SSE frames: split on double newline
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop(); // keep incomplete frame in buffer
+
+      for (const frame of parts) {
+        if (!frame.trim()) continue;
+        let eventType = 'message';
+        let eventData = '';
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+          else if (line.startsWith('data: ')) eventData = line.slice(6);
+        }
+        if (!eventData) continue;
+        try {
+          const parsed = JSON.parse(eventData);
+          if (eventType === 'state_update') _handleStateUpdate(parsed);
+          else if (eventType === 'new_logs') _handleNewLogs(parsed);
+          // keep_alive: just confirms connection is alive (already set conn=ok above)
+          else if (eventType === 'keep_alive') setConn('ok', 'Connected');
+        } catch (e) { /* ignore malformed JSON */ }
+      }
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') return; // intentional disconnect
+    setConn('err', 'SSE disconnected');
+  }
+
+  // Reconnect with backoff (unless intentionally aborted)
+  if (_sseController && !_sseController.signal.aborted) {
+    _sseRetryMs = Math.min(_sseRetryMs * 1.5, _SSE_MAX_RETRY);
+    setTimeout(_connectSSE, _sseRetryMs);
+  }
+}
+
+function _disconnectSSE() {
+  if (_sseController) { _sseController.abort(); _sseController = null; }
+}
+
+// ══════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════
 (async function init() {
@@ -1962,6 +2070,8 @@ function fmtDt(iso) {
     } else {
       loadOverview();
     }
+    // Start SSE connection (replaces overview/logs/connection polling)
+    _connectSSE();
   }
   // Restore draft text in chat input (before _initChat so it's visible immediately)
   const _draft = localStorage.getItem('chatDraft');
@@ -1971,8 +2081,7 @@ function fmtDt(iso) {
   _initDragDrop();
   _initClipboardPaste();
   _refreshChatCost();                                                  // show cost badge immediately
-  setInterval(() => { if (S.tab === 'overview' && S.url) loadOverview(); }, 15000);  // overview auto-refresh
-  setInterval(() => { if (S.url) req('GET', '/api/status').then(() => setConn('ok', 'Connected')).catch(() => setConn('err', 'Error')); }, 15000);  // connection check on all tabs
+  setInterval(() => { if (S.tab === 'history' && S.url) loadHistory(); }, 15000);    // history auto-refresh (not SSE — IG API is expensive)
   setInterval(_tickCountdown, 1000);                                   // live countdown ticker
   setInterval(_pollHistory, 5000);                                     // cross-device chat sync
   setInterval(_refreshChatCost, 30000);                               // chat cost badge refresh

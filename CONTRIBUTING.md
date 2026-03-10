@@ -54,7 +54,7 @@ Thanks for your interest in contributing to the Japan 225 Trading Bot! This guid
 - **Single source of truth for config** -- all constants go in `config/settings.py`, never scattered
 - **Minimal diffs** -- only change what you need to. Don't reformat unchanged lines
 - **No over-engineering** -- solve the current problem, not hypothetical future ones
-- **Tests are required** -- add tests for new features. All 338+ tests must pass
+- **Tests are required** -- add tests for new features. All 424+ tests must pass
 - **No secrets in code** -- credentials go in `.env`, never committed
 
 ## Project Structure Guide
@@ -105,8 +105,8 @@ If you add a new feature, add corresponding tests. Look at existing test files f
 - **No external databases** -- SQLite on the VM, WAL mode for crash safety
 - **AI via CLI subprocess** -- Claude Code CLI with OAuth, not direct API calls
 - **Bidirectional** -- the bot evaluates both LONG and SHORT every scan cycle
-- **12-criteria scoring** -- filters noise before expensive AI calls
-- **3-phase exit** -- Initial SL/TP → breakeven lock → trailing runner
+- **9-criteria weighted scoring** -- filters noise before expensive AI calls
+- **Opus position evaluator** -- evaluates open positions every 2min, auto-closes if CLOSE_NOW >= 70% conf
 
 ## Questions?
 

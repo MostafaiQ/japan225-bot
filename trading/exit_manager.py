@@ -1,204 +1,55 @@
 """
-Exit Manager - 3-Phase exit strategy for position management.
+Exit Manager - Position exit evaluation.
 
-Phase 1: Initial protection (entry to +150pts) - fixed SL and TP
-Phase 2: Breakeven lock (at +150pts) - move SL to entry + buffer  
-Phase 3: Runner mode (75% of TP fast) - remove TP, activate trailing stop
-
-This runs on the position monitor (every 60 seconds), NOT the 2-hour scan.
+SL and TP are fixed at entry (set by AI). No mechanical modifications.
+Position evaluation is done by Opus AI every 120s in monitor.py.
+This module is kept for API compatibility but all exit logic is disabled.
 """
 import asyncio
 import logging
-from datetime import datetime
 from typing import Optional
-
-from config.settings import (
-    SPREAD_ESTIMATE,
-    RUNNER_VELOCITY_THRESHOLD, TRAILING_STOP_DISTANCE,
-    TRAILING_STOP_INCREMENT, DEFAULT_TP_DISTANCE,
-)
 
 logger = logging.getLogger(__name__)
 
 
 class ExitPhase:
-    INITIAL = "initial"         # Phase 1: SL + TP set, waiting
-    BREAKEVEN = "breakeven"     # Phase 2: SL moved to BE
-    RUNNER = "runner"           # Phase 3: Trailing stop active
+    INITIAL = "initial"         # SL + TP set at entry, fixed
     CLOSED = "closed"           # Trade finished
+    # Legacy phases kept for DB compatibility
+    BREAKEVEN = "breakeven"
+    RUNNER = "runner"
 
 
 class ExitManager:
-    """Manages the 3-phase exit strategy for open positions."""
-    
+    """Position exit manager. SL/TP fixed at entry — no mechanical modifications."""
+
     def __init__(self, ig_client, storage, telegram=None):
         self.ig = ig_client
         self.storage = storage
         self.telegram = telegram
-    
+
     def evaluate_position(self, position: dict) -> dict:
-        """
-        Evaluate an open position and determine if any action is needed.
-        
-        Args:
-            position: dict with keys:
-                deal_id, direction, entry, size, stop_level, limit_level,
-                current_price, opened_at, phase
-        
-        Returns:
-            {
-                "action": str (none/move_be/activate_runner/close_early),
-                "details": str,
-                "new_stop": float or None,
-                "new_limit": float or None,
-                "trailing": bool,
-            }
-        """
-        result = {
+        """No mechanical exit modifications. Returns 'none' always."""
+        return {
             "action": "none",
-            "details": "",
+            "details": "SL/TP fixed at entry",
             "new_stop": None,
             "new_limit": None,
             "trailing": False,
         }
-        
-        entry = position.get("entry", 0)
-        current = position.get("current_price", 0)
-        direction = position.get("direction", "BUY").upper()
-        phase = position.get("phase", ExitPhase.INITIAL)
-        limit_level = position.get("limit_level")
-        opened_at = position.get("opened_at")
-        
-        if not entry or not current:
-            return result
-        
-        # Calculate current P&L in points
-        if direction == "BUY":
-            pnl_points = current - entry
-        else:
-            pnl_points = entry - current
-        
-        # Time since entry
-        time_open = None
-        if opened_at:
-            try:
-                open_dt = datetime.fromisoformat(opened_at)
-                # Strip TZ info if present (startup recovery stores TZ-aware isoformat)
-                if open_dt.tzinfo is not None:
-                    open_dt = open_dt.replace(tzinfo=None)
-                time_open = datetime.now() - open_dt
-            except (ValueError, TypeError):
-                pass
-        
-        # ---- PHASE 1 -> PHASE 3: Runner Detection (no breakeven stop) ----
-        # SL stays fixed at entry SL until trade becomes a runner (75% of TP).
-        # Then TP is removed and a trailing stop activates at 150pts behind price.
-        if phase in (ExitPhase.INITIAL, ExitPhase.BREAKEVEN) and limit_level:
-            tp_distance = abs(limit_level - entry)
-            progress = pnl_points / tp_distance if tp_distance > 0 else 0
-            
-            # Runner condition: reached 75% of TP (no time restriction — slow grind earns runner too)
-            is_near_tp = progress >= RUNNER_VELOCITY_THRESHOLD
-
-            if is_near_tp:
-                if direction == "BUY":
-                    trail_stop = current - TRAILING_STOP_DISTANCE
-                else:
-                    trail_stop = current + TRAILING_STOP_DISTANCE
-                
-                result.update({
-                    "action": "activate_runner",
-                    "details": (
-                        f"RUNNER DETECTED. Price at {progress:.0%} of TP"
-                        + (f" ({time_open.total_seconds()/60:.0f} min open)" if time_open else "") +
-                        f". Removing TP, trailing stop at {TRAILING_STOP_DISTANCE}pts."
-                    ),
-                    "new_stop": trail_stop,
-                    "new_limit": None,  # Remove TP to let it run
-                    "trailing": True,
-                })
-                return result
-        
-        # ---- RUNNER PHASE: Log trailing progress ----
-        if phase == ExitPhase.RUNNER:
-            result.update({
-                "action": "none",
-                "details": f"Runner active. P&L: +{pnl_points:.0f}pts. Trailing stop protecting profits.",
-            })
-        
-        # ---- Event proximity check ----
-        # This would be called with upcoming_events if available
-        
-        return result
-    
-    async def _run_sync(self, fn, *args, **kwargs):
-        """
-        Run a synchronous IG API call in a thread pool executor so it
-        doesn't block the asyncio event loop (Telegram polling, timers, etc.).
-        """
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
 
     async def execute_action(self, position: dict, action: dict) -> bool:
-        """Execute the recommended exit action via IG API."""
-        deal_id = position.get("deal_id")
-
+        """Execute exit action (close_early only, called by Opus evaluator)."""
         if action["action"] == "none":
             return True
 
-        if action["action"] == "move_be":
-            success = await self._run_sync(
-                self.ig.modify_position,
-                deal_id=deal_id,
-                stop_level=action["new_stop"],
-                limit_level=action["new_limit"],
-            )
-            if success:
-                self.storage.update_position_phase(deal_id, ExitPhase.BREAKEVEN)
-                if self.telegram:
-                    await self.telegram.send_alert(
-                        f"*SL moved to breakeven*\n"
-                        f"Stop: {action['new_stop']:.0f}\n"
-                        f"{action['details']}"
-                    )
-            return success
-
-        if action["action"] == "activate_runner":
-            # First try trailing stop via API
-            success = await self._run_sync(
-                self.ig.modify_position,
-                deal_id=deal_id,
-                trailing_stop=True,
-                trailing_stop_distance=TRAILING_STOP_DISTANCE,
-                trailing_stop_increment=TRAILING_STOP_INCREMENT,
-                limit_level=None,
-            )
-
-            if not success:
-                # Fallback: manual stop placement, no TP
-                logger.warning("Trailing stop not available via API, using manual trail")
-                success = await self._run_sync(
-                    self.ig.modify_position,
-                    deal_id=deal_id,
-                    stop_level=action["new_stop"],
-                    limit_level=None,
-                )
-
-            if success:
-                self.storage.update_position_phase(deal_id, ExitPhase.RUNNER)
-                if self.telegram:
-                    await self.telegram.send_alert(
-                        f"*RUNNER MODE ACTIVATED*\n"
-                        f"Trailing stop: {TRAILING_STOP_DISTANCE}pts\n"
-                        f"{action['details']}"
-                    )
-            return success
-
         if action["action"] == "close_early":
+            deal_id = position.get("deal_id")
             direction = position.get("direction", "BUY")
             size = position.get("size", 0)
-            result = await self._run_sync(
-                self.ig.close_position, deal_id, direction, size
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, self.ig.close_position, deal_id, direction, size
             )
             if result:
                 self.storage.update_position_phase(deal_id, ExitPhase.CLOSED)
@@ -209,37 +60,7 @@ class ExitManager:
             return result is not None
 
         return False
-    
+
     def manual_trail_update(self, position: dict) -> Optional[dict]:
-        """
-        For positions in runner phase where trailing stops aren't available via API.
-        Manually ratchet the stop up every 60 seconds.
-        """
-        phase = position.get("phase")
-        if phase != ExitPhase.RUNNER:
-            return None
-        
-        entry = position.get("entry", 0)
-        current = position.get("current_price", 0)
-        current_stop = position.get("stop_level", 0)
-        direction = position.get("direction", "BUY").upper()
-        
-        if direction == "BUY":
-            ideal_stop = current - TRAILING_STOP_DISTANCE
-            # Only move stop UP, never down
-            if ideal_stop > current_stop:
-                return {
-                    "action": "manual_trail",
-                    "new_stop": ideal_stop,
-                    "details": f"Manual trail: moving stop from {current_stop:.0f} to {ideal_stop:.0f}",
-                }
-        else:
-            ideal_stop = current + TRAILING_STOP_DISTANCE
-            if ideal_stop < current_stop:
-                return {
-                    "action": "manual_trail",
-                    "new_stop": ideal_stop,
-                    "details": f"Manual trail: moving stop from {current_stop:.0f} to {ideal_stop:.0f}",
-                }
-        
+        """Trailing disabled. Returns None always."""
         return None

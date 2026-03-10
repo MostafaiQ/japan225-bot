@@ -7,6 +7,9 @@
 3. **Never read raw .py source files** unless the digest is missing or you are making a code change.
 4. For live bot status: read `storage/data/bot_state.json` — do not call APIs or read monitor.py.
 5. For trade history: `sqlite3 storage/data/trading.db "SELECT ..."` — do not read database.py.
+6. **Auto-run session-resumption agent** at the start of every new session (produces context brief).
+7. **Auto-run post-trade-analyst agent** whenever a trade close is detected in logs or DB.
+8. **Auto-run cost-watchdog agent** in background when the user asks about costs or at session end.
 
 ## Digest Index (read the digest, not the source)
 | Digest | Covers |
@@ -17,9 +20,9 @@
 | indicators | analyze_timeframe(), detect_setup(), all setup types |
 | session | get_current_session(), blackout rules |
 | momentum | MomentumTracker, adverse tier logic |
-| confidence | compute_confidence(), 11-criteria scoring |
+| confidence | compute_confidence(), 9-criteria weighted scoring |
 | ig_client | IG REST API, connect, prices, open/modify/close |
-| risk_manager | validate_trade(), 11 checks, get_safe_lot_size() |
+| risk_manager | validate_trade(), 12 checks, get_safe_lot_size() |
 | exit_manager | evaluate_position(), ExitPhase, trailing stop |
 | analyzer | AIAnalyzer, Sonnet/Opus 2-tier pipeline, JSON schema |
 | context_writer | write_context(), market_snapshot/recent_activity/macro/live_edge |
@@ -35,7 +38,7 @@
 - No markdown headers in chat responses — renders as raw # symbols in dashboard.
 - Never reproduce large file contents unless explicitly asked.
 
-## Available Skills
+## Available Skills (15)
 Invoke with `/skill-name`. Full workflows live in `~/.claude/skills/`.
 
 | Skill | Trigger |
@@ -50,6 +53,24 @@ Invoke with `/skill-name`. Full workflows live in `~/.claude/skills/`.
 | `/backtest-import` | import CSV backtest results to MEMORY.md |
 | `/gha` | analyze failing GitHub Actions runs |
 | `/recall` | search conversation history |
+| `/restart` | **full deploy cycle**: test → commit → push → restart service (auto-aborts on test failure) |
+| `/log-triage` | parse pasted errors/tracebacks, find source, classify root cause, fix directly |
+| `/indicator-check` | current technicals table: EMA9/50/200, RSI, BB, VWAP, session, setup |
+| `/confidence-debug` | reconstruct C1-C12 scoring for any scan — shows drags and boosts |
+| `/db` | quick SQLite queries: `/db trades`, `/db scans`, `/db positions`, `/db <sql>` |
+
+## Available Agents (7)
+Agents live in `~/.claude/agents/`. Invoke via Agent tool with the agent name.
+
+| Agent | Model | Auto-trigger | Purpose |
+|-------|-------|-------------|---------|
+| `high-chancellor` | Sonnet | break-glass only | supreme AI overseer for critical issues |
+| `market-analyst` | default | manual | market analysis and indicator explanation |
+| `trade-debugger` | default | manual | trade postmortem and failure analysis |
+| `post-trade-analyst` | Haiku | after trade close | updates Brier scores + prompt_learnings automatically |
+| `deploy-guardian` | Haiku | before systemctl restart | blocks deploy if tests/settings/syntax fail |
+| `session-resumption` | Haiku | session start | produces "here's where you are" context brief |
+| `cost-watchdog` | Haiku | background/on-demand | monitors API costs, warns on anomalies |
 
 ## Handling Operational Questions (dashboard chat)
 User is a trader, not a developer. When they ask operational questions:
@@ -61,6 +82,36 @@ User is a trader, not a developer. When they ask operational questions:
 - "What do the logs mean?" → read `/api/logs?type=scan` result from recent journalctl or explain the outcome codes in recent_scans
 - Always give a DIRECT answer. Never say "probably" or "might". Check the actual data first.
 - If you need to run a command and it might affect the bot, warn the user first.
+
+## Autonomous Protocols (auto-enforced — no user prompting needed)
+
+### Deploy Protocol
+- NEVER `systemctl restart` without running deploy-guardian agent first (or at minimum pytest)
+- After restart, ALWAYS verify with `systemctl is-active` + last 5 journal lines
+- If service fails to start, immediately check journal — do NOT retry blindly
+- Use `/restart` skill for the full automated cycle
+
+### Hot Files Warning
+- `monitor.py`, `analyzer.py`, `indicators.py` are the blast radius center (~60% of all file operations)
+- Any edit to these 3 files → run FULL test suite (not just the changed test)
+- Use GitNexus impact analysis before touching these files
+
+### AI Pipeline Guards
+- Sonnet is primary. Opus is conditional (60-86% confidence only)
+- NEVER bypass confidence threshold gates — this has caused real money losses
+- All prompt changes to analyzer.py MUST be followed by `/prompt-audit`
+
+### Rate Limit Mitigation
+- RTK is active via PreToolUse hook — all CLI output is token-optimized (60-90% savings)
+- Prefer targeted pytest (`pytest tests/test_specific.py`) over full suite during iteration
+- Always use `-x` flag (stop on first failure) during development
+- If rate-limited: wait, don't spam — the model and pricing tier don't change
+
+### Session Auto-Actions
+- On session start: run session-resumption agent (context reconstruction)
+- After any trade close detected: run post-trade-analyst agent (Brier + lessons)
+- Before any deploy: run deploy-guardian agent (validation gate)
+- Periodically or on cost questions: run cost-watchdog agent
 
 ## Development Discipline (hard gates — never skip)
 1. **Plan before code** — Before writing any code, describe the approach and wait for user approval.

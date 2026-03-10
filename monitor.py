@@ -359,6 +359,14 @@ class TradingMonitor:
                 S.SCAN_INTERVAL_SECONDS = int(data["SCAN_INTERVAL_SECONDS"])
             if "scanning_paused" in data:
                 self.scanning_paused = bool(data["scanning_paused"])
+            if "MAX_MARGIN_PERCENT" in data:
+                S.MAX_MARGIN_PERCENT = float(data["MAX_MARGIN_PERCENT"])
+            if "MAX_PORTFOLIO_RISK_PERCENT" in data:
+                S.MAX_PORTFOLIO_RISK_PERCENT = float(data["MAX_PORTFOLIO_RISK_PERCENT"])
+            if "RISK_PERCENT" in data:
+                S.RISK_PERCENT = float(data["RISK_PERCENT"])
+            if "MAX_RISK_PERCENT" in data:
+                S.MAX_RISK_PERCENT = float(data["MAX_RISK_PERCENT"])
         except Exception as e:
             logger.debug(f"_reload_overrides skipped: {e}")
 

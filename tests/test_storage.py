@@ -48,7 +48,7 @@ class TestScanHistory:
 
 class TestTradingJournal:
     def test_log_open_and_close(self, db):
-        trade_num = db.log_trade_open({
+        trade_num = db.open_trade_atomic({
             "deal_id": "DEAL_001",
             "direction": "LONG",
             "lots": 0.03,
@@ -59,6 +59,13 @@ class TestTradingJournal:
             "confidence": 85,
             "setup_type": "bollinger_mid_bounce",
             "session": "tokyo_open",
+        }, {
+            "deal_id": "DEAL_001",
+            "direction": "LONG",
+            "size": 0.03,
+            "entry_price": 59500,
+            "stop_loss": 59300,
+            "take_profit": 59900,
         })
         assert trade_num == 1
 
@@ -78,10 +85,15 @@ class TestTradingJournal:
 
     def test_trade_numbering(self, db):
         for i in range(3):
-            num = db.log_trade_open({
+            num = db.open_trade_atomic({
                 "deal_id": f"DEAL_{i}",
                 "direction": "LONG",
                 "lots": 0.03,
+                "entry_price": 59500,
+            }, {
+                "deal_id": f"DEAL_{i}",
+                "direction": "LONG",
+                "size": 0.03,
                 "entry_price": 59500,
             })
             assert num == i + 1
@@ -91,12 +103,17 @@ class TestTradingJournal:
         for i, (pnl, deal_id) in enumerate([
             (2.0, "W1"), (3.0, "W2"), (4.0, "W3"), (-4.08, "L1")
         ]):
-            db.log_trade_open({
+            db.open_trade_atomic({
                 "deal_id": deal_id,
                 "direction": "LONG",
                 "lots": 0.03,
                 "entry_price": 59500,
                 "confidence": 85,
+            }, {
+                "deal_id": deal_id,
+                "direction": "LONG",
+                "size": 0.03,
+                "entry_price": 59500,
             })
             db.log_trade_close(deal_id, {
                 "exit_price": 59600 if pnl > 0 else 59300,

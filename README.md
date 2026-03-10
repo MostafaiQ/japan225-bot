@@ -91,12 +91,12 @@ japan225-bot/
 |   +-- indicators.py           # BB, EMA, RSI, VWAP, Heiken Ashi, FVG, Fib, pivots, ATR, 12 candlestick patterns
 |   +-- session.py              # Session hours (Tokyo/London/NY), no-trade days, blackouts
 |   +-- momentum.py             # MomentumTracker, adverse move tier detection
-|   +-- confidence.py           # 12-criteria proportional scoring (LONG + SHORT aware)
+|   +-- confidence.py           # 9-criteria weighted scoring (LONG + SHORT aware)
 +-- ai/
 |   +-- analyzer.py             # Sonnet -> Opus 2-tier pipeline (Claude CLI subprocess)
 |   +-- context_writer.py       # Market context file writer (snapshot, macro, live edge)
 +-- trading/
-|   +-- risk_manager.py         # 11-point pre-trade validation (both pipelines)
+|   +-- risk_manager.py         # 12-point pre-trade validation (both pipelines)
 |   +-- exit_manager.py         # Position phase tracking
 +-- notifications/
 |   +-- telegram_bot.py         # Alerts, inline buttons, trade confirmation
@@ -106,7 +106,7 @@ japan225-bot/
 |   +-- data/                   # Runtime data (never committed)
 +-- dashboard/                  # FastAPI web dashboard + ngrok tunnel
 +-- backtest.py                 # Strategy backtester with real AI evaluation
-+-- tests/                      # 395+ tests (all passing)
++-- tests/                      # 424+ tests (all passing)
 +-- DEPLOY.md                   # Full deployment guide
 ```
 

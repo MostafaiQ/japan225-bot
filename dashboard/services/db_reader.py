@@ -6,9 +6,7 @@ import sqlite3
 import json
 import os
 from datetime import datetime, date
-from pathlib import Path
-
-DB_PATH = Path(__file__).parent.parent.parent / "storage" / "data" / "trading.db"
+from config.settings import DB_PATH
 
 
 def _conn() -> sqlite3.Connection:

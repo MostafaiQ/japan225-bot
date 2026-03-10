@@ -100,11 +100,6 @@ def get_current_session() -> dict:
     }
 
 
-def is_active_session() -> bool:
-    """Returns True if currently in a major trading session (Tokyo, London, NY)."""
-    session = get_current_session()
-    return session["active"]
-
 
 def is_weekend() -> bool:
     """

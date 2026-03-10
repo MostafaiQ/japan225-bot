@@ -149,6 +149,11 @@ class Storage:
                 INSERT OR IGNORE INTO account_state (id, balance, starting_balance) VALUES (1, 20.09, 16.67);
                 INSERT OR IGNORE INTO market_context (id, date) VALUES (1, date('now'));
                 INSERT OR IGNORE INTO ai_cooldown (id) VALUES (1);
+
+                -- Indexes for frequently queried columns
+                CREATE INDEX IF NOT EXISTS idx_scans_timestamp ON scans(timestamp);
+                CREATE INDEX IF NOT EXISTS idx_trades_deal_id ON trades(deal_id);
+                CREATE INDEX IF NOT EXISTS idx_trades_closed_at ON trades(closed_at);
             """)
             # Migrations — ADD COLUMN is idempotent via try/except
             for migration in [
@@ -211,37 +216,6 @@ class Storage:
     # ==========================================
     # TRADING JOURNAL
     # ==========================================
-    
-    def log_trade_open(self, trade: dict) -> int:
-        """Log a new trade opening. Returns trade number."""
-        with self._conn() as conn:
-            # Get next trade number
-            row = conn.execute("SELECT MAX(trade_number) as max_num FROM trades").fetchone()
-            trade_num = (row["max_num"] or 0) + 1
-            
-            conn.execute("""
-                INSERT INTO trades (trade_number, deal_id, opened_at, direction, lots,
-                    entry_price, stop_loss, take_profit, balance_before, confidence,
-                    confidence_breakdown, setup_type, session, ai_analysis, news_at_entry)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                trade_num,
-                trade.get("deal_id"),
-                trade.get("opened_at", datetime.now().isoformat()),
-                trade.get("direction"),
-                trade.get("lots"),
-                trade.get("entry_price"),
-                trade.get("stop_loss"),
-                trade.get("take_profit"),
-                trade.get("balance_before"),
-                trade.get("confidence"),
-                json.dumps(trade.get("confidence_breakdown", {})),
-                trade.get("setup_type"),
-                trade.get("session"),
-                trade.get("ai_analysis"),
-                json.dumps(trade.get("news_at_entry", [])),
-            ))
-        return trade_num
     
     def log_trade_close(self, deal_id: str, close_data: dict):
         """Update a trade record with close information."""

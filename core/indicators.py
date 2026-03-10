@@ -663,23 +663,6 @@ def analyze_timeframe(candles: list[dict]) -> dict:
     return result
 
 
-def detect_lower_highs(prices: list[float], lookback: int = 5) -> bool:
-    """Check if recent swing highs are making lower highs (bearish structure)."""
-    if len(prices) < lookback * 2:
-        return False
-
-    highs = []
-    for i in range(2, len(prices) - 2):
-        if prices[i] > prices[i - 1] and prices[i] > prices[i - 2]:
-            if prices[i] > prices[i + 1] and prices[i] > prices[i + 2]:
-                highs.append(prices[i])
-
-    if len(highs) < 2:
-        return False
-
-    recent_highs = highs[-3:]
-    return all(recent_highs[i] < recent_highs[i - 1] for i in range(1, len(recent_highs)))
-
 
 def detect_higher_lows(prices: list[float], lookback: int = 5) -> bool:
     """Check if recent swing lows are making higher lows."""
@@ -886,37 +869,6 @@ def compute_session_context(candles_15m: list[dict], candles_daily: list[dict] |
 
     return result
 
-
-def confirm_5m_entry(tf_5m: dict, direction: str) -> bool:
-    """
-    5M entry confirmation. Called AFTER 15M setup is detected.
-    Returns True if 5M chart confirms the entry direction.
-    If tf_5m is None or incomplete, returns True (pass-through — don't block).
-
-    LONG confirmation: price > EMA9, green candle body, RSI > 45
-    SHORT confirmation: price < EMA9, red candle body, RSI < 55
-    """
-    if not tf_5m:
-        return True  # no 5M data → don't block
-
-    price = tf_5m.get("price")
-    ema9 = tf_5m.get("ema9")
-    rsi_5m = tf_5m.get("rsi")
-    candle_open = tf_5m.get("open")
-
-    if not price or not ema9:
-        return True  # insufficient data → pass-through
-
-    if direction == "LONG":
-        price_above_ema9 = price > ema9
-        rsi_ok = rsi_5m is None or rsi_5m > 45
-        body_green = candle_open is None or price > candle_open
-        return price_above_ema9 and rsi_ok and body_green
-    else:  # SHORT
-        price_below_ema9 = price < ema9
-        rsi_ok = rsi_5m is None or rsi_5m < 55
-        body_red = candle_open is None or price < candle_open
-        return price_below_ema9 and rsi_ok and body_red
 
 
 def _build_confluence(tf_15m: dict, direction: str, pivots: dict = None) -> tuple[list[str], list[str]]:

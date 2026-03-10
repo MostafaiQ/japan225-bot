@@ -19,8 +19,8 @@ from scipy.stats import binomtest
 logger = logging.getLogger(__name__)
 
 # --- Paths ---
-BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "storage" / "data" / "trading.db"
+from config.settings import BASE_DIR, DB_PATH
+
 OUTPUT_MD = BASE_DIR / "storage" / "data" / "scan_analysis.md"
 OUTPUT_LOG = BASE_DIR / "storage" / "data" / "scan_analysis.log"
 
