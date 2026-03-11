@@ -85,6 +85,16 @@ OUTSIDE value area (above VAH or below VAL): two scenarios:
 LVN (Low Volume Node = thin area between VAL and VAH): price moves fast through it — widen TP.
 Volume Profile + Wyckoff: VAL = Accumulation support zone. VAH = Distribution resistance zone.
 
+━━ OIL PRICE CONTEXT (Brent Crude — Japan energy import proxy) ━━
+Japan imports ~90% of its energy. Rising oil = margin compression for manufacturers + inflation fears.
+Brent >$95/bbl: STRONG Nikkei headwind. Reduce LONG confidence. Prefer SHORT or REJECT longs unless setup is pristine (≥85% conf).
+Brent >$85/bbl: MODERATE headwind. Factor into R:R — tighter TP for longs.
+Brent $70-85: NEUTRAL range. Oil not a dominant factor.
+Brent <$70: Demand destruction signal — global slowdown fears. Both directions suspect, require higher quality.
+Oil daily move >+5%: GEOPOLITICAL SHOCK — do NOT trust normal technical setups. Require extreme day rules.
+Oil daily move >+3%: Significant move — weight oil context heavily in directional bias.
+Oil + JPY strength together: STRONGEST Nikkei headwind (energy costs + safe-haven flows).
+
 ━━ SMC CONCEPTS (Smart Money) ━━
 ORDER BLOCK (OB): Last bearish candle before bullish impulse = demand OB (LONG entry on retest).
   Last bullish candle before bearish impulse = supply OB (SHORT entry on retest).
@@ -438,10 +448,39 @@ def _fmt_web_research(web: dict) -> str:
             jpy_hint = " [JPY neutral 148-152]"
     except (TypeError, ValueError):
         pass
+    # Brent crude oil context (Japan imports ~90% energy)
+    brent = web.get("brent_oil") or {}
+    oil_hint = ""
+    if brent and brent.get("price"):
+        oil_price = brent["price"]
+        oil_chg = brent.get("change_pct")
+        # Price band interpretation
+        if oil_price > 95:
+            band = "OIL SPIKE → strong Nikkei headwind, energy import costs surging"
+        elif oil_price > 85:
+            band = "OIL ELEVATED → moderate Nikkei headwind"
+        elif oil_price >= 70:
+            band = "OIL NORMAL → neutral for Nikkei"
+        else:
+            band = "OIL WEAK → demand concerns, mixed signal"
+        # Daily change overlay
+        chg_note = ""
+        if oil_chg is not None:
+            if oil_chg > 5:
+                chg_note = " | GEOPOLITICAL SHOCK — extreme caution"
+            elif oil_chg > 3:
+                chg_note = " | significant spike"
+            elif oil_chg < -3:
+                chg_note = " | relief drop — potential Nikkei tailwind"
+        oil_hint = f"Brent: ${oil_price} ({oil_chg:+.1f}%)" if oil_chg is not None else f"Brent: ${oil_price}"
+        oil_hint += f" [{band}{chg_note}]"
+
     high_cal = [e for e in cal if isinstance(e, dict) and e.get("impact") == "HIGH"][:3]
     med_cal  = [e for e in cal if isinstance(e, dict) and e.get("impact") == "MEDIUM"][:3]
     news_str = " | ".join(str(n)[:70] for n in (news[:2] if news else []))
     lines = [f"USD/JPY: {jpy}{jpy_hint} | VIX: {vix}"]
+    if oil_hint:
+        lines.append(oil_hint)
     if news_str:
         lines.append(f"News: {news_str}")
     lines.append(f"Calendar HIGH: {high_cal if high_cal else 'none next 8h'}")
@@ -1630,6 +1669,7 @@ class WebResearcher:
             "economic_calendar": self._get_calendar(),
             "vix": self._get_vix(),
             "usd_jpy": self._get_usd_jpy(),
+            "brent_oil": self._get_brent_oil(),
             "fear_greed": self._get_fear_greed(),
         }
 
@@ -1698,6 +1738,24 @@ class WebResearcher:
                 return float(vix)
         except Exception as e:
             logger.warning(f"VIX fetch failed (yfinance): {e}")
+        return None
+
+    def _get_brent_oil(self) -> Optional[dict]:
+        """Fetch Brent crude oil price for energy-cost context."""
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker("BZ=F")  # Brent Crude Futures
+            info = ticker.fast_info
+            price = getattr(info, "last_price", None)
+            prev = getattr(info, "previous_close", None)
+            if price:
+                change_pct = ((price - prev) / prev * 100) if prev else None
+                return {
+                    "price": round(float(price), 2),
+                    "change_pct": round(change_pct, 1) if change_pct is not None else None,
+                }
+        except Exception as e:
+            logger.warning(f"Brent oil fetch failed: {e}")
         return None
 
     def _get_usd_jpy(self) -> Optional[float]:

@@ -70,6 +70,10 @@ VOLUME PROFILE USAGE (POC/VAH/VAL):
   Inside VA = slow mean-reversion. Outside VA = rejection (reversal) or acceptance (continuation).
   LVN = price moves fast. VP edge at slow-day band extremes → lower confidence threshold by 5pts.
 
+OIL PRICE CONTEXT (Brent Crude — NEW 2026-03-10):
+  Japan imports ~90% energy. Brent >$95=strong headwind (reject longs <85%), >$85=moderate, $70-85=neutral, <$70=demand destruction.
+  Oil daily >+5%=GEOPOLITICAL SHOCK (extreme day rules). >+3%=weight heavily. Oil + JPY strength = strongest headwind.
+
 SMC (Smart Money Concepts):
   Order Block: last bearish candle before bullish impulse = demand OB (LONG retest). Vice versa = supply OB.
   FVG: fvg_bullish = demand zone. fvg_bearish = supply zone. Soft S/R (fills during reversals).
@@ -120,7 +124,7 @@ Role block: 7-step analysis (was 5-step):
 Key formatters (unchanged):
   _fmt_indicators(indicators)   → pipe-format table with MARKET STRUCTURE block (VP, anchored VWAP, etc.)
   _fmt_recent_scans(scans)      → 1-line per scan summary
-  _fmt_web_research(web)        → 3 lines, HIGH-impact calendar only
+  _fmt_web_research(web)        → USD/JPY + VIX + Brent oil context + news + calendar
 
 ## evaluate_opposite (NEW 2026-03-05)
 evaluate_opposite(indicators, opposite_direction, opposite_local_conf, sonnet_rejection_reasoning,
@@ -154,7 +158,7 @@ Also computes Brier score in storage/data/brier_scores.json (last 100 trades).
 
 ## class WebResearcher
 research() -> dict  # Synchronous/blocking. Run via run_in_executor.
-Returns: {timestamp, nikkei_news, economic_calendar, vix, usd_jpy, fear_greed}
+Returns: {timestamp, nikkei_news, economic_calendar, vix, usd_jpy, brent_oil, fear_greed}
 
 _get_nikkei_news() -> list[str]
   # Google News RSS feed: "Nikkei 225 OR Japan economy OR BOJ"
@@ -163,6 +167,13 @@ _get_nikkei_news() -> list[str]
 _get_calendar() -> list[dict]
   # nager.date API for JP public holidays and key economic events
   # Filters for HIGH-impact only (BOJ, NFP, CPI, PPI, etc.)
+
+_get_brent_oil() -> dict|None  # NEW 2026-03-10
+  # yfinance BZ=F (Brent Crude Futures). Returns {"price": float, "change_pct": float|None}.
+  # Japan imports ~90% energy — oil spike = Nikkei headwind.
+  # Formatted by _fmt_web_research() with price bands: >$95=SPIKE, >$85=ELEVATED, $70-85=NORMAL, <$70=WEAK.
+  # Daily change overlays: >+5%=GEOPOLITICAL SHOCK, >+3%=significant spike, <-3%=relief drop.
+  # System prompt section: OIL PRICE CONTEXT (after VOLUME PROFILE block).
 
 _get_fear_greed() -> float|None
   # CNN Fear & Greed Index API. Returns index value or None if unavailable.

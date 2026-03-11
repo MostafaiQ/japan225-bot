@@ -6,6 +6,8 @@ CORS: GitHub Pages origin only.
 """
 import hmac
 import os
+import time
+from collections import defaultdict
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -15,6 +17,11 @@ load_dotenv()
 
 DASHBOARD_TOKEN = os.getenv("DASHBOARD_TOKEN", "")
 ALLOWED_ORIGIN  = "https://mostafaiq.github.io"
+
+# Rate limiting: block IPs after too many failed auth attempts
+_fail_counts: dict[str, list[float]] = defaultdict(list)  # ip -> [timestamps]
+_RATE_WINDOW = 60       # seconds
+_RATE_MAX_FAILS = 10    # max failures per window before blocking
 
 app = FastAPI(title="Japan 225 Dashboard API", docs_url=None, redoc_url=None)
 
@@ -34,12 +41,27 @@ async def auth_middleware(request: Request, call_next):
     # Health endpoint — no auth needed
     if request.url.path == "/api/health":
         return await call_next(request)
+
+    ip = request.client.host if request.client else "unknown"
+
+    # Check if IP is rate-limited
+    now = time.time()
+    fails = _fail_counts[ip]
+    # Prune old entries
+    _fail_counts[ip] = [t for t in fails if now - t < _RATE_WINDOW]
+    if len(_fail_counts[ip]) >= _RATE_MAX_FAILS:
+        return JSONResponse({"detail": "Too many requests"}, status_code=429)
+
     # All other endpoints require Bearer token
     auth = request.headers.get("Authorization", "")
     if not DASHBOARD_TOKEN:
         return JSONResponse({"detail": "DASHBOARD_TOKEN not configured on server"}, status_code=500)
     if not auth.startswith("Bearer ") or not hmac.compare_digest(auth[7:], DASHBOARD_TOKEN):
+        _fail_counts[ip].append(now)
         return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+
+    # Successful auth — clear any failure history for this IP
+    _fail_counts.pop(ip, None)
     return await call_next(request)
 
 @app.middleware("http")

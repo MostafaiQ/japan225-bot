@@ -233,7 +233,7 @@ Force Open: when local conf 100% (12/12) but AI rejects → Telegram alert. Forc
 DB: `storage/data/trading.db` — Oracle VM only. WAL mode. Never commit.
 Digests: `.claude/digests/` — settings · monitor · database · indicators · session · momentum ·
          confidence · ig_client · risk_manager · exit_manager · analyzer · telegram_bot · dashboard · claude_client
-Tests: **422/422 passing** (2026-03-10).
+Tests: **437/437 passing** (2026-03-10).
 
 ## Backtest Benchmarks (2026-03-07 — new weighted confidence + risk-based sizing)
 TA-Only OOS: Scalp SL=60 TP=300 → 690 trades, 47.8% WR, PF=1.16, +$3,305 ✓ PROFITABLE
