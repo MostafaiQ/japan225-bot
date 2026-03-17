@@ -20,7 +20,7 @@ Oracle VM: monitor.py (24/7, systemd: japan225-bot)
     → Gate: opposite direction must have had a detected setup + local conf >= 60% + Sonnet conf >= 30%
     → evaluate_opposite(): Opus gets FULL context (same as Sonnet), full SL/TP freedom, same thresholds
     → Single subprocess: Sonnet analyzes, delegates to Opus sub-agent internally when needed
-    → if AI confirms & risk passes: auto-execute immediately + Telegram notification
+    → if AI confirms & risk passes: Telegram CONFIRM/REJECT buttons (NEVER auto-execute)
   MONITORING (position open): every 2s
     → Lightstreamer streaming price ticks (BID/OFR mid) — real-time, ~0 REST calls for price
     → REST fallback if streaming stale >10s. Background reconnect after 30 stale cycles (60s).
@@ -28,7 +28,7 @@ Oracle VM: monitor.py (24/7, systemd: japan225-bot)
     → MomentumTracker.add_price() → SEVERE adverse tier → Telegram alert only (no auto-SL moves)
     → MILD/MODERATE adverse alerts REMOVED — replaced by Opus position evaluator
     → Opus position eval every 60 cycles (120s): evaluate_open_position() → send_position_eval()
-       CLOSE_NOW + conf >= 70% → auto-close. TIGHTEN_SL → Telegram alert only.
+       CLOSE_NOW + conf >= 70% → Telegram alert, user must /close (never auto-close). TIGHTEN_SL → Telegram alert only.
     → SL and TP fixed at entry (set by AI). No mechanical modifications after open.
   TELEGRAM: always-on polling, callbacks: on_trade_confirm, on_force_scan
 
