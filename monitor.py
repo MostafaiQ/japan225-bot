@@ -1405,16 +1405,14 @@ class TradingMonitor:
 
         self._last_scan_detail = {"outcome": "trade_alert", "direction": direction, "confidence": final_confidence, "price": current_price, "setup_type": setup.get("type")}
 
-        # Auto-execute immediately — Sonnet passed confidence thresholds (70 LONG / 75 SHORT)
-        # + risk validation. Notify user then execute (same flow as Opus scalp).
+        # Send alert to Telegram with CONFIRM/REJECT buttons — never auto-execute.
         logger.info(
-            f"Sonnet auto-executing: {direction} @ {entry:.0f}, "
-            f"confidence={final_confidence}%, SL={sl:.0f}, TP={tp:.0f}"
+            f"Sonnet signal: {direction} @ {entry:.0f}, "
+            f"confidence={final_confidence}%, SL={sl:.0f}, TP={tp:.0f} — awaiting user confirmation"
         )
         await self.telegram.send_trade_alert(trade_alert)
-        await self._on_trade_confirm(trade_alert)
 
-        return 0  # Enter monitoring immediately
+        return SCAN_INTERVAL_SECONDS  # Wait for user confirmation via Telegram
 
     # ============================================================
     # MONITORING MODE
@@ -1575,18 +1573,16 @@ class TradingMonitor:
                         lots=pos_state.get("lots", 1.0),
                     )
 
-                    # Auto-close if Opus says CLOSE_NOW with high confidence
+                    # Opus says CLOSE_NOW — send Telegram alert for user confirmation (never auto-close)
                     if rec == "CLOSE_NOW" and conf >= 70:
                         logger.warning(
-                            f"Opus position eval recommends CLOSE_NOW ({conf}%). Auto-closing."
+                            f"Opus position eval recommends CLOSE_NOW ({conf}%). Sending Telegram for confirmation."
                         )
-                        await asyncio.get_event_loop().run_in_executor(
-                            None,
-                            lambda: self.ig.close_position(
-                                deal_id=deal_id,
-                                direction=logical_direction,
-                                size=pos_state.get("lots", 1.0),
-                            )
+                        await self.telegram.send_alert(
+                            f"🔴 <b>OPUS: CLOSE NOW</b> ({conf}%)\n"
+                            f"Deal: {deal_id} | {logical_direction}\n"
+                            f"Reason: {eval_result.get('reasoning', 'N/A')[:200]}\n\n"
+                            f"Use /close to confirm closing."
                         )
                 finally:
                     self._pos_check_running = False
@@ -1807,9 +1803,8 @@ class TradingMonitor:
             "indicators_compact": setup.get("indicators_snapshot", {}) if setup else {},
         }
 
-        # Notify user THEN execute (no confirmation needed)
-        await self.telegram.send_scalp_executed(scalp_alert, scalp_result)
-        await self._on_trade_confirm(scalp_alert)
+        # Send scalp alert to Telegram with CONFIRM/REJECT buttons — never auto-execute.
+        await self.telegram.send_trade_alert(scalp_alert)
 
     # ============================================================
     # TRADE EXECUTION (called by Telegram on CONFIRM)
