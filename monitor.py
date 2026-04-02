@@ -1511,81 +1511,83 @@ class TradingMonitor:
             tracker["buffer_save_counter"] = 0
             self._save_price_buffer_for(deal_id, pos_state.get("opened_at", ""))
 
-        if self._pos_check_trigger_path.exists():
-            try:
-                self._pos_check_trigger_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-            tracker["opus_eval_counter"] = OPUS_POSITION_EVAL_EVERY_N  # force eval this cycle
+        # DISABLED: force-trigger for opus pos check also disabled
+        # if self._pos_check_trigger_path.exists():
+        #     try:
+        #         self._pos_check_trigger_path.unlink(missing_ok=True)
+        #     except Exception:
+        #         pass
+        #     tracker["opus_eval_counter"] = OPUS_POSITION_EVAL_EVERY_N  # force eval this cycle
 
-        tracker["opus_eval_counter"] += 1
-        if tracker["opus_eval_counter"] >= OPUS_POSITION_EVAL_EVERY_N:
-            tracker["opus_eval_counter"] = 0
-            if self._pos_check_running:
-                logger.info("Opus position eval skipped (on-demand check already running)")
-            else:
-                logger.info("Opus position eval triggered (periodic 2-min)")
-                self._pos_check_running = True
-                try:
-                    sl_level = pos_state.get("stop_level") or 0
-                    tp_level = pos_state.get("limit_level") or 0
-                    opened_at_str = pos_state.get("opened_at", "")
-                    try:
-                        opened_at = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
-                        time_open_min = (datetime.now(timezone.utc) - opened_at).total_seconds() / 60
-                    except Exception:
-                        time_open_min = 0
-                    try:
-                        entry_context = json.loads(pos_state.get("entry_context") or "{}")
-                    except Exception:
-                        entry_context = {}
-                    current_indicators = await self._fetch_current_indicators()
-
-                    _price_buf = list(tracker["price_buffer"])
-                    eval_result = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: self.analyzer.evaluate_open_position(
-                            direction=logical_direction,
-                            entry=entry,
-                            current_price=current_price,
-                            stop_loss=sl_level,
-                            take_profit=tp_level,
-                            phase=phase,
-                            time_in_trade_min=time_open_min,
-                            recent_prices=_price_buf,
-                            lots=pos_state.get("lots", 1.0),
-                            entry_context=entry_context,
-                            current_indicators=current_indicators,
-                        ),
-                    )
-
-                    rec = eval_result.get("recommendation", "HOLD")
-                    conf = eval_result.get("confidence", 0)
-
-                    await self.telegram.send_position_eval(
-                        eval_result=eval_result,
-                        direction=logical_direction,
-                        entry=entry,
-                        current_price=current_price,
-                        pnl_pts=pnl_points,
-                        phase=phase,
-                        deal_id=deal_id,
-                        lots=pos_state.get("lots", 1.0),
-                    )
-
-                    # Opus says CLOSE_NOW — send Telegram alert for user confirmation (never auto-close)
-                    if rec == "CLOSE_NOW" and conf >= 70:
-                        logger.warning(
-                            f"Opus position eval recommends CLOSE_NOW ({conf}%). Sending Telegram for confirmation."
-                        )
-                        await self.telegram.send_alert(
-                            f"🔴 <b>OPUS: CLOSE NOW</b> ({conf}%)\n"
-                            f"Deal: {deal_id} | {logical_direction}\n"
-                            f"Reason: {eval_result.get('reasoning', 'N/A')[:200]}\n\n"
-                            f"Use /close to confirm closing."
-                        )
-                finally:
-                    self._pos_check_running = False
+        # DISABLED: Opus periodic position eval (commented out to reduce API usage)
+        # tracker["opus_eval_counter"] += 1
+        # if tracker["opus_eval_counter"] >= OPUS_POSITION_EVAL_EVERY_N:
+        #     tracker["opus_eval_counter"] = 0
+        #     if self._pos_check_running:
+        #         logger.info("Opus position eval skipped (on-demand check already running)")
+        #     else:
+        #         logger.info("Opus position eval triggered (periodic 2-min)")
+        #         self._pos_check_running = True
+        #         try:
+        #             sl_level = pos_state.get("stop_level") or 0
+        #             tp_level = pos_state.get("limit_level") or 0
+        #             opened_at_str = pos_state.get("opened_at", "")
+        #             try:
+        #                 opened_at = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
+        #                 time_open_min = (datetime.now(timezone.utc) - opened_at).total_seconds() / 60
+        #             except Exception:
+        #                 time_open_min = 0
+        #             try:
+        #                 entry_context = json.loads(pos_state.get("entry_context") or "{}")
+        #             except Exception:
+        #                 entry_context = {}
+        #             current_indicators = await self._fetch_current_indicators()
+        #
+        #             _price_buf = list(tracker["price_buffer"])
+        #             eval_result = await asyncio.get_event_loop().run_in_executor(
+        #                 None,
+        #                 lambda: self.analyzer.evaluate_open_position(
+        #                     direction=logical_direction,
+        #                     entry=entry,
+        #                     current_price=current_price,
+        #                     stop_loss=sl_level,
+        #                     take_profit=tp_level,
+        #                     phase=phase,
+        #                     time_in_trade_min=time_open_min,
+        #                     recent_prices=_price_buf,
+        #                     lots=pos_state.get("lots", 1.0),
+        #                     entry_context=entry_context,
+        #                     current_indicators=current_indicators,
+        #                 ),
+        #             )
+        #
+        #             rec = eval_result.get("recommendation", "HOLD")
+        #             conf = eval_result.get("confidence", 0)
+        #
+        #             await self.telegram.send_position_eval(
+        #                 eval_result=eval_result,
+        #                 direction=logical_direction,
+        #                 entry=entry,
+        #                 current_price=current_price,
+        #                 pnl_pts=pnl_points,
+        #                 phase=phase,
+        #                 deal_id=deal_id,
+        #                 lots=pos_state.get("lots", 1.0),
+        #             )
+        #
+        #             # Opus says CLOSE_NOW — send Telegram alert for user confirmation (never auto-close)
+        #             if rec == "CLOSE_NOW" and conf >= 70:
+        #                 logger.warning(
+        #                     f"Opus position eval recommends CLOSE_NOW ({conf}%). Sending Telegram for confirmation."
+        #                 )
+        #                 await self.telegram.send_alert(
+        #                     f"🔴 <b>OPUS: CLOSE NOW</b> ({conf}%)\n"
+        #                     f"Deal: {deal_id} | {logical_direction}\n"
+        #                     f"Reason: {eval_result.get('reasoning', 'N/A')[:200]}\n\n"
+        #                     f"Use /close to confirm closing."
+        #                 )
+        #         finally:
+        #             self._pos_check_running = False
 
         # --- 3-Phase exit strategy ---
         position_data = {
@@ -2297,80 +2299,8 @@ class TradingMonitor:
         self._force_scan_event.set()
 
     async def _on_pos_check(self):
-        """Triggered by /poscheck command or dashboard button. Runs Opus position eval on first open position."""
-        if self._pos_check_running:
-            await self.telegram.send_alert("⏳ Position check already running — please wait.")
-            return
-        all_positions = self.storage.get_all_position_states()
-        if not all_positions:
-            logger.info("Opus position eval triggered (on-demand) — no open position")
-            await self.telegram.send_alert("ℹ️ No open position to evaluate.")
-            return
-        pos_state = all_positions[0]  # Evaluate first open position
-        self._pos_check_running = True
-        try:
-            logger.info("Opus position eval triggered (on-demand)")
-            await self.telegram.send_alert("🔍 Running Opus position check…")
-        except Exception:
-            self._pos_check_running = False
-            raise
-        try:
-            _pos_tracker = self._get_tracker(pos_state.get("deal_id", ""))
-            direction = pos_state.get("direction", "LONG")
-            logical_direction = "LONG" if direction == "BUY" else ("SHORT" if direction == "SELL" else direction)
-            entry = pos_state.get("entry_price", 0)
-            sl_level = pos_state.get("stop_level") or 0
-            tp_level = pos_state.get("limit_level") or 0
-            opened_at_str = pos_state.get("opened_at", "")
-            try:
-                opened_at = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
-                time_open_min = (datetime.now(timezone.utc) - opened_at).total_seconds() / 60
-            except Exception:
-                time_open_min = 0
-            try:
-                current_price_data = await asyncio.get_event_loop().run_in_executor(None, self.ig.get_market_info)
-                current_price = (
-                    current_price_data.get("bid", entry) if logical_direction == "LONG"
-                    else current_price_data.get("offer", entry)
-                ) if isinstance(current_price_data, dict) else entry
-            except Exception:
-                current_price = self._current_price or entry
-            pnl_pts = (current_price - entry) if logical_direction == "LONG" else (entry - current_price)
-            phase = pos_state.get("phase", "initial") or "initial"
-            try:
-                entry_context = json.loads(pos_state.get("entry_context") or "{}")
-            except Exception:
-                entry_context = {}
-            current_indicators = await self._fetch_current_indicators()
-
-            eval_result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self.analyzer.evaluate_open_position(
-                    direction=logical_direction,
-                    entry=entry,
-                    current_price=current_price,
-                    stop_loss=sl_level,
-                    take_profit=tp_level,
-                    phase=phase,
-                    time_in_trade_min=time_open_min,
-                    recent_prices=list(_pos_tracker["price_buffer"]),
-                    lots=pos_state.get("lots", 1.0),
-                    entry_context=entry_context,
-                    current_indicators=current_indicators,
-                ),
-            )
-            await self.telegram.send_position_eval(
-                eval_result=eval_result,
-                direction=logical_direction,
-                entry=entry,
-                current_price=current_price,
-                pnl_pts=pnl_pts,
-                phase=phase,
-                deal_id=pos_state.get("deal_id", ""),
-                lots=pos_state.get("lots", 1.0),
-            )
-        finally:
-            self._pos_check_running = False
+        """DISABLED: Opus position eval disabled to reduce API usage."""
+        await self.telegram.send_alert("ℹ️ Position check is currently disabled.")
 
     # ============================================================
     # SHUTDOWN
