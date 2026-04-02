@@ -1483,10 +1483,11 @@ class TradingMonitor:
         # --- Stale data check ---
         if tracker["momentum_tracker"].is_stale():
             logger.warning(f"Stale data detected for {deal_id} — same price 10+ consecutive readings")
-            await self.telegram.send_alert(
-                f"WARNING: Stale data for {deal_id}. Same price for 10+ readings.\n"
-                "Possible API issue or market halt. Not modifying position."
-            )
+            # Telegram alert disabled — too noisy with 30min scan interval
+            # await self.telegram.send_alert(
+            #     f"WARNING: Stale data for {deal_id}. Same price for 10+ readings.\n"
+            #     "Possible API issue or market halt. Not modifying position."
+            # )
             return  # Don't act on stale data
 
         # --- Milestone alerts ---
