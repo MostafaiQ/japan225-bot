@@ -177,7 +177,7 @@ OPUS_MODEL   = "claude-opus-4-6"
 MONITOR_INTERVAL_SECONDS = 2        # Price check interval (seconds) — get_market_info only, 30 calls/min
 POSITION_CHECK_EVERY_N_CYCLES = 5   # Check position existence every N cycles: 5 × 2s = 10s, 6 calls/min
 OPUS_POSITION_EVAL_EVERY_N = 60     # Run Opus position evaluator every N monitor cycles (60 × 2s = 120s = 2min)
-SCAN_INTERVAL_SECONDS = 300         # Entry scan interval when flat (5 min)
+SCAN_INTERVAL_SECONDS = 1800        # Entry scan interval when flat (30 min)
 OFFHOURS_INTERVAL_SECONDS = 1800    # Off-hours heartbeat (30 min)
 
 # ============================================
