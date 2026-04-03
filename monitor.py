@@ -1495,11 +1495,11 @@ class TradingMonitor:
         if milestone_msg:
             await self.telegram.send_alert(milestone_msg)
 
-        # --- Adverse move alerts: SEVERE safety net (MILD/MODERATE replaced by Opus position evaluator) ---
-        should_alert, tier, alert_msg = tracker["momentum_tracker"].should_alert()
-        if should_alert and tier == TIER_SEVERE:
-            await self.telegram.send_adverse_alert(alert_msg, tier, deal_id)
-            # SEVERE: alert only — SL stays fixed at original level (no auto-breakeven)
+        # --- Adverse move alerts: DISABLED (user request — too noisy) ---
+        # should_alert, tier, alert_msg = tracker["momentum_tracker"].should_alert()
+        # if should_alert and tier == TIER_SEVERE:
+        #     await self.telegram.send_adverse_alert(alert_msg, tier, deal_id)
+        #     # SEVERE: alert only — SL stays fixed at original level (no auto-breakeven)
 
         # --- Opus position evaluator (every 2 minutes, or on-demand via dashboard/telegram) ---
         tracker["price_buffer"].append(current_price)
